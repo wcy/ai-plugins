@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/catalog.schema.json",
+  "title": "CATALOG.yaml",
+  "description": "Spec catalog for a repo (context/<repo>/spec/CATALOG.yaml) or the shared contract layer (context/shared/spec/CATALOG.yaml). See STANDARD-SPEC.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/repoCatalog" },
+    { "$ref": "#/$defs/sharedCatalog" }
+  ],
+  "$defs": {
+    "facet": {
+      "enum": ["overview", "datamodel", "interface", "deps", "impl", "test"]
+    },
+    "sharedFacet": {
+      "enum": ["overview", "datamodel", "interface"]
+    },
+    "layerName": {
+      "type": "string",
+      "pattern": "^L([0-9]+|S)-[a-z0-9-]+$",
+      "description": "e.g. L0-foundation, L1-core, LS-shared"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "facet"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "facet": { "$ref": "#/$defs/facet" },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "exports": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Only on INTERFACE files."
+        }
+      }
+    },
+    "sharedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "facet"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "facet": { "$ref": "#/$defs/sharedFacet" },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "exports": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "repoCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "repo", "layers", "modules"],
+      "properties": {
+        "version": { "const": 1 },
+        "generated": { "type": "string" },
+        "repo": { "type": "string", "minLength": 1 },
+        "shared_interfaces": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z0-9-]+$" },
+          "description": "Shared interface TAGs this repo produces/consumes; each must exist in the shared catalog."
+        },
+        "layers": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/layerName" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["modules"],
+            "properties": {
+              "modules": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z0-9-]+$" } }
+            }
+          }
+        },
+        "modules": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Z0-9-]+$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["layer", "files"],
+            "properties": {
+              "layer": { "$ref": "#/$defs/layerName" },
+              "files": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/file" } }
+            }
+          }
+        }
+      }
+    },
+    "sharedCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "scope", "interfaces"],
+      "properties": {
+        "version": { "const": 1 },
+        "generated": { "type": "string" },
+        "scope": { "const": "shared" },
+        "interfaces": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Z0-9-]+$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["files"],
+            "properties": {
+              "files": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sharedFile" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

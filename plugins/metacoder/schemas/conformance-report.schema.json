@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/conformance-report.schema.json",
+  "title": "Conformance report (mverify)",
+  "description": "The structured shape a /mverify conformance shard (one per module/repo) returns, and the aggregate the skill assembles. Change-shaped: findings mirror a change doc's Affected Code Paths rows so gaps feed straight into an mspec/mreverse follow-up. Detection only — never rewrites.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scope", "findings"],
+  "properties": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["module", "repo", "cross-repo", "aggregate"] },
+        "repo": { "type": "string", "description": "Repo under review (omit/any for cross-repo/aggregate)." },
+        "module": { "type": "string", "description": "Module TAG (module shards only)." },
+        "interface": { "type": "string", "description": "Shared interface TAG (cross-repo shards)." },
+        "change_ref": { "type": "string", "description": "The change/plan/spec unit this shard was checked against." }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "clean": {
+      "type": "boolean",
+      "description": "true iff findings is empty for this scope."
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "severity", "detail"],
+      "properties": {
+        "type": {
+          "enum": ["missing", "extra", "mismatch", "coupling", "cross-repo-drift"],
+          "description": "missing/extra/mismatch = change<->code surface drift; coupling = cross-module IMPLEMENTATION import or cross-repo ref bypassing context/shared/spec/; cross-repo-drift = a producer/consumer that doesn't match the frozen shared contract."
+        },
+        "severity": { "enum": ["blocking", "warning", "info"] },
+        "spec_ref": { "type": "string", "description": "Spec/contract surface the code was checked against (file + signature/type)." },
+        "code_path": { "type": "string", "description": "Source path (relative to repos/<repo>/) where the drift/violation lives." },
+        "surface": { "type": "string", "description": "The specific signature/type/endpoint/event affected." },
+        "detail": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string" }
+      }
+    }
+  }
+}

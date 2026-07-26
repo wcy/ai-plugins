@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/inconsistency-report.schema.json",
+  "title": "Inconsistency report (mreverse)",
+  "description": "The structured shape a mreverse reader returns and the aggregate the skill writes alongside the reconciled spec. Documents inconsistencies WITHIN a repo (self-contradiction, drift between modules, dead/duplicated-but-divergent code) and BETWEEN repos (producers/consumers that disagree in their actual code across a shared boundary). Inter-repo findings belong to no single repo, so they are recorded at workspace level (context/project/).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scope", "findings"],
+  "properties": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["intra-repo", "cross-repo", "aggregate"] },
+        "repo": { "type": "string", "description": "Repo for intra-repo findings." },
+        "repos": { "type": "array", "items": { "type": "string" }, "description": "Repos compared for cross-repo findings." },
+        "boundary": { "type": "string", "description": "The shared interface / contract boundary compared (cross-repo)." }
+      }
+    },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "detail"],
+      "properties": {
+        "type": {
+          "enum": [
+            "self-contradiction",
+            "module-drift",
+            "dead-code",
+            "duplicated-divergent",
+            "type-mismatch",
+            "emitted-but-unread",
+            "version-skew",
+            "signature-mismatch"
+          ]
+        },
+        "severity": { "enum": ["blocking", "warning", "info"] },
+        "detail": { "type": "string", "minLength": 1 },
+        "code_refs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Source locations evidencing the inconsistency (repo-relative or repos/<repo>/-relative paths)."
+        },
+        "repos": { "type": "array", "items": { "type": "string" }, "description": "For cross-repo findings, the repos that disagree." }
+      }
+    }
+  }
+}

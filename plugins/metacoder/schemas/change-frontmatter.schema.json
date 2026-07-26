@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/change-frontmatter.schema.json",
+  "title": "Change-document front-matter",
+  "description": "The HTML-comment front-matter block at the top of a repo-level change doc (context/<repo>/changes/CHANGE-<NNN>-*.md) or a project-level index (context/project/changes/PROJECT-CHANGE-<NNN>-*.md). Keys are the <!-- key: value --> lines. See STANDARD-CHANGE.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/repoChange" },
+    { "$ref": "#/$defs/projectChange" }
+  ],
+  "$defs": {
+    "seq": {
+      "type": "string",
+      "pattern": "^[0-9]{3,4}$",
+      "description": "Zero-padded sequence number as it appears in the front-matter comment."
+    },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "csv": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Comma-separated list of repo names, e.g. 'shared, repo-a, repo-b'."
+    },
+    "repoChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change", "scope", "repo", "status", "date"],
+      "properties": {
+        "change": { "$ref": "#/$defs/seq" },
+        "scope": { "enum": ["repo", "shared"] },
+        "repo": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pending", "in-progress", "applied", "superseded", "complete"] },
+        "date": { "$ref": "#/$defs/date" }
+      },
+      "description": "status 'complete' is reserved for CHANGE-<NNN>-initial-spec.md baseline records."
+    },
+    "projectChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project-change", "scope", "repos", "status", "date"],
+      "properties": {
+        "project-change": { "$ref": "#/$defs/seq" },
+        "scope": { "enum": ["repo", "shared"] },
+        "repos": { "$ref": "#/$defs/csv" },
+        "status": { "enum": ["pending", "in-progress", "applied", "superseded"] },
+        "date": { "$ref": "#/$defs/date" },
+        "consumers": { "$ref": "#/$defs/csv" }
+      },
+      "description": "Project-level index. 'consumers' is required in practice only for scope: shared."
+    }
+  }
+}

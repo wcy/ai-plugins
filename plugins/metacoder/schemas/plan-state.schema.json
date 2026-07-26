@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/plan-state.schema.json",
+  "title": "Plan-level state (context/project/plans/<plan-id>/state.yaml)",
+  "description": "Mutable execution state for one plan: per-wave and per-story status, retry counts, worktree refs (per story and per retry attempt), validation + conformance results, and rough telemetry. mexecute reads/writes this to drive resume, retry, and progress. Distinct from the immutable plan.yaml graph.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "plan_id", "status", "stories"],
+  "properties": {
+    "version": { "const": 1 },
+    "plan_id": { "type": "string", "pattern": "^[0-9]{3}-[a-z0-9-]+$" },
+    "updated": { "type": "string" },
+    "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
+    "integration_branches": {
+      "type": "object",
+      "description": "Per-repo integration branch: greens merge here (not the repo's live working branch).",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "waves": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["wave", "status", "stories"],
+        "properties": {
+          "wave": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["pending", "in-progress", "complete", "failed"] },
+          "stories": { "type": "array", "items": { "$ref": "#/$defs/storyId" } }
+        }
+      }
+    },
+    "stories": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/storyId" },
+      "additionalProperties": { "$ref": "#/$defs/storyState" }
+    },
+    "conformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Result of the post-ship /mverify sweep (step 6).",
+      "properties": {
+        "status": { "enum": ["clean", "drift", "not-run"] },
+        "report": { "type": ["string", "null"], "description": "Path to the mverify report under context/project/out/." },
+        "findings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Rough actuals for the run (never a pre-run estimate).",
+      "properties": {
+        "cost_usd": { "type": ["number", "null"] },
+        "tokens": { "type": ["integer", "null"] },
+        "wall_clock_s": { "type": ["number", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "storyId": {
+      "type": "string",
+      "pattern": "^[0-9]{2}-[0-9]{2}[a-z]?-[A-Za-z0-9._-]+$"
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "branch", "result"],
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "worktree": { "type": ["string", "null"], "description": "Worktree path; null once removed after a green merge." },
+        "branch": { "type": "string", "minLength": 1, "description": "e.g. mexec/<plan-id>/<story-id>/<attempt>" },
+        "result": { "enum": ["in-progress", "applied", "failed"] },
+        "validation": { "enum": ["pass", "fail", "not-run"] },
+        "worktree_removed": { "type": "boolean", "description": "true once a merged (green) worktree is cleaned up; failed/unmerged worktrees are kept." }
+      }
+    },
+    "storyState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "wave", "status", "retries"],
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "wave": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
+        "retries": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Attempts made so far (bounded auto-retry N=3)." },
+        "attempts": { "type": "array", "items": { "$ref": "#/$defs/attempt" } },
+        "merged_branch": { "type": ["string", "null"], "description": "The integration branch the green attempt merged into, or null." },
+        "last_run": { "type": "string" },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "post_story": { "enum": ["pass", "fail", "not-run"] },
+            "details": { "type": "string" }
+          }
+        },
+        "deferred_break": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "description": "A contained breaking-contract change deferred to the final report (did not halt the run).",
+          "properties": {
+            "blast_radius": { "enum": ["contained"] },
+            "detail": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

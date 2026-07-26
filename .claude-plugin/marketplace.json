@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ai-plugins",
+  "description": "Marketplace for Claude Code plugins published from github.com/wcy/ai-plugins",
+  "owner": {
+    "name": "William Yap"
+  },
+  "plugins": [
+    {
+      "name": "metacoder",
+      "version": "0.4.0",
+      "source": "./plugins/metacoder",
+      "description": "Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), execute plans as worktree-isolated waves (mexecute), and run the whole loop autonomously (mquick)",
+      "author": {
+        "name": "William Yap"
+      }
+    }
+  ]
+}

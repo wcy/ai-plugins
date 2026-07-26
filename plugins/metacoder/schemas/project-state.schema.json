@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/project-state.schema.json",
+  "title": "Project-level ledger (context/project/state.yaml)",
+  "description": "The workspace ledger tracking each plan's implementation status. This is the entry point that resume/orchestration reads to find the unfinished plan. Mutable; the source of truth for automation (change-doc front-matter stays human-readable narrative).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "plans"],
+  "properties": {
+    "version": { "const": 1 },
+    "updated": { "type": "string" },
+    "plans": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[0-9]{3}-[a-z0-9-]+$",
+        "description": "plan_id (<NNN>-<slug>)."
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "plan_dir"],
+        "properties": {
+          "status": {
+            "enum": ["pending", "in-progress", "applied", "failed"],
+            "description": "Whole-plan implementation status across the workspace."
+          },
+          "project_change": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9]{3,4}$",
+            "description": "The PROJECT-CHANGE <NNN> this plan implements, or null for a full/greenfield plan."
+          },
+          "plan_dir": { "type": "string", "pattern": "^context/project/plans/[0-9]{3}-[a-z0-9-]+/?$" },
+          "updated": { "type": "string" }
+        }
+      }
+    }
+  }
+}

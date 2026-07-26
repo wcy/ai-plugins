@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/plan-graph.schema.json",
+  "title": "Plan graph (plan.yaml)",
+  "description": "Machine-readable, immutable structure of a plan emitted by mplan: waves, stories, dependencies, and per-story validation. Lives at context/project/plans/<plan-id>/plan.yaml, alongside the human-readable PLAN-*.md story files and the mutable state.yaml. mexecute reads this instead of re-deriving structure from prose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "plan_id", "type", "repos", "waves", "stories"],
+  "properties": {
+    "version": { "const": 1 },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[0-9]{3}-[a-z0-9-]+$",
+      "description": "<NNN>-<slug>, matching the plan directory name, e.g. 003-adapter-retry-logic or 000-initial."
+    },
+    "generated": { "type": "string" },
+    "type": { "enum": ["full", "incremental"] },
+    "project_change": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{3,4}$",
+      "description": "The PROJECT-CHANGE <NNN> this plan implements; null for a full/greenfield plan."
+    },
+    "repos": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Every repo this plan touches (one story targets exactly one repo)."
+    },
+    "waves": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["wave", "stories"],
+        "properties": {
+          "wave": { "type": "integer", "minimum": 1 },
+          "stories": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/storyId" }
+          }
+        }
+      }
+    },
+    "stories": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/storyId" },
+      "additionalProperties": { "$ref": "#/$defs/story" }
+    }
+  },
+  "$defs": {
+    "storyId": {
+      "type": "string",
+      "pattern": "^[0-9]{2}-[0-9]{2}[a-z]?-[A-Za-z0-9._-]+$",
+      "description": "{WW}-{SS}[m]-{REPO}-{MODULE}, matching the PLAN-*.md filename minus the PLAN- prefix and .md suffix."
+    },
+    "validationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description"],
+      "properties": {
+        "kind": {
+          "enum": ["exit-code", "prose"],
+          "description": "exit-code steps are runnable commands (preferred); prose steps are agent-interpreted."
+        },
+        "command": {
+          "type": "string",
+          "description": "Required when kind is exit-code: a shell command run relative to repos/<repo>/ that must exit 0."
+        },
+        "description": { "type": "string", "minLength": 1 }
+      },
+      "if": { "properties": { "kind": { "const": "exit-code" } } },
+      "then": { "required": ["command"] }
+    },
+    "story": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "repo", "module", "wave", "prerequisites"],
+      "properties": {
+        "file": { "type": "string", "pattern": "^PLAN-.+\\.md$" },
+        "repo": { "type": "string", "minLength": 1 },
+        "module": { "type": "string", "minLength": 1 },
+        "wave": { "type": "integer", "minimum": 1 },
+        "prerequisites": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/storyId" },
+          "description": "Story ids from earlier waves that must be applied first. Empty for wave 1."
+        },
+        "parallel_group": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/storyId" },
+          "description": "Same-wave sibling stories that run concurrently. Module-disjoint by construction."
+        },
+        "change_file": {
+          "type": ["string", "null"],
+          "description": "Incremental plans: the repo-level change file this story implements. null for full/greenfield."
+        },
+        "target_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Source paths (relative to repos/<repo>/) this story writes — used to confirm module-disjointness."
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "post_story": { "type": "array", "items": { "$ref": "#/$defs/validationStep" } },
+            "final": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/validationStep" },
+              "description": "Present only on last-wave stories."
+            }
+          }
+        }
+      }
+    }
+  }
+}
