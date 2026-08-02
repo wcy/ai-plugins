@@ -287,10 +287,10 @@ Use this guide to determine which source files are affected by changes to each f
 
 ## Example
 
-The "Change Document Schema" section above already shows every section filled with concrete
+The "Change Document Schemas" section above already shows every section filled with concrete
 rows (the `RetryPolicy` example). A minimal single-repo change is just that schema with each
 table holding one or two rows — e.g. a `CHANGE-004` adding an optional `timeoutMs` to
-`SpawnOptions` would carry `scope: repo`, `repos: repo-a`, `status: pending`, "Breaking
+`SpawnOptions` would carry `scope: repo`, `repo: repo-a`, `status: pending`, "Breaking
 Changes: None.", one **Spec Files Modified** row per touched facet (DATAMODEL/INTERFACE/
 IMPLEMENTATION), one **Affected Code Paths** row (`src/subprocess/spawn.ts`), one **Affected
 Tests** row, and a short **Implementation Order**. Don't pad empty sections — one honest row
