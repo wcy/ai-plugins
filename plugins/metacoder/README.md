@@ -18,6 +18,7 @@ A Claude Code plugin providing a structured spec-to-ship workflow for a **multi-
 4. Turn a change into stories: `/mplan` — writes `context/project/plans/<NNN>-<slug>/` (story files, `plan.yaml`, `state.yaml`).
 5. Ship it: `/mexecute` — runs the plan as worktree-isolated waves, then a post-ship conformance sweep.
 6. Re-check anytime: `/mverify` (conformance against any change/plan) or `/mreverse` (reconcile a stale spec back to the actual code, or audit consistency across repos).
+7. Close what it found: `/mfix` — decides, per finding, whether the code or the spec is authoritative, and repairs the one that is wrong.
 
 **Already have a codebase and no specs?** Start with `/mreverse` instead of `/mspec` — it reverse-engineers the spec from code as ground truth.
 
@@ -59,6 +60,7 @@ plugins/metacoder/
 │   │   ├── SKILL.md
 │   │   └── PLAN-STORY-TEMPLATE.md  # story template, read on demand via ${CLAUDE_SKILL_DIR}
 │   ├── mverify/SKILL.md
+│   ├── mfix/SKILL.md
 │   ├── mexecute/SKILL.md
 │   └── mquick/SKILL.md
 ├── shared/
@@ -85,7 +87,8 @@ These are Claude Code skills — Claude invokes them either automatically when y
 | `mreverse` | no | "reverse the spec", "regenerate the spec from code", "the spec is stale", "find inconsistencies between repos", etc. | Take code as ground truth and reconcile the spec in `context/<repo>/spec/` (per-repo), using a team of readers. **Documents inconsistencies within a repo** and, across **two or more** repos, runs a **cross-repo inconsistency pass** recorded at workspace level. Writes **no** change files and **no** plans; never invokes `mplan`; never authors `context/shared/spec/`. |
 | `mplan` | no | "create plan", "generate plan", "break into stories", etc. | Turn the latest `PROJECT-CHANGE-<NNN>-*.md` (or full specs for greenfield) into story files **plus** a machine-readable plan graph (`plan.yaml`), initial plan state (`state.yaml`), and a project-ledger entry, under `context/project/plans/<NNN>-<slug>/`. Fans out subagents to validate the generated stories. A plan may span repos; each story targets exactly one. |
 | `mverify` | no | "verify conformance", "did we implement the change", "check cross-repo contracts", "audit coupling", etc. | From the **change + plan + spec** files, confirm the shipped code implements them: change↔code drift, cross-repo contract conformance, and code-level coupling detection — fanned out into three kinds of subagent shard (change-conformance, cross-repo, coupling). Produces a **change-shaped** report and records it in plan state. Read-only; reports, never rewrites. Runs as `mexecute`'s post-ship sweep and can be re-run against any prior change/plan. |
-| `mexecute` | **yes** | "execute the plan", "run the plan", "ship it", etc. | **The one code-writing skill.** Ships a plan as a **dynamic Workflow**: each wave's stories run concurrently, each in its **own git worktree**; validate + merge at a barrier (agent discretion), bounded retry (N=3), two-level state, then a post-ship `/mverify` sweep. |
+| `mfix` | **yes** | "fix the drift", "fix the mverify findings", "reconcile code and spec", "close the conformance report", etc. | Consume a `mverify` conformance report and resolve it. Per finding, decides **which artefact is authoritative** — spec-describes-intent + code-drifted → fix the code; code-is-deliberate + spec-over-promised → fix the spec; contract-does-not-exist-yet → defer to `mspec`. Fixes the root cause, not the symptom, inside the finding's fence. Writes a change file, keeps the repo's gates green, then re-runs `/mverify` to confirm closure. |
+| `mexecute` | **yes** | "execute the plan", "run the plan", "ship it", etc. | **The feature-writing skill** — the only one that turns a plan into new code (`mfix` also writes, but only remediation inside a conformance finding's fence). Ships a plan as a **dynamic Workflow**: each wave's stories run concurrently, each in its **own git worktree**; validate + merge at a barrier (agent discretion), bounded retry (N=3), two-level state, then a post-ship `/mverify` sweep. |
 | `mquick` | via `mexecute` | "just build it", "spec and ship this", "one-shot this", "mquick", etc. | Autonomous orchestrator: **one** clarification gate (Phase A, reusing `mspec`'s diagnostic stage + risk scan), then `mspec → mplan → mexecute` to shipped, conformed code with no further gates. A thin sequence over the real skills — not a workflow of its own. |
 
 `mspec` reads the standards from the plugin at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and (for UPDATE mode) `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` — resolved at runtime to the marketplace cache, never copied into your project. It loads them **lazily** — only when it reaches the writing phase (STANDARD-SPEC at the spec-write step, STANDARD-CHANGE at the change-doc step), not during the brainstorm/diagnosis phase — to keep the standards out of context while they aren't needed. `mreverse` likewise loads `STANDARD-SPEC.md` lazily, only at its Phase 3 write step, and never touches `STANDARD-CHANGE.md` since it produces no change documents. `mplan` does not read the standards directly; it works from the already-standard-compliant `CATALOG.yaml` and change documents that `mspec` produced, and reads its story template from `${CLAUDE_SKILL_DIR}/PLAN-STORY-TEMPLATE.md`.
@@ -124,13 +127,13 @@ questioning, not just `mspec`. Leave the import out to keep the convention off.
 
 (To iterate on the plugin from a local checkout instead, `/plugin marketplace add .` from the repo root also works and picks up uncommitted local edits.)
 
-That registers all seven skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mexecute`, `mquick`, `mreq`) and makes them invokable. The skills read their standards, template, and schemas straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
+That registers all eight skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mfix`, `mexecute`, `mquick`, `mreq`) and makes them invokable. The skills read their standards, template, and schemas straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
 
 Neither manifest declares a runtime dependency, and none is needed: `schemas/validate.py` runs on a stock Python 3, using `PyYAML`/`ruamel.yaml` and `jsonschema` only when already importable and falling back to bundled code otherwise. The plugin ships **no hooks** — nothing it installs runs automatically at session start, and installing it never installs packages into your environment.
 
 ## Workflow
 
-Seven skills close the coherence loop **ship → validate → conform → record**. The core path is the top row; `mreverse` (reconcile from code) and `mverify` (conformance) hang off it as read-only detectors.
+Eight skills close the coherence loop **ship → validate → conform → record**. The core path is the top row; `mreverse` (reconcile from code) and `mverify` (conformance) hang off it as read-only detectors, and `mfix` closes the loop `mverify` opens.
 
 `mreq` sits beneath `mspec` in the diagram below: `mspec` reads `mreq`'s output (`REQUIREMENTS.md`) read-only at its own Phase 1 and never invokes `mreq` directly, and `mquick` conditionally invokes `mreq`'s BRAINSTORM Phase 1 ahead of `mspec` — folded into its single Phase A gate — only when a CREATE target's own requirements tier is still empty.
 
@@ -144,9 +147,15 @@ Seven skills close the coherence loop **ship → validate → conform → record
         │            state.yaml)      retry 3, state)            │                                       │
         │                                                        │ drift → change-shaped report          │
         │                                                        ▼                                       │
-        └──────────────  mspec / mreverse follow-up  ◄───────────┘                                       │
+        └──────────────  mfix (code-vs-spec) / mspec / mreverse  ◄─┘                                     │
                                                                                                          │
    mreverse  ─────►  reconciles spec from code + reports intra-/inter-repo inconsistencies  ─────────────┘
+```
+
+`mfix` is the default path for closing a `mverify` finding — it decides per finding whether the
+code or the spec is authoritative and fixes the one that's wrong. `mspec`/`mreverse` still own the
+cases `mfix` explicitly defers: missing architecture (no contract exists yet) and a repo with no
+spec tree at all, respectively.
 ```
 
 **Gatekept** — invoke `mspec → mplan → mexecute` (→ `mverify`) yourself and review at each hand-off. `mexecute` still runs every wave through internally (no between-wave gate); it halts only on a genuine blocking condition.
