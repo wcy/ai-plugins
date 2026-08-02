@@ -304,7 +304,7 @@ Breaking Changes: {yes/no — list if yes}
 New Modules: {list or "none"}
 Cascade: {for shared target — list of consuming repos whose spec updates this one change doc will record; otherwise "n/a"}
 Decisions Made: {list of key choices}
-Risks resolved: {the risk-scan items — breaking/migration/security/ambiguity/dependency — and how each was decided}
+Risks resolved: {the risk-scan items — breaking/migration/security/ambiguity/dependency/requirements-drift — and how each was decided}
 ```
 
 **Get explicit user approval before moving to Phase 2.** This is the Stage 1 → Stage 2 boundary — do not write any file before approval.
