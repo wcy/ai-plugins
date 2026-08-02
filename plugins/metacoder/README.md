@@ -52,6 +52,7 @@ plugins/metacoder/
 ├── .claude-plugin/plugin.json   # plugin manifest
 ├── README.md                    # this file
 ├── skills/
+│   ├── mreq/SKILL.md            # skills/mreq/SKILL.md — requirements-authoring skill
 │   ├── mspec/SKILL.md
 │   ├── mreverse/SKILL.md
 │   ├── mplan/
@@ -63,6 +64,7 @@ plugins/metacoder/
 ├── shared/
 │   ├── STANDARD-SPEC.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…
 │   ├── STANDARD-CHANGE.md
+│   ├── STANDARD-REQ.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…, mreq only
 │   └── CHATFORM.md              # optional, opt-in interaction convention
 └── schemas/                      # JSON Schemas for CATALOG/plan-graph/state/reports
 ```
@@ -78,6 +80,7 @@ These are Claude Code skills — Claude invokes them either automatically when y
 
 | Skill | Writes code? | Trigger | Purpose |
 |-------|:---:|---------|---------|
+| `mreq` | no | "flesh out requirements", "write requirements", "what are we building this for", "derive requirements from the spec", "update requirements from the spec", etc. | Author or derive the requirements layer — user needs and business goals, the *what*, as distinct from the spec's *how* — at one of three tiers (`context/<repo>/requirements/`, `context/shared/requirements/`, `context/project/requirements/`). **BRAINSTORM** mode holds a product/business-altitude conversation; **DERIVE** mode reads an existing spec and drafts one candidate requirement per capability. Writes only `REQUIREMENTS.md`; never touches `context/<target>/spec/`. |
 | `mspec` | no | "spec out", "write a spec", "update the spec", "change the shared interface", etc. | Resolve the target (a repo or `shared`), then create a new specification in `context/<target>/spec/` (CREATE) or update one (UPDATE). Runs in two separable stages — **diagnostic/clarify** (with an up-front risk & ambiguity scan) then **write** — so `/mquick` can reuse each. Writes a repo-level change file and a project-level index; a `shared` update **cascades** as an agent team (lead + one teammate per consuming repo). |
 | `mreverse` | no | "reverse the spec", "regenerate the spec from code", "the spec is stale", "find inconsistencies between repos", etc. | Take code as ground truth and reconcile the spec in `context/<repo>/spec/` (per-repo), using a team of readers. **Documents inconsistencies within a repo** and, across **two or more** repos, runs a **cross-repo inconsistency pass** recorded at workspace level. Writes **no** change files and **no** plans; never invokes `mplan`; never authors `context/shared/spec/`. |
 | `mplan` | no | "create plan", "generate plan", "break into stories", etc. | Turn the latest `PROJECT-CHANGE-<NNN>-*.md` (or full specs for greenfield) into story files **plus** a machine-readable plan graph (`plan.yaml`), initial plan state (`state.yaml`), and a project-ledger entry, under `context/project/plans/<NNN>-<slug>/`. Fans out subagents to validate the generated stories. A plan may span repos; each story targets exactly one. |
@@ -121,13 +124,15 @@ questioning, not just `mspec`. Leave the import out to keep the convention off.
 
 (To iterate on the plugin from a local checkout instead, `/plugin marketplace add .` from the repo root also works and picks up uncommitted local edits.)
 
-That registers all six skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mexecute`, `mquick`) and makes them invokable. The skills read their standards, template, and schemas straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
+That registers all seven skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mexecute`, `mquick`, `mreq`) and makes them invokable. The skills read their standards, template, and schemas straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
 
 Neither manifest declares a runtime dependency, and none is needed: `schemas/validate.py` runs on a stock Python 3, using `PyYAML`/`ruamel.yaml` and `jsonschema` only when already importable and falling back to bundled code otherwise. The plugin ships **no hooks** — nothing it installs runs automatically at session start, and installing it never installs packages into your environment.
 
 ## Workflow
 
-Six skills close the coherence loop **ship → validate → conform → record**. The core path is the top row; `mreverse` (reconcile from code) and `mverify` (conformance) hang off it as read-only detectors.
+Seven skills close the coherence loop **ship → validate → conform → record**. The core path is the top row; `mreverse` (reconcile from code) and `mverify` (conformance) hang off it as read-only detectors.
+
+`mreq` sits beneath `mspec` in the diagram below: `mspec` reads `mreq`'s output (`REQUIREMENTS.md`) read-only at its own Phase 1 and never invokes `mreq` directly, and `mquick` conditionally invokes `mreq`'s BRAINSTORM Phase 1 ahead of `mspec` — folded into its single Phase A gate — only when a CREATE target's own requirements tier is still empty.
 
 ```
                           ┌──────────────────────────── mquick (autonomous) ───────────────────────────┐
