@@ -33,7 +33,7 @@ Summarize the whole run: **specced → planned → shipped → validated → con
 
 Handle the mid-run breaks per `mexecute`'s halt conditions:
 
-- **Significant breaking contract change** (a shared-interface break that cascades beyond the affected story) — `mexecute` **escalates to the user for review mid-run**; relay it, get the decision, and resume.
+- **Significant breaking contract change** (a shared-interface break that cascades beyond the affected story) — `mexecute` **halts and reports**; `mquick` relays the break, its blast radius, and the options, and **stops** — the user acts on it and re-invokes.
 - **Contained breaking change** (would only break code in the affected story) — **does not** halt; it's deferred here to the report.
 - **Retry exhausted** or **unmergeable wave** — `mexecute` halts and reports; surface which story/wave and what's needed.
 - **Conformance drift** found by the post-ship sweep — does **not** halt the run; `mquick` **folds it into this report** as an escalation (a gatekept manual workflow would instead leave such drift for the human to act on next via `mspec`/`mreverse`).
