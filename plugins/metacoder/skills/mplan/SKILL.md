@@ -7,7 +7,7 @@ description: Use when you need to generate modular implementation plans from com
 
 Take completed specifications and produce a set of modular, context-efficient implementation plan files that can be executed by a team of Claude Code agents.
 
-**This is a documentation project. Do not write application code. The deliverables are plan files under `context/project/plans/`.**
+**This is a documentation project. Do not write application code. The deliverables are plan files under `context/project/plans/` and the project ledger `context/project/state.yaml`.**
 
 ## Step 0: Understand the Layout & Scope
 
@@ -162,16 +162,99 @@ After all story files are written, emit the machine-readable artifacts that make
 
 ### 1. `plan.yaml` (the plan graph)
 
-Write `context/project/plans/<plan-id>/plan.yaml` per `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json`:
+Write `context/project/plans/<plan-id>/plan.yaml` per `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json` — that schema is the authority for this field set; the skeleton below must match it exactly (it is `additionalProperties: false` at every level). Emit a fresh graph at version `2` (see the skeleton's `version` field). Fill in the concrete values for your plan; `target_paths` and `validation.post_story` are **mandatory** on every story, and `validation.final` appears only on last-wave stories:
 
+```yaml
+version: 2
+plan_id: 003-adapter-retry-logic   # <NNN>-<slug>, or 000-initial for a full plan
+type: incremental                  # full | incremental
+project_change: "003"              # quoted — see note below; null for a full/greenfield plan
+repos:
+  - repo-a
+waves:
+  - wave: 1
+    stories:
+      - 01-01-repo-a-AUTH
+  - wave: 2
+    stories:
+      - 02-01-repo-a-USERS
+stories:
+  01-01-repo-a-AUTH:
+    file: PLAN-01-01-repo-a-AUTH.md
+    repo: repo-a
+    module: AUTH
+    wave: 1
+    prerequisites: []
+    parallel_group: []
+    change_file: context/repo-a/changes/CHANGE-003-retry-logic.md   # null for full/greenfield
+    target_paths:
+      - src/auth/retry.ts
+    validation:
+      post_story:
+        - kind: exit-code
+          command: npm test -- auth
+          description: Unit tests for the AUTH module pass.
+  02-01-repo-a-USERS:
+    file: PLAN-02-01-repo-a-USERS.md
+    repo: repo-a
+    module: USERS
+    wave: 2
+    prerequisites:
+      - 01-01-repo-a-AUTH
+    parallel_group: []
+    change_file: context/repo-a/changes/CHANGE-003-retry-logic.md
+    target_paths:
+      - src/users/service.ts
+    validation:
+      post_story:
+        - kind: exit-code
+          command: npm test -- users
+          description: Unit tests for the USERS module pass.
+      # validation.final appears only on last-wave stories (this story is in wave 2, the last wave):
+      final:
+        - kind: prose
+          description: All acceptance criteria in every story file are checked off.
+```
+
+**Field notes:**
 - `plan_id` = the plan directory name (`<NNN>-<slug>` or `000-initial`); `type` = `full` or `incremental`; `project_change` = the PROJECT-CHANGE `<NNN>` for incremental plans, else `null`; `repos` = every repo any story targets.
+- `project_change` is written **quoted** (`"003"`), never bare — an unquoted digit run resolves as a number under YAML 1.1's octal branch (`010` becomes the integer `8`), which fails the schema's `type: string` / `^[0-9]{3,4}$` pattern.
 - One `waves[]` entry per wave, listing its story ids in order.
 - One `stories{}` entry per story, carrying `file`, `repo`, `module`, `wave`, `prerequisites` (story ids from earlier waves), `parallel_group` (same-wave siblings), `change_file` (incremental only, else `null`), `target_paths` (the source paths this story writes — used later to confirm module-disjointness), and `validation`.
-- **Lift validation into the graph.** Translate each story's Post-Story / Final Validation into `validation.post_story[]` / `validation.final[]` steps. Prefer **`kind: exit-code`** with a runnable `command` (build/type-check/test) so `mexecute` can gate mechanically; use `kind: prose` only where a step is genuinely agent-interpreted. `validation.final` appears only on last-wave stories.
+- **Lift validation into the graph.** Translate each story's Post-Story / Final Validation into `validation.post_story[]` / `validation.final[]` steps. Prefer **`kind: exit-code`** with a runnable `command` (build/type-check/test) so `mexecute` can gate mechanically; use `kind: prose` only where a step is genuinely agent-interpreted. `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
 
 ### 2. `state.yaml` (initial plan-level state)
 
-Write `context/project/plans/<plan-id>/state.yaml` per `${CLAUDE_PLUGIN_ROOT}/schemas/plan-state.schema.json`: `status: pending`, one `waves[]` entry per wave (`status: pending`), and one `stories{}` entry per story with `repo`, `wave`, `status: pending`, `retries: 0`. Leave `attempts`, `integration_branches`, `conformance`, and `telemetry` for `mexecute` to fill.
+Write `context/project/plans/<plan-id>/state.yaml` per `${CLAUDE_PLUGIN_ROOT}/schemas/plan-state.schema.json` — that schema is the authority for this field set; the skeleton below must match it exactly. Emit a fresh state file at version `2` (see the skeleton's `version` field), and seed the top-level run counter to `0` — "never executed" (see the skeleton's `run` field):
+
+```yaml
+version: 2
+plan_id: 003-adapter-retry-logic
+run: 0            # 0 means "never executed"; mexecute increments this to 1 on the plan's first invocation
+status: pending
+waves:
+  - wave: 1
+    status: pending
+    stories:
+      - 01-01-repo-a-AUTH
+  - wave: 2
+    status: pending
+    stories:
+      - 02-01-repo-a-USERS
+stories:
+  01-01-repo-a-AUTH:
+    repo: repo-a
+    wave: 1
+    status: pending
+    retries: 0
+  02-01-repo-a-USERS:
+    repo: repo-a
+    wave: 2
+    status: pending
+    retries: 0
+```
+
+**Field notes:** `status: pending` at the top level and on every wave; one `stories{}` entry per story with `repo`, `wave`, `status: pending`, `retries: 0`. Leave `attempts`, `integration_branches`, `conformance`, and `telemetry` for `mexecute` to fill.
 
 ### 3. Project ledger entry
 
@@ -220,5 +303,5 @@ Before finalizing the plan, verify:
 7. **Files are self-contained** — An agent can implement a story by loading only the listed context files
 8. **Final Validation section present** — Exactly one wave's stories contain the Final Validation section (the last wave)
 9. **Graph agrees with the story files** — every `PLAN-*.md` has exactly one `plan.yaml` story entry and vice versa; each story's `wave`/`prerequisites`/`parallel_group` in `plan.yaml` matches its story-file header; every id in `waves[]`, `prerequisites`, and `parallel_group` resolves to a real story; no prerequisite points to a later wave
-10. **Single-repo stories** — every `plan.yaml` story names exactly one `repo`; same-wave siblings' `target_paths` are disjoint (module-disjoint by construction)
+10. **Single-repo stories** — every `plan.yaml` story names exactly one `repo`; same-wave siblings' `target_paths` are disjoint (module-disjoint by construction), tested pairwise on non-empty lists. A story with `target_paths: []` — a Verify story that writes no source files — is an explicit **Verify-story exemption** from this disjointness test, not a trivial pass via an empty intersection.
 11. **Schemas pass** — `plan.yaml`, `state.yaml`, and the `context/project/state.yaml` ledger entry all validate (the three `validate.py` commands above exit 0); `state.yaml` has one story entry per `plan.yaml` story, all `pending`
