@@ -5,7 +5,7 @@ description: Use when you need to confirm that shipped code actually conforms to
 
 # Verify: Conformance From Change + Plan + Spec
 
-`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (the change docs, the plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only** — it produces a change-shaped conformance report and records results in state; it **never** rewrites code or spec (gaps feed a follow-up `mspec`/`mreverse` run).
+`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (the change docs, the plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only** — it produces a change-shaped conformance report and records results in state; it **never** rewrites code or spec (findings feed a follow-up `/mfix` run, or `mspec`/`mreverse` when the gap is a missing contract or a missing spec tree).
 
 This is `mexecute`'s **post-ship sweep** (its Step 3), and it can be re-run standalone against any prior change/plan.
 

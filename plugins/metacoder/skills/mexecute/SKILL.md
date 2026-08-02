@@ -1,11 +1,11 @@
 ---
 name: mexecute
-description: Use when you need to actually ship a plan — turn its stories into working, validated code — triggers on phrases like "execute the plan", "run the plan", "implement the plan", "ship it", "build the stories", "run mexecute", or after mplan has produced a plan under context/project/plans/. This is the ONE code-writing skill — it runs the plan as worktree-isolated waves, validates and merges at each barrier, retries failures, and finishes with a conformance sweep.
+description: Use when you need to actually ship a plan — turn its stories into working, validated code — triggers on phrases like "execute the plan", "run the plan", "implement the plan", "ship it", "build the stories", "run mexecute", or after mplan has produced a plan under context/project/plans/. This is the ONE skill that writes feature code (mfix writes remediation only) — it runs the plan as worktree-isolated waves, validates and merges at each barrier, retries failures, and finishes with a conformance sweep.
 ---
 
 # Execute: Ship a Plan as Worktree-Isolated Waves
 
-`mexecute` is the **only** skill in this workflow that writes application code. It takes a finished plan (from `mplan`) and ships it: each wave's stories run **concurrently, each in its own git worktree**, are validated and merged at a barrier, failures are retried, and the run ends with a post-ship `/mverify` conformance sweep. It is realized as a **dynamic Workflow** (the `Workflow` tool) so the parallelism, barrier, retry, and merge are deterministic control flow — not model-improvised.
+`mexecute` is the **only** skill in this workflow that writes application code. (`mfix` also edits code, but strictly as remediation bounded by a conformance finding — it never adds features.) It takes a finished plan (from `mplan`) and ships it: each wave's stories run **concurrently, each in its own git worktree**, are validated and merged at a barrier, failures are retried, and the run ends with a post-ship `/mverify` conformance sweep. It is realized as a **dynamic Workflow** (the `Workflow` tool) so the parallelism, barrier, retry, and merge are deterministic control flow — not model-improvised.
 
 **Invariants it never breaks:** doc-only skills vs. this one code-writer · **one story → one repo → one worktree** · greens merge into a per-repo integration branch, never the live working branch · state is the source of truth for resume/retry (not prose).
 
