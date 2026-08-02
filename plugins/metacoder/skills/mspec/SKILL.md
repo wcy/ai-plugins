@@ -27,8 +27,9 @@ As part of the diagnostic — after you've synthesized what's changing but **bef
 - **Security** — auth, secrets, input-validation, or exposure implications.
 - **Ambiguous requirements** — places the description underspecifies behavior.
 - **Dependency choices** — new libraries/services where a preferred option should be picked.
+- **Requirements drift** — evaluated only when a requirements tier exists for the target: a `REQ-<NNN>` with no corresponding spec coverage, spec content with no traceable requirement, or a `CATALOG.yaml` `requirements:` reference to a `REQ-<NNN>` no longer present in the requirements file.
 
-Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. In a gatekept `/mspec` run you present these and iterate as normal; `/mquick` surfaces the exact same list at its Phase A gate.
+Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. In a gatekept `/mspec` run you present these and iterate as normal; `/mquick` surfaces the exact same list at its Phase A gate. When a **Requirements drift** item surfaces, the Phase 1e "Confirm Before Writing" summary must present the user a per-item choice — widen this change's scope to cover the drifted requirement, or leave it flagged for a later `/mreq` pass to reconcile — since `mspec` never writes to `requirements/` itself.
 
 ## Step 0: Determine the Target
 
@@ -70,6 +71,8 @@ Take a requirements description or product idea and produce a complete, implemen
 ### Prerequisites
 
 Phase 1 is pure conversation — it writes no files, so do **not** load the standards yet. Defer loading `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` until Phase 2 (Write Spec), where the output must conform to it. This keeps the standard out of context during the (often lengthy) brainstorm.
+
+**Requirements Gate.** Before Phase 1a, check `context/<repo>/requirements/REQUIREMENTS.md` (or `context/shared/requirements/REQUIREMENTS.md` for the `shared` target) for at least one valid `REQ-<NNN>` entry — file existence alone does not satisfy this; the file must contain a real entry. If the check fails, halt here — do not proceed to Phase 1a — and tell the user to trigger `/mreq <target>` manually first; `mspec` never calls `/mreq` on its own. If the check passes, also read `context/project/requirements/REQUIREMENTS.md`, if present, as supplementary cross-cutting context, then proceed to Phase 1.
 
 ### Phase 1: Brainstorm
 
@@ -158,7 +161,7 @@ Risks resolved: {the risk-scan items and how each was decided}
 Write in the order STANDARD-SPEC.md §"Process & Ordering Rules" mandates (shared interfaces → COMMON → modules by layer L1→L5 → each module by facet order → `CATALOG.yaml` last), using its §"Module File Structure" for per-facet content. mspec-specific notes:
 
 - **COMMON files** map Phase 1 outputs to disk: `COMMON-OVERVIEW.md` (the 200-500 line narrative), `COMMON-STACK.md` (stack decisions), and `COMMON-DECISIONS.md` (every Phase 1 decision with rationale), plus any others the project needs. Keep each under ~150 lines.
-- **`CATALOG.yaml`:** for a repo target, populate `repo:` and `shared_interfaces:`; for the `shared` target, use the shared catalog schema (`scope: shared`, `interfaces:`).
+- **`CATALOG.yaml`:** for a repo target, populate `repo:` and `shared_interfaces:`; for the `shared` target, use the shared catalog schema (`scope: shared`, `interfaces:`). Also populate each touched module's optional `requirements:` list from the Phase 1e-resolved traceability (which `REQ-<NNN>` entries it satisfies), the same way you populate `shared_interfaces`.
 
 Coupling, `depends-on` front-matter, and the INTERFACE-only cross-module/cross-repo rules are all defined in STANDARD-SPEC.md §"Dependency Rules" — obey them rather than re-deriving them. Keep OVERVIEW/COMMON files concise (they are context-injected) and describe logic language-agnostically. All paths in `depends-on` front-matter are workspace-relative (e.g. `context/<repo>/spec/<TAG>/<TAG>-INTERFACE.md`).
 
@@ -229,6 +232,8 @@ To understand current state in Phase 1, read only what you need:
 - `context/<repo>/spec/CATALOG.yaml` — understand current modules and their layers
 
 **If the target is `shared`:** this change will cascade. Before editing, also read every repo catalog `context/*/spec/CATALOG.yaml` and record which repos list the interface(s) you are about to change under `shared_interfaces` — these are the consumers you must cascade into (Phase 5).
+
+**Requirements read (advisory).** Also read `context/<repo>/requirements/REQUIREMENTS.md` (or `context/shared/requirements/REQUIREMENTS.md` for the `shared` target) and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context. This is advisory only — UPDATE mode never halts on this check, and proceeds with whatever exists (including none, for a spec that predates this feature).
 
 ### Phase 1: Understand the Change
 
