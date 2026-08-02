@@ -187,8 +187,8 @@ repo**, so they are recorded at the **workspace level**.
    each consumer's read/deserialize path) plus the shared contract in `context/shared/spec/<IFACE>/`
    if it exists. It reports where the code disagrees:
    - **type-mismatch** — the same field typed/shaped differently on each side.
-   - **emitted-but-unread** / read-but-unemitted — a producer field no consumer reads, or a consumer
-     expecting a field no producer sends.
+   - **emitted-but-unread** — a producer field no consumer reads.
+   - **read-but-unemitted** — a consumer expecting a field no producer sends.
    - **version-skew** — the two sides coded against different versions of the contract.
    - **signature-mismatch** — an RPC/endpoint/event whose shape differs across the boundary.
    Each returns the `inconsistency-report.schema.json` shape (`scope.kind: cross-repo`, naming the
