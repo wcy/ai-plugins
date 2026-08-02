@@ -87,7 +87,12 @@
             "required": ["layer", "files"],
             "properties": {
               "layer": { "$ref": "#/$defs/layerName" },
-              "files": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/file" } }
+              "files": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/file" } },
+              "requirements": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^(project:)?REQ-[0-9]{3}$" },
+                "description": "REQ-<NNN> entries (same-tier) or project:REQ-<NNN> (cross-cutting project-tier reference) this module satisfies."
+              }
             }
           }
         }

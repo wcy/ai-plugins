@@ -3,8 +3,8 @@
 Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts. They are the
 source of truth for the *shape* of every automated file, complementing the prose standards in
 `../shared/` (which remain the source of truth for *content and conventions*). Skills reference
-them at `${CLAUDE_PLUGIN_ROOT}/schemas/…` and validate on write (mspec, mplan, mverify, mreverse)
-and on read (mexecute, mverify).
+them at `${CLAUDE_PLUGIN_ROOT}/schemas/…` and validate on write (mspec, mplan, mverify, mreverse,
+mreq) and on read (mexecute, mverify, mspec).
 
 | Schema | Validates | Written by | Read by |
 |--------|-----------|------------|---------|
@@ -16,6 +16,7 @@ and on read (mexecute, mverify).
 | `conformance-report.schema.json` | each shard's returned JSON, persisted as `context/project/out/<plan-id>/shards/<shard-id>.json`, and the aggregate `context/project/out/<plan-id>/mverify-report.json` | mverify subagents (shards return JSON and write nothing) | mverify, mexecute |
 | `story-report.schema.json` | a `/mexecute` wave agent's return | mexecute subagents | mexecute |
 | `inconsistency-report.schema.json` | a `/mreverse` reader's return + the aggregate | mreverse subagents | mreverse |
+| `requirements-frontmatter.schema.json` | `context/<repo\|shared\|project>/requirements/REQUIREMENTS.md` front-matter | mreq | mspec (read-only) |
 
 ## Two levels of state
 
