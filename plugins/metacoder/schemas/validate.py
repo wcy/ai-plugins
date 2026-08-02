@@ -56,6 +56,8 @@ ALIASES = {
     "story": "story-report",
     "inconsistency-report": "inconsistency-report",
     "inconsistency": "inconsistency-report",
+    "requirements-frontmatter": "requirements-frontmatter",
+    "requirements": "requirements-frontmatter",
 }
 
 
