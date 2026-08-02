@@ -1,7 +1,7 @@
 {
   "name": "metacoder",
-  "version": "0.4.0",
-  "description": "Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), execute plans as worktree-isolated waves (mexecute), and run the whole loop autonomously (mquick)",
+  "version": "0.6.0",
+  "description": "Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), execute plans as worktree-isolated waves (mexecute), run the whole loop autonomously (mquick), and author or derive the requirements layer (mreq) that specs build from",
   "author": {
     "name": "William Yap"
   }

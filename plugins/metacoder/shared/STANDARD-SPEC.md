@@ -311,6 +311,13 @@ Applies to all E2E tests (module-level and project-level):
 - **Must fail** if any required dependency or module is missing/unavailable.
 - **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
 
+**Delivery.** This section owns the four rules above. A story agent's loaded context is only its
+own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file — so the rules
+are **delivered** to an executing story agent by **verbatim copy** into `MPLAN`'s
+`PLAN-STORY-TEMPLATE.md`, appearing in both **Post-Story Validation** and **Final Validation**
+(gated on an E2E module existing in the catalog). Every such copy must reproduce this section's
+four bullets verbatim.
+
 ---
 
 ## Process & Ordering Rules

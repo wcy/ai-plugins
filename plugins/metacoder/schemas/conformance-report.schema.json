@@ -19,15 +19,23 @@
         "change_ref": { "type": "string", "description": "The change/plan/spec unit this shard was checked against." }
       }
     },
+    "shard": {
+      "enum": ["change-conformance", "cross-repo", "coupling"],
+      "description": "Names which sweep produced the report — the kind axis (scope.kind is the granularity axis). cross-repo occurs on both axes with different meanings: as scope.kind it means the report covers a boundary rather than one repo; as shard it names the sweep that compares producers against consumers. Required unless scope.kind is aggregate."
+    },
     "findings": {
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
     },
     "clean": {
       "type": "boolean",
-      "description": "true iff findings is empty for this scope."
+      "description": "true iff findings is empty for this scope; on the aggregate it means no shard reported a finding."
     }
   },
+  "if": {
+    "properties": { "scope": { "properties": { "kind": { "enum": ["module", "repo", "cross-repo"] } } } }
+  },
+  "then": { "required": ["shard"] },
   "$defs": {
     "finding": {
       "type": "object",
