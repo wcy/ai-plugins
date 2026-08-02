@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["version", "plan_id", "type", "repos", "waves", "stories"],
   "properties": {
-    "version": { "const": 1 },
+    "version": { "enum": [1, 2] },
     "plan_id": {
       "type": "string",
       "pattern": "^[0-9]{3}-[a-z0-9-]+$",
@@ -18,7 +18,7 @@
     "project_change": {
       "type": ["string", "null"],
       "pattern": "^[0-9]{3,4}$",
-      "description": "The PROJECT-CHANGE <NNN> this plan implements; null for a full/greenfield plan."
+      "description": "The PROJECT-CHANGE <NNN> this plan implements; null for a full/greenfield plan. Quote the value in YAML — an unquoted digit run resolves as a number (e.g. 010 becomes the integer 8 under YAML 1.1's octal branch), which fails the string type."
     },
     "repos": {
       "type": "array",
@@ -77,7 +77,7 @@
     "story": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["file", "repo", "module", "wave", "prerequisites"],
+      "required": ["file", "repo", "module", "wave", "prerequisites", "target_paths", "validation"],
       "properties": {
         "file": { "type": "string", "pattern": "^PLAN-.+\\.md$" },
         "repo": { "type": "string", "minLength": 1 },
@@ -105,8 +105,13 @@
         "validation": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["post_story"],
           "properties": {
-            "post_story": { "type": "array", "items": { "$ref": "#/$defs/validationStep" } },
+            "post_story": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/validationStep" }
+            },
             "final": {
               "type": "array",
               "items": { "$ref": "#/$defs/validationStep" },

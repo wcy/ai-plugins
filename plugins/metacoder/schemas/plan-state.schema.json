@@ -5,10 +5,15 @@
   "description": "Mutable execution state for one plan: per-wave and per-story status, retry counts, worktree refs (per story and per retry attempt), validation + conformance results, and rough telemetry. mexecute reads/writes this to drive resume, retry, and progress. Distinct from the immutable plan.yaml graph.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "plan_id", "status", "stories"],
+  "required": ["version", "plan_id", "run", "status", "stories"],
   "properties": {
-    "version": { "const": 1 },
+    "version": { "enum": [1, 2] },
     "plan_id": { "type": "string", "pattern": "^[0-9]{3}-[a-z0-9-]+$" },
+    "run": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The run counter for this plan. 0 means never executed and is the value mplan seeds into a fresh state file. mexecute increments it once per invocation, over the whole plan, so the first invocation runs as 1. The increment is unconditional — identical on a fresh plan and on a resume."
+    },
     "updated": { "type": "string" },
     "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
     "integration_branches": {
@@ -37,7 +42,7 @@
     "conformance": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Result of the post-ship /mverify sweep (step 6).",
+      "description": "Result of the Step 3 /mverify sweep. Written by mexecute's barrier from the sweep's returned result during a plan run; written by mverify itself only on a standalone run.",
       "properties": {
         "status": { "enum": ["clean", "drift", "not-run"] },
         "report": { "type": ["string", "null"], "description": "Path to the mverify report under context/project/out/." },
@@ -63,11 +68,16 @@
     "attempt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["attempt", "branch", "result"],
+      "required": ["run", "attempt", "branch", "result"],
       "properties": {
+        "run": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The run this attempt belongs to. An attempt always belongs to a started run, so unlike the top-level counter it is never 0."
+        },
         "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
         "worktree": { "type": ["string", "null"], "description": "Worktree path; null once removed after a green merge." },
-        "branch": { "type": "string", "minLength": 1, "description": "e.g. mexec/<plan-id>/<story-id>/<attempt>" },
+        "branch": { "type": "string", "minLength": 1, "description": "e.g. mexec/<plan-id>/<story-id>/r<run>/<attempt>" },
         "result": { "enum": ["in-progress", "applied", "failed"] },
         "validation": { "enum": ["pass", "fail", "not-run"] },
         "worktree_removed": { "type": "boolean", "description": "true once a merged (green) worktree is cleaned up; failed/unmerged worktrees are kept." }
@@ -84,7 +94,6 @@
         "retries": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Attempts made so far (bounded auto-retry N=3)." },
         "attempts": { "type": "array", "items": { "$ref": "#/$defs/attempt" } },
         "merged_branch": { "type": ["string", "null"], "description": "The integration branch the green attempt merged into, or null." },
-        "last_run": { "type": "string" },
         "validation": {
           "type": "object",
           "additionalProperties": false,
