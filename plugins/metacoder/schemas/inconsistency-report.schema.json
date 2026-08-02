@@ -34,6 +34,7 @@
             "duplicated-divergent",
             "type-mismatch",
             "emitted-but-unread",
+            "read-but-unemitted",
             "version-skew",
             "signature-mismatch"
           ]
