@@ -126,6 +126,13 @@ Run before marking this story complete:
 - [ ] Unit tests pass for this module
 - [ ] Integration points with lower-layer modules work (not stubbed)
 - [ ] Full existing test suite passes with no regressions (update sub-mode only)
+- [ ] E2E scenarios for this module pass (if E2E module exists in catalog)
+
+<!-- Include the block below only when the checkbox immediately above applies (an E2E module exists in this repo's CATALOG.yaml). These four rules are owned by STANDARD-SPEC.md § "E2E Testing Hard Rules"; reproduced verbatim. -->
+- **No mocks, fakes, stubs, or test doubles.** E2E tests exercise real dependencies.
+- **No skips or conditional logic** that could produce false-positive passes.
+- **Must fail** if any required dependency or module is missing/unavailable.
+- **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
 
 <!-- Include the section below only in stories belonging to the final wave ({WW} = last wave). -->
 ## Final Validation (last wave only)
@@ -133,6 +140,13 @@ Run before marking this story complete:
 Run after all waves are complete:
 
 - [ ] E2E test scenarios pass (if E2E module exists in catalog)
+
+<!-- Include the block below only when the checkbox immediately above applies (an E2E module exists in this repo's CATALOG.yaml). These four rules are owned by STANDARD-SPEC.md § "E2E Testing Hard Rules"; reproduced verbatim. -->
+- **No mocks, fakes, stubs, or test doubles.** E2E tests exercise real dependencies.
+- **No skips or conditional logic** that could produce false-positive passes.
+- **Must fail** if any required dependency or module is missing/unavailable.
+- **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
+
 - [ ] No coupling violations across the entire codebase (including no cross-repo coupling outside `context/shared/spec/`)
 - [ ] All acceptance criteria in every story file are checked off
 - [ ] Every spec file in every in-scope repo's `CATALOG.yaml` is covered by exactly one story
