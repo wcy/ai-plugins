@@ -81,7 +81,7 @@ A repo couples to a shared interface only when both are true:
 1. The repo's `CATALOG.yaml` lists the interface TAG under `shared_interfaces`.
 2. A repo spec file names the shared `*-INTERFACE.md` in its `depends-on` front-matter.
 
-This declaration is what lets a shared-interface change find its consumers (scan every `context/*/spec/CATALOG.yaml` for the interface TAG) and write per-repo change files for each one, referenced by the project-level change document.
+This declaration is what lets a shared-interface change find its consumers — `mc.py spec consumers <IFACE>` returns them — and write per-repo change files for each one, referenced by the project-level change document.
 
 ---
 

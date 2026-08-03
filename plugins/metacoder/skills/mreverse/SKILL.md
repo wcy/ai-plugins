@@ -40,13 +40,13 @@ Candidate targets are the subdirectories of `repos/`. Resolve in order:
 3. If ambiguous, list every subdirectory of `repos/` and ask which one(s) to target. If the user
    says "everything" / "the whole workspace", the scope is **all** repos.
 
-**Multi-repo scope.** Spec reconciliation is per-repo, so run **Phases 1–4 once per in-scope repo**
+**Multi-repo scope.** Spec reconciliation is per-repo, so run **Phases 1–4b once per in-scope repo**
 (independently — each repo's spec is self-contained). When **two or more** repos are in scope, then
 run **Phase 5** once at the end: the cross-repo inconsistency pass over all of them. A single-repo
-run stops after Phase 4 (its intra-repo inconsistencies are recorded there).
+run stops after Phase 4b (its intra-repo inconsistencies are recorded there).
 
 **Path convention for the rest of this skill:** `context/spec/...` below is shorthand for
-`context/<repo>/spec/...` for the repo whose Phase 1–4 pass you are currently running.
+`context/<repo>/spec/...` for the repo whose Phase 1–4b pass you are currently running.
 
 ## Step 1: Detect the Mode
 
@@ -166,7 +166,9 @@ module (full facet set), placed in the write order by its layer.
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <repo>
 ```
 
-Every finding it reports is a defect to fix in the spec you just wrote, then re-run.
+Every `depends-on` and coupling finding is a defect to fix in the spec you just wrote, then re-run.
+The requirements and handoff findings are outside this checklist — report them to the user; their
+fix lies in artifacts mreverse does not write.
 
 **Then judge what no checker can**, against Phase 1 and Phase 2:
 
@@ -217,7 +219,7 @@ fix is a separate `mspec` → `mexecute` cycle.
 ## Phase 5: Cross-Repo Inconsistency Pass (two or more repos only)
 
 **Skip this phase for a single-repo run.** When two or more repos are in scope, after each repo's
-Phases 1–4 are complete, compare the repos' *actual code* across the boundaries they share. This is
+Phases 1–4b are complete, compare the repos' *actual code* across the boundaries they share. This is
 the pass that lifts mreverse's former single-repo limit — inter-repo findings belong to **no single
 repo**, so they are recorded at the **workspace level**.
 

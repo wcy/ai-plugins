@@ -42,7 +42,7 @@
     "conformance": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Result of the Step 3 /mverify sweep. Written by mexecute's barrier from the sweep's returned result during a plan run; written by mverify itself only on a standalone run.",
+      "description": "Result of the Step 3 /mverify sweep. Written by the mexecute session from the sweep's returned result once the Workflow returns (no barrier remains by then); written by mverify itself only on a standalone run.",
       "properties": {
         "status": { "enum": ["clean", "drift", "not-run"] },
         "report": { "type": ["string", "null"], "description": "Path to the mverify report under context/project/out/." },

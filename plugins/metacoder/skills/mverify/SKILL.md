@@ -62,7 +62,7 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 
 1. Read the plan graph `context/project/plans/<plan-id>/plan.yaml` — the set of stories, the repos touched, and each story's `module`/`repo`/`change_file`/`target_paths`.
 2. Read the driving change docs: the project-level index `context/project/changes/PROJECT-CHANGE-<NNN>-*.md` and each repo-level `CHANGE-<NNN>-*.md` it references. The **Affected Code Paths** and **Spec Files Modified** tables define exactly what to check.
-3. From the change docs, note whether `scope: shared` — if so, the `consumers:` list plus every repo whose `CATALOG.yaml` lists the changed interface TAG are the cross-repo conformance set.
+3. From the change docs, note whether `scope: shared` — if so, the cross-repo conformance set is the `consumers:` list plus the repos `mc.py spec consumers <IFACE>` returns. Do not re-derive that scan by hand.
 4. Build the **shard list**:
    - One **change-conformance shard** per `(repo, module)` the change/plan touched.
    - One **cross-repo shard** per changed shared interface, covering all its producer/consumer repos.
@@ -142,7 +142,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate conformance-report context/project/out/<plan-id>/mverify-report.json
    ```
 
-   The aggregate is a call site of its own, which is why this file invokes `mc.py validate` at **four** sites across **three** kinds, not three sites: `plan-graph` (Step 1), `conformance-report` twice (each shard file and this aggregate, Step 3), and `plan-state` (Step 4, standalone only).
+   The aggregate is a call site of its own: this file invokes `mc.py validate` for `plan-graph` (Step 1) and for `conformance-report` on both the shard files and this aggregate (Step 3). Step 4's plan-state write is validated inside `mc.py state conformance`, so no `validate plan-state` call appears here.
 
 ## Step 4: Record + Report
 

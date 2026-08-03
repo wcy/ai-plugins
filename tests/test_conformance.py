@@ -37,12 +37,14 @@ import json
 import os
 import re
 import sys
+import argparse
+import re
 from pathlib import Path
 
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT, REPO_ROOT
-from tools import core, plan
+from tools import core, mc, plan
 
 TESTS_DIR = Path(__file__).resolve().parent
 TOOLS_DIR = PLUGIN_ROOT / "tools"
@@ -798,3 +800,60 @@ def test_no_fixture_file_is_committed_under_the_plugin_tree():
     assert strays == []
     assert PLUGIN_ROOT not in TESTS_DIR.parents
     assert TESTS_DIR.parent == REPO_ROOT
+
+
+_GLOBAL_OPTS_WITH_VALUE = ("--workspace", "--now")
+_GLOBAL_FLAGS = ("--json",)
+
+
+def _registered_verbs():
+    """The real ``(group, verb)`` registry, read out of each group's own ``register``."""
+    registry = {}
+    for name in mc.GROUPS:
+        parser = argparse.ArgumentParser(prog="mc.py")
+        subparsers = parser.add_subparsers(dest="group")
+        mc.load_group(name).register(subparsers)
+        verbs = set()
+        for action in subparsers.choices[name]._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                verbs |= set(action.choices)
+        registry[name] = verbs
+    return registry
+
+
+def _invocations(text):
+    """Every ``mc.py <group> [<verb>]`` an authored document spells out."""
+    for match in re.finditer(r"mc\.py((?:[ \t]+[^\s`\n]+)+)", text):
+        tokens = match.group(1).split()
+        if tokens and tokens[0].startswith("#"):
+            continue  # a directory map annotating the file, not an invocation
+        index = 0
+        while index < len(tokens):
+            if tokens[index] in _GLOBAL_OPTS_WITH_VALUE:
+                index += 2
+            elif tokens[index] in _GLOBAL_FLAGS:
+                index += 1
+            else:
+                break
+        if index >= len(tokens):
+            continue
+        group = tokens[index]
+        verb = tokens[index + 1] if index + 1 < len(tokens) else None
+        yield group, verb
+
+
+def test_every_documented_invocation_names_a_registered_verb():
+    """A skill invoking a verb that does not exist fails at run time, not at review."""
+    registry = _registered_verbs()
+    unknown = []
+    for path in sorted(PLUGIN_ROOT.rglob("*.md")):
+        for group, verb in _invocations(path.read_text(encoding="utf-8")):
+            if group.startswith(("<", "-")):
+                continue
+            where = "%s: mc.py %s %s" % (path.relative_to(REPO_ROOT), group, verb or "")
+            if group not in registry:
+                unknown.append(where)
+            elif registry[group] and verb and not verb.startswith(("<", "-")):
+                if verb not in registry[group]:
+                    unknown.append(where)
+    assert unknown == []
