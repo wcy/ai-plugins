@@ -20,6 +20,17 @@ compares the repos' *actual code* across shared boundaries and reports where the
 documents inconsistencies and reconciles each repo's spec; it does **not** auto-rewrite one repo's
 code to match another.
 
+## Mechanical Steps Are Invoked, Not Re-Derived
+
+Every mechanical step of this skill — CREATE/UPDATE detection, `CATALOG.yaml` emission, Phase 4's
+rule checks, and every schema validation — has exactly one implementation, in
+`${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Invoke it at the phase that needs it and use what it returns.
+A failed invocation is a **hard error**: report its diagnostics and stop that phase. There is no
+prose fallback anywhere in this skill, because a fallback is a second implementation of the step.
+
+What the tool does not decide stays here: the module decomposition, what each module *is*, what the
+Phase 2 readers report, and every inconsistency finding and its severity.
+
 ## Step 0: Determine the Target
 
 Candidate targets are the subdirectories of `repos/`. Resolve in order:
@@ -39,9 +50,19 @@ run stops after Phase 4 (its intra-repo inconsistencies are recorded there).
 
 ## Step 1: Detect the Mode
 
-**CREATE mode** — `context/<repo>/spec/` does not exist or is empty.
-**UPDATE mode** — a spec already exists. The job is to make it match the code as it exists today,
-not to interpret a described change.
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec mode <repo>
+```
+
+It returns **CREATE** or **UPDATE** for the target. Take that answer as given — the mode follows
+from the tree on disk, and this skill does not second-guess it.
+
+**UPDATE** means the job is to make the existing spec match the code as it exists today, not to
+interpret a described change.
+
+The judgment half of this step is still yours: whether the tree the tool found is the one the user
+means to reverse. A spec tree left behind by a repo that has since been split, renamed, or vendored
+elsewhere is a question to ask before Phase 1, not a mode to work around.
 
 ---
 
@@ -87,8 +108,8 @@ Ask each subagent to report back structured under headings that map onto the tar
 - **Testing** — what test scenarios already exist (file + what each asserts) and any public surface that looks untested.
 - **Inconsistencies** — any intra-repo inconsistencies this module reveals (self-contradiction, module-drift, dead-code, duplicated-divergent), returned as `inconsistency-report.schema.json` findings (`scope.kind: intra-repo`) so Phase 4b can collate them mechanically.
 
-Have each subagent name what it imports from other modules by TAG so the orchestrator can populate
-`depends_on` and check the INTERFACE-only coupling rule in Phase 4.
+Have each subagent name what it imports from other modules by TAG, so the spec files you write in
+Phase 3 carry accurate `depends-on` front-matter. Phase 4 checks it.
 
 ## Phase 3: Write Spec
 
@@ -105,9 +126,22 @@ modules by layer L1→L5, each module by facet order, `CATALOG.yaml` last.
 - `COMMON-OVERVIEW.md`: derive its Primary Lifecycles from real entry points traced through Phase
   1/2 findings (e.g. "what happens when the `sync` CLI command runs," followed through actual
   calls) — not aspirational flows. Feature Index must map every module found.
-- `CATALOG.yaml`: populate `repo:`. Only populate `shared_interfaces:` if a Phase 2 report found
-  an actual outbound call into an interface already declared in `context/shared/spec/CATALOG.yaml`
-  — never invent a shared interface that doesn't exist yet there.
+- `CATALOG.yaml`: **not assembled by hand.** Once every spec file for the repo is on disk, emit it:
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec catalog-emit <repo>
+  ```
+
+  The emission walks the spec tree you just wrote and writes the file. Facets come from each file's
+  name, so name files per STANDARD-SPEC.md and there is nothing further to do about them.
+
+  Four fields are preserved across emissions rather than re-derived, and those four remain your
+  judgment: each module's layer assignment, each module's `requirements`, each INTERFACE file's
+  `exports`, and `shared_interfaces`. Record them in `CATALOG.yaml` and re-emit — the emission keeps
+  them. A module with no layer is refused rather than placed, so in CREATE mode seed `repo:` and
+  `layers:` before the first emission. Give `shared_interfaces:` a TAG only if a Phase 2 report
+  found an actual outbound call into an interface already declared in
+  `context/shared/spec/CATALOG.yaml` — never invent a shared interface that doesn't exist yet there.
 
 ### Phase 3b: UPDATE mode — reconcile, don't append
 
@@ -116,32 +150,41 @@ For each module already in the existing `CATALOG.yaml`:
 - If its source still exists: diff the Phase 2 report against the current spec files and edit only
   what's stale (renamed export, removed function, changed signature, new/dropped dependency).
   **Only update the sections that actually changed** — do not rewrite unaffected content.
-- If Phase 1 found no remaining source directory for it: delete that module's spec directory and
-  remove it from `CATALOG.yaml`. Call this out explicitly in the completion report — spec deletion
-  is unusual and the user should know what disappeared and why.
+- If Phase 1 found no remaining source directory for it: delete that module's spec directory, and
+  remove its TAG from `CATALOG.yaml`'s `layers:` block — that block is preserved across emissions,
+  so a TAG left there outlives the module. Call this out explicitly in the completion report — spec
+  deletion is unusual and the user should know what disappeared and why.
 
 For any source directory Phase 1 found with no matching existing TAG, write it as a brand-new
 module (full facet set), placed in the write order by its layer.
 
 ## Phase 4: Validate
 
-Before reporting completion, verify:
+**Run the mechanical items** — the `depends-on`, coupling, requirements and handoff checks:
 
-1. Every `depends-on` path points to a file that exists.
-2. No IMPLEMENTATION file depends on another module's IMPLEMENTATION.
-3. `CATALOG.yaml` lists every module identified in Phase 1/2, and every file written.
-4. Each module's layer assignment matches its actual position in the dependency graph found in
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <repo>
+```
+
+Every finding it reports is a defect to fix in the spec you just wrote, then re-run.
+
+**Then judge what no checker can**, against Phase 1 and Phase 2:
+
+1. Every module the decomposition confirmed has a spec directory — the emission can only list the
+   tree it walked, so a module you never wrote is a module the catalog silently lacks.
+2. Each module's layer assignment matches its actual position in the dependency graph found in
    Phase 2 (not guessed).
-5. `COMMON-OVERVIEW.md`'s lifecycles and feature index cover everything found in recon.
-6. Every public export/endpoint/command found in Phase 2 appears in some INTERFACE file — the spec
+3. `COMMON-OVERVIEW.md`'s lifecycles and feature index cover everything found in recon.
+4. Every public export/endpoint/command found in Phase 2 appears in some INTERFACE file — the spec
    is not missing surface area that exists in code.
-7. **UPDATE mode only:** every module whose source Phase 1 found deleted has been removed from
+5. **UPDATE mode only:** every module whose source Phase 1 found deleted has been removed from
    both the spec tree and `CATALOG.yaml`.
-8. **Schema passes.** The catalog validates — fix on any error:
 
-   ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py catalog context/<repo>/spec/CATALOG.yaml
-   ```
+**Then the schema passes.** The catalog validates — fix on any error:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<repo>/spec/CATALOG.yaml
+```
 
 Report a short summary: modules created, modules updated, modules deleted (if any), and any
 surprising implementation findings flagged in Phase 2.
@@ -164,7 +207,7 @@ and have each Phase 2 subagent return its findings in the `inconsistency-report.
 (`scope.kind: intra-repo`) so the collation is mechanical. Validate the aggregate you assemble:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py inconsistency-report <aggregate>.json
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate inconsistency-report <aggregate>.json
 ```
 
 If a repo is fully self-consistent, say so explicitly rather than omitting the report. Intra-repo
@@ -199,7 +242,7 @@ repo**, so they are recorded at the **workspace level**.
    aggregate:
 
    ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py inconsistency-report <cross-repo-aggregate>.json
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate inconsistency-report <cross-repo-aggregate>.json
    ```
 
    Because these findings cross repo boundaries, they live under `context/project/` (the workspace
