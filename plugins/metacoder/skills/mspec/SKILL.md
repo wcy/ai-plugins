@@ -9,6 +9,8 @@ A workspace holds **several related repositories** plus a **shared interface con
 
 **Where the standards live.** The spec/change standards ship with the plugin, not the project. Reference them at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` — `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime to the plugin's marketplace-cache location, so it resolves wherever Claude Code is running without any files being copied into the project's `.claude/`. Every "Load now" instruction below names the full `${CLAUDE_PLUGIN_ROOT}/shared/…` path; load lazily, only when you reach that step.
 
+**Mechanical steps are invoked, not restated.** Every step of this skill whose outcome follows from its inputs alone — mode detection, the requirements gate, change sequencing, change-document emission, cascade-target lookup, and every mechanical checklist item — has exactly one implementation, in `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Call it; never re-derive it in prose. **A failed `mc.py` invocation is a hard error: report it and halt the phase. There is no prose fallback**, because a fallback is a second implementation of the same step. This rule is stated once and applies to every invocation below. The judgment steps — the brainstorm, the Risk & Ambiguity Scan, the approval gate, and the Phase 5 cascade fan-out — stay yours.
+
 ## Two Separable Stages (Diagnostic → Write)
 
 `mspec` runs in two cleanly separable stages. Keeping them separate is a **hard requirement**, because `/mquick` reuses each independently:
@@ -59,8 +61,15 @@ If the request plausibly spans multiple repos, or you cannot tell which repo, **
 
 ## Step 1: Detect the Mode
 
-**CREATE mode** — no spec exists yet for the target, or the user is describing a new product/project/contract from scratch.
-**UPDATE mode** — a spec already exists for the target in `context/<target>/spec/` and the user is describing a change, new feature, or modification.
+Once the target is resolved, delegate the detection:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec mode <target>
+```
+
+One call answers both halves of this step: **CREATE vs UPDATE** — CREATE when no spec tree exists for the target, UPDATE when one does — and the target's **requirements-gate** result, which the Prerequisites step of whichever mode you enter consumes. Take both from the call.
+
+**The judgment the call leaves with you.** `spec mode` reports what is on disk; it cannot read intent. Whether the user is **describing a new product from scratch despite an existing spec tree** is your call, and it is the one part of mode detection that stays with this skill: when that is what the user is doing, run CREATE mode even though the call reported UPDATE. Nothing else about the mode is yours to decide.
 
 ---
 
@@ -72,7 +81,7 @@ Take a requirements description or product idea and produce a complete, implemen
 
 Phase 1 is pure conversation — it writes no files, so do **not** load the standards yet. Defer loading `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` until Phase 2 (Write Spec), where the output must conform to it. This keeps the standard out of context during the (often lengthy) brainstorm.
 
-**Requirements Gate.** Before Phase 1a, check `context/<repo>/requirements/REQUIREMENTS.md` (or `context/shared/requirements/REQUIREMENTS.md` for the `shared` target) for at least one valid `REQ-<NNN>` entry — file existence alone does not satisfy this; the file must contain a real entry. If the check fails, halt here — do not proceed to Phase 1a — and tell the user to trigger `/mreq <target>` manually first; `mspec` never calls `/mreq` on its own. If the check passes, also read `context/project/requirements/REQUIREMENTS.md`, if present, as supplementary cross-cutting context, then proceed to Phase 1.
+**Requirements Gate.** Step 1's `mc.py spec mode <target>` call already returned the gate result for the target's own requirements tier; do not re-check it here. If the gate did not pass, halt before Phase 1a and tell the user to trigger `/mreq <target>` manually first — `mspec` never calls `/mreq` on its own. If it passed, read the target's `REQUIREMENTS.md` and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context, then proceed to Phase 1.
 
 ### Phase 1: Brainstorm
 
@@ -169,48 +178,39 @@ Coupling, `depends-on` front-matter, and the INTERFACE-only cross-module/cross-r
 
 After all spec files are written, create a **repo-level baseline record**. Because sequence numbers are per-repo, `000` is always available for the first spec of any repo.
 
-Write `context/<repo>/changes/CHANGE-000-initial-spec.md` (or `context/shared/changes/CHANGE-000-initial-spec.md` for the shared target):
+Emit `context/<repo>/changes/CHANGE-000-initial-spec.md` (or `context/shared/changes/CHANGE-000-initial-spec.md` for the shared target) — the front-matter and the section skeleton come from the tool, not from a template transcribed here:
 
-```markdown
-<!-- change: 000 -->
-<!-- scope: repo | shared -->
-<!-- repo: <target repo> -->
-<!-- status: complete -->
-<!-- date: YYYY-MM-DD -->
-
-# CHANGE-000: Initial Spec Creation — {target}
-
-## Summary
-
-Initial specification created for {product/contract name} ({target}). This document records the
-baseline state of that spec and is not associated with any implementation plan.
-
-## Modules
-
-{List all modules with their layer and a one-line description}
-
-## Spec Files
-
-{List all files written under context/<target>/spec/}
 ```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<target>/changes/CHANGE-000-initial-spec.md \
+  --scope repo --repo <target> --status complete --title "Initial Spec Creation — <target>"
+```
+
+Use `--scope shared` for the shared target. A baseline record is born `status: complete` and stays there — that terminal status is what marks it a historical snapshot rather than work to do, so pass it explicitly. The `-initial-spec` slug is what selects the reduced baseline layout.
+
+Then fill the emitted sections: **Summary** (one paragraph — the spec created for this target, recording its baseline state and associated with no implementation plan), **Modules** (every module with its layer and a one-line description), and **Spec Files** (every file written under `context/<target>/spec/`).
 
 This file is a historical record only. It is never updated by UPDATE mode. **Do not** create a project-level index for a baseline record — baseline records have no code to implement and must not trigger mplan.
 
 #### Validation
 
-Before reporting completion, verify:
+Before reporting completion, verify. Items 1–4 are executed rather than confirmed by reading — one `check all` run covers all four, and every finding must be fixed before you continue:
 
 1. Every `depends-on` path points to a file that exists
 2. No IMPLEMENTATION file depends on another module's IMPLEMENTATION
 3. CATALOG.yaml includes entries for all modules and all files
 4. Every module in CATALOG.yaml has correct layer and facet assignments
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
+   ```
+
 5. COMMON-OVERVIEW.md covers all primary lifecycles identified in brainstorm
 6. `context/<repo>/changes/CHANGE-000-initial-spec.md` exists
 7. **Schemas pass.** The catalog and the baseline change doc's front-matter validate — fix on any error before reporting completion:
 
    ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py catalog context/<target>/spec/CATALOG.yaml
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py change  context/<repo>/changes/CHANGE-000-initial-spec.md
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<target>/spec/CATALOG.yaml
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change  context/<repo>/changes/CHANGE-000-initial-spec.md
    ```
 
 ---
@@ -231,9 +231,15 @@ To understand current state in Phase 1, read only what you need:
 - `context/<repo>/spec/COMMON/COMMON-OVERVIEW.md` — understand the product and current feature set (skip for the `shared` target, which has no COMMON-OVERVIEW requirement)
 - `context/<repo>/spec/CATALOG.yaml` — understand current modules and their layers
 
-**If the target is `shared`:** this change will cascade. Before editing, also read every repo catalog `context/*/spec/CATALOG.yaml` and record which repos list the interface(s) you are about to change under `shared_interfaces` — these are the consumers you must cascade into (Phase 5).
+**If the target is `shared`:** this change will cascade. Before editing, get the consumer list from the tool — run it once per interface you are about to change:
 
-**Requirements read (advisory).** Also read `context/<repo>/requirements/REQUIREMENTS.md` (or `context/shared/requirements/REQUIREMENTS.md` for the `shared` target) and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context. This is advisory only — UPDATE mode never halts on this check, and proceeds with whatever exists (including none, for a spec that predates this feature).
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec consumers <IFACE>
+```
+
+Record the repos it returns; they are the consumers you must cascade into (Phase 5).
+
+**Requirements read (advisory).** Step 1's `mc.py spec mode <target>` call already reported the gate — UPDATE mode never halts on it. Read the target's `REQUIREMENTS.md` and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context, and proceed with whatever exists (including none, for a spec that predates this feature).
 
 ### Phase 1: Understand the Change
 
@@ -332,52 +338,77 @@ After all spec files are updated, write changes at **both levels**: first the re
 
 #### Step 3a: Repo-level change file
 
-Write or continue a change file in `context/<repo>/changes/` (one per affected repo).
+Write or continue a change file in `context/<repo>/changes/` (one per affected repo). Both the create-vs-continue decision and the sequence allocation are the tool's — run it once per affected repo:
 
-**Determine whether to create or continue:**
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change resolve <repo> --slug <short-slug>
+```
 
-1. List all files in `context/<repo>/changes/` matching `CHANGE-<NNN>-*.md`, **excluding baseline records** (`CHANGE-000-initial-spec.md` or `*-initial-spec.md` with `status: complete`)
-2. For each, check whether a corresponding project-level index exists in `context/project/changes/` referencing this change file AND whether a plan directory exists in `context/project/plans/` for that project change
-3. If a change file exists with **no** matching plan, **continue updating that file** rather than creating a new one
-4. If all existing change files have plans (or only baseline records exist), create a new file
+Act on the returned `SequenceDecision` as given: it names the action and the file. A change file is continuable only when its `status` is `pending` or `in-progress` **and** no plan directory corresponds to it; every other status, and every baseline record, is terminal. Do not re-derive the decision or the number.
 
-**Determine the next sequence number** *(new files only):* read every file in `context/<repo>/changes/` to find the highest `<NNN>` used by that repo, then use `<NNN+1>`.
+- **continue** — edit the file the decision names, folding this run's spec changes into its existing sections. Leave its front-matter alone.
+- **create** — emit the file the decision names, then fill it in:
 
-**File naming:** `context/<repo>/changes/CHANGE-<NNN>-<short-slug>.md`
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<repo>/changes/CHANGE-<NNN>-<short-slug>.md \
+    --scope repo --repo <repo> --status pending --title "<Title>"
+  ```
 
-**Content:** use the repo-level schema from STANDARD-CHANGE.md §"Repo-level change document". Set `scope: repo`, `repo: <this repo>`, `status: pending`. A shared-interface cascade overrides these in Phase 5.
+**Content:** fill the emitted sections using the repo-level schema from STANDARD-CHANGE.md §"Repo-level change document" — follow it rather than re-deriving its rules. A shared-interface cascade overrides the front-matter in Phase 5.
 
 #### Step 3b: Project-level change index
 
-After writing all repo-level change files, create or update the project-level index in `context/project/changes/`.
+After writing all repo-level change files, create or update the project-level index in `context/project/changes/`. Same delegation, against the workspace-global sequence:
 
-**Determine whether to create or continue:**
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change index-resolve --slug <short-slug>
+```
 
-1. List all files in `context/project/changes/` matching `PROJECT-CHANGE-<NNN>-*.md`
-2. If the most recent one has `status: pending` and no matching plan in `context/project/plans/`, **continue updating that file** — add the new repo change file(s) to its "Repo Change Files" table
-3. Otherwise, create a new `PROJECT-CHANGE-<NNN>-<slug>.md` using the next free project-level sequence number
+The same status-keyed continue rule applies here.
 
-**Content:** use the project-level index schema from STANDARD-CHANGE.md §"Project-level change index". List every repo-level change file produced in this mspec run in the "Repo Change Files" table.
+- **continue** — add this run's repo change file(s) to the existing index's "Repo Change Files" table.
+- **create** — emit the file the decision names, listing every repo whose change file it references:
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md \
+    --scope repo --repo <repo>[,<repo>...] --status pending --title "<Title>"
+  ```
+
+  `--repo` takes every repo whose change file this index references, comma-separated. A shared-interface cascade uses `--scope shared` instead and is assembled in Phase 5.
+
+**Content:** fill the emitted sections using the project-level index schema from STANDARD-CHANGE.md §"Project-level change index". List every repo-level change file produced in this mspec run in the "Repo Change Files" table.
 
 ### Phase 4: Validate
 
-Before reporting completion, verify:
+Before reporting completion, verify. Items 1–3 are executed rather than confirmed by reading — one `check all` run per target covers all three, and every finding must be fixed before you continue:
 
 1. Every `depends-on` path in modified spec files points to a file that actually exists
 2. No IMPLEMENTATION file depends on another module's IMPLEMENTATION
 3. CATALOG.yaml is updated for all new or modified modules
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
+   ```
+
 4. A repo-level change file exists in `context/<repo>/changes/` with the correct naming
 5. The repo-level change file's "Affected Code Paths" table covers every spec change made
 6. A project-level index exists in `context/project/changes/` referencing the repo change file(s)
 7. COMMON-OVERVIEW.md is updated if any lifecycle or feature index entry changed
 8. No unintended spec content was removed or rewritten outside the change scope
-9. **Cross-repo coupling intact:** if a shared interface path was renamed or removed, no repo's `depends-on` still points at the old path (this is a cascade trigger — proceed to Phase 5)
+9. **Cross-repo coupling intact.** Executed, not eyeballed — run it against every target this run touched:
+
+    ```
+    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check coupling <target>
+    ```
+
+    A finding that a `depends-on` still points at a renamed or removed shared interface path is a cascade trigger — proceed to Phase 5.
+
 10. **Schemas pass.** Every catalog you modified and every change document you wrote validate — fix on any error before reporting completion:
 
     ```
-    python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py catalog context/<repo>/spec/CATALOG.yaml
-    python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py change  context/<repo>/changes/CHANGE-<NNN>-<slug>.md
-    python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py change  context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md
+    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<repo>/spec/CATALOG.yaml
+    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change  context/<repo>/changes/CHANGE-<NNN>-<slug>.md
+    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change  context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md
     ```
 
     Run the `change` check against every repo-level change file produced (and the shared one, for a cascade) plus the project-level index.
