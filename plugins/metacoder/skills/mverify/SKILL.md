@@ -17,7 +17,9 @@ Three kinds of drift, all **detection only** (reported, never gated or rewritten
 
 1. **Change conformance** (`missing` / `extra` / `mismatch`) — for every module the change/plan touched, does the code implement the INTERFACE signatures and DATAMODEL types the change specifies? Flag surface that is missing, extra (present in code but not the contract), or mismatched (wrong signature/type/shape).
 2. **Cross-repo conformance** (`cross-repo-drift`) — for a shared-interface change, do **all** producer/consumer repos the cascade covers actually match the frozen contract in `context/shared/spec/`? This is the "consistent across codebases" guarantee.
-3. **Coupling detection** (`coupling`) — code-level coupling violations that spec-level validation can't catch: a module's IMPLEMENTATION importing another module's IMPLEMENTATION (not its INTERFACE), or a cross-repo reference that bypasses `context/shared/spec/`. See STANDARD-SPEC.md §"Dependency Rules".
+3. **Coupling detection** (`coupling`) — coupling violations that a contract comparison can't catch. `mc.py check coupling` and `mc.py check depends-on` detect them; **STANDARD-SPEC.md §"Dependency Rules" is the definition**, and this file does not restate it or describe how the detection works.
+
+Detection is delegated. **Findings and their severity are not.** Whether a reported violation belongs in the report, what `type` it carries, and whether it is `blocking`, `warning`, or `info` is this skill's judgment on every one of the three kinds — the tool supplies the shard list and the mechanical checks, never the verdict.
 
 ## mverify vs mreverse
 
@@ -28,13 +30,29 @@ Both are read-only detectors; they differ by **starting point** (see also the pl
 
 If the user wants "make the spec match the code," that's `mreverse`. If they want "confirm the code matches what we planned," that's `mverify`.
 
+## Invoking the tool
+
+Every mechanical step below runs `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Add `--json` when you need the `Result` envelope rather than the human-readable form.
+
+**A failed invocation is a hard error: halt the phase and report it. There is no prose fallback** — re-deriving a step the tool owns would be a second implementation of it. Read the exit code:
+
+- **`0`** — succeeded, no diagnostics.
+- **`1`** — the command ran and reported diagnostics: a schema violation, a check finding, or an unresolvable resource. This is a **result**, not a failure. Read the diagnostics and continue at the step that asked for them.
+- **`2`** — usage error, bad identifier, path escape, missing runtime prerequisite (`PyYAML`/`jsonschema`), or unparseable input. This is a **failure**. Halt.
+
 ## Step 0: Determine the Verification Target
 
-Resolve which change/plan to verify, in order:
+The mode discriminator (`sweep` or `standalone`) is **passed in** and is never inferred from the plan id's provenance — a standalone run against the same plan id passes the same id, so provenance alone can't distinguish the two; only the explicit discriminator can.
 
-1. An explicit argument (a plan id, a `PROJECT-CHANGE-<NNN>`, or a repo change file) in the user's message.
-2. **In `sweep` mode:** the just-run plan's `<plan-id>` is passed in alongside the mode discriminator. The mode is **never** inferred from the plan id's provenance — a standalone run against the same plan id passes the same id, so provenance alone can't distinguish the two; only the explicit discriminator can.
-3. Otherwise, the **latest** plan: read `context/project/state.yaml` and take the most recent `applied`/`in-progress` plan; fall back to the highest `<NNN>` directory in `context/project/plans/`.
+Resolve the plan with:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan resolve [<plan-id>]
+```
+
+Pass `<plan-id>` when one was supplied — an explicit argument in the user's message (a plan id, a `PROJECT-CHANGE-<NNN>`, or a repo change file), or, in `sweep` mode, the just-run plan's id passed in alongside the discriminator. Omit it otherwise and let `plan resolve` name the target plan. It returns the plan id, its directory, status, run counter, resume wave, and pending stories.
+
+An unresolvable plan (exit `1`, `E_NOT_FOUND`) means an ad-hoc change with no plan directory: keep the change ref as the verification target and see **Output File Path Patterns** for where its reports go.
 
 A plan maps to its driving change via `plan.yaml`'s `project_change` and the plan's `change_file` references; use both the plan graph and the change docs as the verification frame.
 
@@ -53,7 +71,7 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 Validate the plan graph on read before trusting it:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py plan-graph context/project/plans/<plan-id>/plan.yaml
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate plan-graph context/project/plans/<plan-id>/plan.yaml
 ```
 
 ## Step 2: Fan Out Conformance Shards (subagents)
@@ -63,8 +81,15 @@ Dispatch the shards **in parallel** (single message, multiple Agent tool calls).
 Each shard reads code as it exists in `repos/<repo>/` and compares it to its contract:
 
 - **Change-conformance shard** — compare the module's implemented surface against its `*-INTERFACE.md` / `*-DATAMODEL.md` spec **and** the change doc's Affected Code Paths rows for that module. Report each `missing` / `extra` / `mismatch` with the spec surface, the code path, and the exact signature/type affected.
-- **Cross-repo shard** — for the changed shared interface, read the frozen contract in `context/shared/spec/<IFACE>/` and check each producer/consumer repo's code against it. Report `cross-repo-drift` for any repo that diverges, and flag any repo that reaches the contract's data **without going through the shared spec** (a bypass).
-- **Coupling shard** — scan the module's IMPLEMENTATION-level code for imports of other modules' IMPLEMENTATION (only INTERFACE is allowed) and for cross-repo references that don't route through `context/shared/spec/`. Report each as `coupling`.
+- **Cross-repo shard** — for the changed shared interface, read the frozen contract in `context/shared/spec/<IFACE>/` and check each producer/consumer repo's code against it. Report `cross-repo-drift` for any repo that diverges. The bypass half of this shard is mechanical, so it runs `mc.py check coupling <repo>` (below) for each repo in the conformance set rather than looking for bypasses by reading.
+- **Coupling shard** — run the two checkers over the shard's target and judge what comes back:
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check coupling <repo>
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check depends-on <repo>
+  ```
+
+  Each returns a `CheckReport`; exit `1` means it found something. **STANDARD-SPEC.md §"Dependency Rules" is the definition of a violation** — the checkers implement it, this shard does not re-derive it and this file does not restate it. What the shard does is the judgment the checkers cannot make: decide which reported violations are real findings for *this* change, give each a `type` and a `severity`, and write the `detail` that explains it.
 
 **Each shard must return the `conformance-report.schema.json` shape**, carrying **both**:
 
@@ -86,7 +111,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
    Every id is constrained to the charset `[A-Za-z0-9._-]+`, which confines every shard file to `context/project/out/<plan-id>/shards/`. Validate each written file against the schema (drop/re-request any malformed one):
 
    ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py conformance-report context/project/out/<plan-id>/shards/<shard-id>.json
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate conformance-report context/project/out/<plan-id>/shards/<shard-id>.json
    ```
 
 2. Merge into one **change-shaped** report at `context/project/out/<plan-id>/mverify-report.md`. Use the **same table shape as a change doc's Affected Code Paths** so a follow-up `mspec`/`mreverse` can consume it directly:
@@ -109,24 +134,28 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
    - <which findings are an mspec change vs an mreverse reconciliation vs a code fix>
    ```
 
-   When there are no findings, still write the report with an explicit "clean" line — a clean sweep is a real result.
+   Severity is yours to assign — the checkers and the schema admit `blocking|warning|info`, and nothing upstream decides which one a finding carries. When there are no findings, still write the report with an explicit "clean" line — a clean sweep is a real result.
 
-3. **Write the aggregate JSON.** Alongside the Markdown report, write `context/project/out/<plan-id>/mverify-report.json` — the machine-readable counterpart, an aggregate `conformance-report`: `scope.kind: aggregate`, **no** `shard` field, and `clean: true` **iff no shard reported a finding**. Schema-validate it on write exactly like a shard file — four `conformance-report` schema validations per sweep in total (one per shard, plus this one), not three:
+3. **Write the aggregate JSON.** Alongside the Markdown report, write `context/project/out/<plan-id>/mverify-report.json` — the machine-readable counterpart, an aggregate `conformance-report`: `scope.kind: aggregate`, **no** `shard` field, and `clean: true` **iff no shard reported a finding**. Schema-validate it on write exactly like a shard file:
 
    ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py conformance-report context/project/out/<plan-id>/mverify-report.json
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate conformance-report context/project/out/<plan-id>/mverify-report.json
    ```
+
+   The aggregate is a call site of its own, which is why this file invokes `mc.py validate` at **four** sites across **three** kinds, not three sites: `plan-graph` (Step 1), `conformance-report` twice (each shard file and this aggregate, Step 3), and `plan-state` (Step 4, standalone only).
 
 ## Step 4: Record + Report
 
 1. **Persist the result, keyed on the mode discriminator.** Three cases:
 
    - **`sweep`** — write **no** state. Return `{status, report, findings}` to the invoker (`mexecute`), which persists it. `status` uses `plan-state`'s `clean | drift | not-run` vocabulary — `mverify` carries no separate pass/fail vocabulary of its own; the triple is written into the `conformance` block verbatim by the invoker.
-   - **`standalone`, plan directory exists** — write the `conformance` block yourself: update `context/project/plans/<plan-id>/state.yaml`'s `conformance` block with `status: clean | drift`, `report:` = the report path, `findings:` = the count. Validate on write:
+   - **`standalone`, plan directory exists** — write the `conformance` block yourself:
 
      ```
-     python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py plan-state context/project/plans/<plan-id>/state.yaml
+     python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state conformance <plan-id> --status <clean|drift> --report <report-path> --findings <count>
      ```
+
+     `state conformance` runs `mc.py validate plan-state` over the rendered `context/project/plans/<plan-id>/state.yaml` **before** it persists anything: a block that would not validate is refused and the file is left byte-identical. No separate validation call follows the write.
 
    - **`standalone`, no plan directory (ad-hoc change)** — skip the state update entirely; just write the reports, noting there is no plan to record into.
 
@@ -151,6 +180,7 @@ Worked example: `context/project/changes/CHANGE-003-retry.md` → basename `CHAN
 - **No code changes.** `repos/<repo>/` is read-only input.
 - **No spec/change/plan rewrites.** It reports drift; closing it is a separate `mspec` (respec) or `mreverse` (reconcile) run, or a code fix.
 - **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced (the only spec-level gate is `mspec`'s authoring-time coupling check).
+- **No delegated verdict.** `mc.py` supplies the shard list and the mechanical checks; which findings the report carries and how severe each one is stays here.
 
 ## Asking Questions
 
