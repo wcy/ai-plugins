@@ -311,12 +311,14 @@ Applies to all E2E tests (module-level and project-level):
 - **Must fail** if any required dependency or module is missing/unavailable.
 - **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
 
-**Delivery.** This section owns the four rules above. A story agent's loaded context is only its
+**Delivery.** This section **owns** the four rules above. A story agent's loaded context is only its
 own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file — so the rules
-are **delivered** to an executing story agent by **verbatim copy** into `MPLAN`'s
-`PLAN-STORY-TEMPLATE.md`, appearing in both **Post-Story Validation** and **Final Validation**
-(gated on an E2E module existing in the catalog). Every such copy must reproduce this section's
-four bullets verbatim.
+are **delivered** to an executing story agent by **injection** into `shared/PLAN-STORY-TEMPLATE.md`
+at render time, at both `INJECT:E2E-HARD-RULES` markers (**Post-Story Validation** and **Final
+Validation**, gated on an E2E module existing in the catalog). `mc.py plan story-emit` performs the
+injection, reading the four bullets from this section. The delivered copy is generated, never
+maintained by hand, so it cannot diverge from this section — edit the rules here and every story
+emitted afterwards carries the edit.
 
 ---
 
@@ -326,8 +328,12 @@ four bullets verbatim.
 2. Write **COMMON files before module files** (modules reference them).
 3. Write **modules by layer order:** L1-core → L2-services → L3-orchestration → L4-ui → L5-integration.
 4. Within each module, write **files by facet order:** OVERVIEW → DATAMODEL → INTERFACE → DEPENDENCIES → IMPLEMENTATION → TESTING (DEPENDENCIES may be written any time before IMPLEMENTATION).
-5. **Validate cross-references:** every `depends-on` path must point to a file that actually exists.
-6. **Validate coupling rules:** IMPLEMENTATION files must never depend on another module's IMPLEMENTATION — only INTERFACE files. Cross-repo `depends-on` paths must point only into `context/shared/spec/` (never into another repo).
-7. **Keep `shared_interfaces` honest:** every TAG listed in a repo's catalog must correspond to at least one `depends-on` on the shared `*-INTERFACE.md`, and vice versa.
+5. **Validate cross-references:** every `depends-on` path must point to a file that actually exists. Run `mc.py check depends-on <target>`.
+6. **Validate coupling rules:** IMPLEMENTATION files must never depend on another module's IMPLEMENTATION — only INTERFACE files. Cross-repo `depends-on` paths must point only into `context/shared/spec/` (never into another repo). Run `mc.py check coupling <target>`.
+7. **Keep `shared_interfaces` honest:** every TAG listed in a repo's catalog must correspond to at least one `depends-on` on the shared `*-INTERFACE.md`, and vice versa. Run `mc.py check coupling <target>`.
 8. **Keep OVERVIEW and COMMON files concise.** They are context-injected into every related task. Verbose shared files waste token budget for implementing agents.
+
+Rules 1–4 and 8 govern how you write. Rules 5–7 are mechanical checks: invoke the checker named
+above rather than re-reading paths and catalog entries by hand — `mc.py check all <target>` runs all
+three at once. A non-zero exit is a hard failure to fix, not a cue to re-derive the check in prose.
 

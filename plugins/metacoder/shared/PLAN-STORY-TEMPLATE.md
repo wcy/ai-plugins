@@ -1,15 +1,16 @@
 <!--
-  Story-file template for the `mplan` skill.
+  Story-file template. Owned by `shared/`, not by any skill.
 
-  This is loaded on demand by mplan at the story-generation step (it is NOT part of
-  the skill body, so it stays out of context during planning/scoping). Copy the block
-  between the BEGIN/END markers into each PLAN-{WW}-{SS}-{REPO}-{MODULE}.md and fill in
-  the {placeholders}.
+  This file is DATA, not prose for a reader to re-enact. It is rendered by
+  `mc.py plan story-emit <plan-id> <story-id>`, which emits the block between the
+  BEGIN/END markers as PLAN-{WW}-{SS}-{REPO}-{MODULE}.md with the {placeholders}
+  substituted. No skill loads this file and no agent copies from it by hand.
 
   Sections gated by a comment (INCREMENTAL PLANS ONLY, last wave only, update sub-mode
-  only) are conditional — include them only when the comment's condition holds; omit
-  them otherwise. Each story file must stay self-contained and focused — as small as
-  the work allows, with no hard line limit.
+  only) are conditional — the renderer includes them only when the comment's condition
+  holds and drops them otherwise. Lines carrying an INJECT: marker are replaced whole,
+  with content generated from the owning section the marker names. Each story file must
+  stay self-contained and focused — as small as the work allows, with no hard line limit.
 -->
 
 <!-- ===== BEGIN STORY TEMPLATE ===== -->
@@ -128,11 +129,7 @@ Run before marking this story complete:
 - [ ] Full existing test suite passes with no regressions (update sub-mode only)
 - [ ] E2E scenarios for this module pass (if E2E module exists in catalog)
 
-<!-- Include the block below only when the checkbox immediately above applies (an E2E module exists in this repo's CATALOG.yaml). These four rules are owned by STANDARD-SPEC.md § "E2E Testing Hard Rules"; reproduced verbatim. -->
-- **No mocks, fakes, stubs, or test doubles.** E2E tests exercise real dependencies.
-- **No skips or conditional logic** that could produce false-positive passes.
-- **Must fail** if any required dependency or module is missing/unavailable.
-- **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
+<!-- INJECT:E2E-HARD-RULES — replace this entire line with the four rules owned by STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim from that section, only when the checkbox immediately above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit`; never hand-copied. -->
 
 <!-- Include the section below only in stories belonging to the final wave ({WW} = last wave). -->
 ## Final Validation (last wave only)
@@ -141,11 +138,7 @@ Run after all waves are complete:
 
 - [ ] E2E test scenarios pass (if E2E module exists in catalog)
 
-<!-- Include the block below only when the checkbox immediately above applies (an E2E module exists in this repo's CATALOG.yaml). These four rules are owned by STANDARD-SPEC.md § "E2E Testing Hard Rules"; reproduced verbatim. -->
-- **No mocks, fakes, stubs, or test doubles.** E2E tests exercise real dependencies.
-- **No skips or conditional logic** that could produce false-positive passes.
-- **Must fail** if any required dependency or module is missing/unavailable.
-- **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
+<!-- INJECT:E2E-HARD-RULES — replace this entire line with the four rules owned by STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim from that section, only when the checkbox immediately above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit`; never hand-copied. -->
 
 - [ ] No coupling violations across the entire codebase (including no cross-repo coupling outside `context/shared/spec/`)
 - [ ] All acceptance criteria in every story file are checked off
