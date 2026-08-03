@@ -1,0 +1,21 @@
+[project]
+name = "metacoder"
+version = "0.7.0"
+description = "Deterministic step layer (TOOLS) for the metacoder Claude Code plugin"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+    "jsonschema>=4.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `from tools import <group>` resolves in tests without installing the plugin.
+pythonpath = ["plugins/metacoder"]
+# No .pytest_cache: a run must leave the working tree exactly as it found it.
+addopts = "-p no:cacheprovider"
