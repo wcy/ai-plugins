@@ -20,6 +20,19 @@ at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-REQ.md` — `${CLAUDE_PLUGIN_ROOT}` re
 the plugin's marketplace-cache location. Load it lazily, at Phase 2 of whichever mode you're
 running, and follow it rather than restating its schema here.
 
+**Every mechanical step is a tool call.** Id allocation, the tier gate, the drift check, and the
+closing validation each have exactly one implementation, in `${CLAUDE_PLUGIN_ROOT}/tools/mc.py`.
+Run it at the call sites below and use the answer it returns; never re-derive one in prose, and
+never assume one.
+
+**A failed invocation is a hard error.** If a command below does not run — a usage error, a missing
+runtime prerequisite, a path it cannot resolve — report its diagnostics to the user and stop the
+phase. Do not perform the step by hand instead: a prose fallback is a second implementation of the
+step, which is precisely what this design forbids. A command that runs and *reports findings* has
+not failed; each call site says what its findings mean there.
+
+What a requirement *says* is not mechanical and stays entirely your work.
+
 ## Step 0: Determine the Tier
 
 Resolve which of three tiers the request maps to, in this order — the same resolution mspec's
@@ -35,9 +48,9 @@ Step 0 uses for its own target, generalized to three destinations:
 If the request plausibly spans multiple targets, or you cannot tell which one, list the candidate
 tiers (subdirectories of `context/`, plus `shared` and `project`) and ask before proceeding.
 
-**Path convention for the rest of this skill:** every path written as
-`context/<tier>/requirements/REQUIREMENTS.md` means the file for the tier resolved above — a repo
-directory name, `shared`, or `project`.
+The tier resolved here is the `<tier>` argument every invocation below takes; `STANDARD-REQ.md`
+§"Location & Tiers" owns where that name puts the file, which is the path written throughout this
+skill as `context/<tier>/requirements/REQUIREMENTS.md`.
 
 ## Step 1: Select the Mode
 
@@ -45,9 +58,17 @@ directory name, `shared`, or `project`.
 (e.g. "derive requirements from the spec", "update requirements from the spec"). **BRAINSTORM**
 otherwise — the default for every other trigger phrase.
 
-Within BRAINSTORM, mirror mspec's own CREATE/UPDATE split rather than naming a third mode: no
-`context/<tier>/requirements/REQUIREMENTS.md` yet → brainstorm from scratch; one already exists →
-amend/append based on the new description.
+Then ask the tier itself what this run is starting from:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req gate <tier>
+```
+
+It answers whether the tier already holds at least one valid `REQ-<NNN>` entry, and lists the ids
+present. Both modes key their Phase 2 off that answer rather than off file existence: **gate does
+not pass** → this run seeds the tier from scratch; **gate passes** → this run amends or appends to
+what is already there. Within BRAINSTORM that is mspec's own CREATE/UPDATE split, mirrored rather
+than renamed as a third mode.
 
 ---
 
@@ -68,10 +89,10 @@ decomposition. Those belong to `mspec`.
 Never ask about technology, storage, API style, or any other spec-level decision — if a question
 would only make sense to answer with a technical choice, it belongs to `mspec`, not here.
 
-If `context/<tier>/requirements/REQUIREMENTS.md` already exists, read it first so you can tell
-whether the new description is a genuinely new need (new `REQ-<NNN>`) or a refinement of one
-already there (amend in place, or mark superseded and add a replacement — a human decision, never
-automatic).
+If Step 1's gate reported entries present, read
+`context/<tier>/requirements/REQUIREMENTS.md` first so you can tell whether the new description is
+a genuinely new need (a new entry) or a refinement of one already there (amend in place, or mark
+superseded and add a replacement — a human decision, never automatic).
 
 Confirm the drafted need(s) with the user before proceeding.
 
@@ -81,12 +102,21 @@ Confirm the drafted need(s) with the user before proceeding.
 tier locations, front-matter, entry schema, REQ-ID scoping, and the append-only stability rule.
 Follow it rather than re-deriving it here.
 
-- No file yet for this tier → create `context/<tier>/requirements/REQUIREMENTS.md` with its
-  two-line front-matter and a first `### REQ-001` entry (or however many were confirmed).
-- File exists → append new `### REQ-<NNN>` entries for genuinely new needs, using the next free
-  number for this tier; amend an existing entry's text in place if the user confirmed a
-  refinement; set `Status: superseded` on an entry the user says is replaced (never delete it).
-  IDs are never renumbered or reused.
+Allocate the id of every new entry, one call per entry:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req next <tier>
+```
+
+Ids are allocated from the highest id present in the tier, never from a count of its entries —
+that is what makes reuse structurally impossible rather than merely discouraged. Never choose,
+guess, or adjust an id yourself, and never renumber one.
+
+- Gate did not pass → create `context/<tier>/requirements/REQUIREMENTS.md` if it isn't there, with
+  its two-line front-matter, then write the confirmed entries under the ids allocated above.
+- Gate passed → append a new `### REQ-<NNN>` entry per genuinely new need, under the id allocated
+  above; amend an existing entry's text in place if the user confirmed a refinement; set
+  `Status: superseded` on an entry the user says is replaced (never delete it).
 - Tag every entry written in this mode `Source: brainstormed`.
 
 Then close with Validation (below).
@@ -122,12 +152,25 @@ Match each drafted requirement against the target's existing
 `requirements:` back-reference as the match key:
 
 - A matched entry — its `Need` is updated in place; its ID never changes.
-- An unmatched draft — appends as a new `REQ-<NNN>`, tagged `Source: derived: <TAG>[, <TAG>...]`.
+- An unmatched draft — appends as a new `### REQ-<NNN>` entry, under an id allocated by `req next`
+  exactly as BRAINSTORM's Phase 2 does, tagged `Source: derived: <TAG>[, <TAG>...]`.
 - An existing entry whose matching module disappeared from the target's spec — set `Status: stale`
   and leave it in the file. Never delete it, never renumber it.
 
-No file yet for this tier → create it the same way BRAINSTORM's Phase 2 does, seeded entirely from
-this draft.
+Gate did not pass for this tier → create the file the same way BRAINSTORM's Phase 2 does, seeded
+entirely from this draft.
+
+Then check that the re-run stranded no traceability reference:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check requirements <target>
+```
+
+It reports every `CATALOG.yaml` reference to a `REQ-<NNN>` the tier no longer declares, and every
+entry no module references. A dangling reference means this run violated the stability rule —
+restore the id and re-run before reporting completion. An entry no module references yet is the
+expected state for a need `mspec` has not covered; report it to the user and leave it alone, since
+`CATALOG.yaml` is `mspec`'s file, never this skill's to edit.
 
 Then close with Validation (below).
 
@@ -138,7 +181,7 @@ Then close with Validation (below).
 Before reporting completion:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py requirements context/<tier>/requirements/REQUIREMENTS.md
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate requirements context/<tier>/requirements/REQUIREMENTS.md
 ```
 
 A failure blocks completion — fix the file and re-run, exactly as mspec gates its own
