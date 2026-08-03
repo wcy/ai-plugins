@@ -4,18 +4,33 @@ Claude Code plugins published by [William Yap](https://github.com/wcy).
 
 ## Install
 
-Register this repo as a plugin marketplace, then install whichever plugin you want:
+**Prerequisite.** `metacoder` needs two Python packages at runtime — install them first:
+
+```
+pip install pyyaml jsonschema
+```
+
+This is the plugin's only setup step and it is **never** performed on your behalf: the plugin never
+installs packages into your environment, ships **no hooks**, and runs nothing at session start.
+Skipping it leaves every skill failing fast with a named `E_MISSING_PREREQ` diagnostic naming this
+command, rather than misbehaving.
+
+Then register this repo as a plugin marketplace and install whichever plugin you want:
 
 ```
 /plugin marketplace add wcy/ai-plugins
 /plugin install metacoder@ai-plugins
 ```
 
+Installing `metacoder` registers all eight skills — `mspec`, `mreverse`, `mplan`, `mverify`,
+`mexecute`, `mquick`, `mreq`, and `mfix` — and makes them invokable. Nothing is copied into the
+target project's `.claude/`.
+
 ## Plugins
 
 | Plugin | Description |
 |---|---|
-| [metacoder](plugins/metacoder/README.md) | Spec-to-ship workflow for multi-repo workspaces: write specs, plan implementations, execute them as worktree-isolated waves, and verify conformance — manually gatekept or fully autonomous (`mspec`, `mplan`, `mexecute`, `mverify`, `mreverse`, `mquick`). |
+| [metacoder](plugins/metacoder/README.md) | Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), fix the drift it finds by deciding code-vs-spec (mfix), execute plans as worktree-isolated waves (mexecute), run the whole loop autonomously (mquick), and author or derive the requirements layer (mreq) that specs build from |
 
 ## License
 

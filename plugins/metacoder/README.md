@@ -4,7 +4,10 @@ A Claude Code plugin providing a structured spec-to-ship workflow for a **multi-
 
 ## Getting Started
 
-**Prerequisites:** Claude Code, and git (for `mexecute`'s worktree-isolated waves).
+**Prerequisites:** Claude Code, git (for `mexecute`'s worktree-isolated waves), and two Python
+packages the skills' shared tool requires — `pip install pyyaml jsonschema`. See
+[Installation](#installation) below: that one line is the plugin's only setup step and it is never
+performed on your behalf.
 
 1. Install the plugin (see [Installation](#installation) below).
 2. In your workspace root, create the scaffold the skills expect:
@@ -49,32 +52,50 @@ A repo consumes a shared interface by listing its TAG in the repo `CATALOG.yaml`
 ## Contents
 
 ```
-plugins/metacoder/
-├── .claude-plugin/plugin.json   # plugin manifest
-├── README.md                    # this file
-├── skills/
-│   ├── mreq/SKILL.md            # skills/mreq/SKILL.md — requirements-authoring skill
-│   ├── mspec/SKILL.md
-│   ├── mreverse/SKILL.md
-│   ├── mplan/
-│   │   ├── SKILL.md
-│   │   └── PLAN-STORY-TEMPLATE.md  # story template, read on demand via ${CLAUDE_SKILL_DIR}
-│   ├── mverify/SKILL.md
-│   ├── mfix/SKILL.md
-│   ├── mexecute/SKILL.md
-│   └── mquick/SKILL.md
-├── shared/
-│   ├── STANDARD-SPEC.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…
-│   ├── STANDARD-CHANGE.md
-│   ├── STANDARD-REQ.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…, mreq only
-│   └── CHATFORM.md              # optional, opt-in interaction convention
-└── schemas/                      # JSON Schemas for CATALOG/plan-graph/state/reports
+ai-plugins/                              # the marketplace repo
+├── .claude-plugin/marketplace.json      # marketplace manifest
+├── README.md                            # marketplace-level docs
+├── LICENSE                              # MIT
+├── pyproject.toml                       # runtime deps (PyYAML, jsonschema) + pytest config
+├── tests/                               # tools/ test suite — NOT shipped
+└── plugins/
+    └── metacoder/                       # everything below here is what gets installed
+        ├── .claude-plugin/plugin.json   # plugin manifest
+        ├── README.md                    # this file
+        ├── skills/
+        │   ├── mreq/SKILL.md            # requirements-authoring skill
+        │   ├── mspec/SKILL.md
+        │   ├── mreverse/SKILL.md
+        │   ├── mplan/SKILL.md
+        │   ├── mverify/SKILL.md
+        │   ├── mfix/SKILL.md
+        │   ├── mexecute/SKILL.md
+        │   └── mquick/SKILL.md
+        ├── tools/                       # the deterministic step layer every skill invokes
+        │   ├── mc.py                    # the one entry point: ${CLAUDE_PLUGIN_ROOT}/tools/mc.py
+        │   ├── core.py                  # workspace resolution, Result envelope, path/ident guards
+        │   └── …                        # one module per command group (validate, change, spec,
+        │                                #   req, plan, state, worktree, check, status)
+        ├── shared/
+        │   ├── STANDARD-SPEC.md         # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…
+        │   ├── STANDARD-CHANGE.md
+        │   ├── STANDARD-REQ.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…, mreq only
+        │   ├── PLAN-STORY-TEMPLATE.md   # story template, rendered by `mc.py plan story-emit`
+        │   └── CHATFORM.md              # optional, opt-in interaction convention
+        └── schemas/                     # JSON Schemas for CATALOG/plan-graph/state/reports
 ```
 
+`tests/` and `pyproject.toml` sit at the **repository root, outside `plugins/metacoder/`**, and
+deliberately so: the whole plugin directory is copied into every user's marketplace cache, and a
+test suite is not part of what you installed.
+
 Install is **marketplace-only** — the whole tree stays in the plugin's marketplace cache and
-**nothing is copied into your project's `.claude/`**. Skills reach the standards and template at
-runtime through `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, which rebase automatically to
-wherever the plugin was installed, with no absolute paths baked in.
+**nothing is copied into your project's `.claude/`**. Skills reach the standards, the story
+template, and the tool at runtime through the single variable `${CLAUDE_PLUGIN_ROOT}`, which rebases
+automatically to wherever the plugin was installed, with no absolute paths baked in. Nothing the
+plugin runs writes back into its own installed tree either: `tools/mc.py` sets
+`sys.dont_write_bytecode` before importing its package, so a run leaves no `__pycache__` in the
+marketplace cache.
 
 ## Skills
 
@@ -91,7 +112,7 @@ These are Claude Code skills — Claude invokes them either automatically when y
 | `mexecute` | **yes** | "execute the plan", "run the plan", "ship it", etc. | **The feature-writing skill** — the only one that turns a plan into new code (`mfix` also writes, but only remediation inside a conformance finding's fence). Ships a plan as a **dynamic Workflow**: each wave's stories run concurrently, each in its **own git worktree**; validate + merge at a barrier (agent discretion), bounded retry (N=3), two-level state, then a post-ship `/mverify` sweep. |
 | `mquick` | via `mexecute` | "just build it", "spec and ship this", "one-shot this", "mquick", etc. | Autonomous orchestrator: **one** clarification gate (Phase A, reusing `mspec`'s diagnostic stage + risk scan), then `mspec → mplan → mexecute` to shipped, conformed code with no further gates. A thin sequence over the real skills — not a workflow of its own. |
 
-`mspec` reads the standards from the plugin at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and (for UPDATE mode) `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` — resolved at runtime to the marketplace cache, never copied into your project. It loads them **lazily** — only when it reaches the writing phase (STANDARD-SPEC at the spec-write step, STANDARD-CHANGE at the change-doc step), not during the brainstorm/diagnosis phase — to keep the standards out of context while they aren't needed. `mreverse` likewise loads `STANDARD-SPEC.md` lazily, only at its Phase 3 write step, and never touches `STANDARD-CHANGE.md` since it produces no change documents. `mplan` does not read the standards directly; it works from the already-standard-compliant `CATALOG.yaml` and change documents that `mspec` produced, and reads its story template from `${CLAUDE_SKILL_DIR}/PLAN-STORY-TEMPLATE.md`.
+`mspec` reads the standards from the plugin at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and (for UPDATE mode) `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` — resolved at runtime to the marketplace cache, never copied into your project. It loads them **lazily** — only when it reaches the writing phase (STANDARD-SPEC at the spec-write step, STANDARD-CHANGE at the change-doc step), not during the brainstorm/diagnosis phase — to keep the standards out of context while they aren't needed. `mreverse` likewise loads `STANDARD-SPEC.md` lazily, only at its Phase 3 write step, and never touches `STANDARD-CHANGE.md` since it produces no change documents. `mplan` does not read the standards directly; it works from the already-standard-compliant `CATALOG.yaml` and change documents that `mspec` produced, and delegates story rendering to `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit`, which reads `${CLAUDE_PLUGIN_ROOT}/shared/PLAN-STORY-TEMPLATE.md` and injects the E2E hard rules from `STANDARD-SPEC.md` at render time — so there is no hand-maintained second copy of them.
 
 ## Shared Standards
 
@@ -118,7 +139,22 @@ questioning, not just `mspec`. Leave the import out to keep the convention off.
 
 ## Installation
 
-**Marketplace (plugin) install only — nothing is copied into your project's `.claude/`.** This repo's marketplace manifest lives at `.claude-plugin/marketplace.json`. Register it from GitHub and install the plugin from inside Claude Code:
+**Marketplace (plugin) install only — nothing is copied into your project's `.claude/`.** This repo's marketplace manifest lives at `.claude-plugin/marketplace.json`.
+
+**Prerequisite, first.** The skills' shared tool (`tools/mc.py`) requires two Python packages:
+
+```
+pip install pyyaml jsonschema
+```
+
+This is the plugin's only setup step and it is **never** performed on your behalf. Neither manifest
+format can express a runtime dependency, so the two packages are declared in the repository-root
+`pyproject.toml` and stated here; the plugin never installs packages into your environment. Skipping
+this line leaves every skill failing fast with a named `E_MISSING_PREREQ` diagnostic naming this
+command, rather than misbehaving. The plugin also ships **no hooks** — nothing it installs runs
+automatically at session start.
+
+Then register the marketplace from GitHub and install the plugin from inside Claude Code:
 
 ```
 /plugin marketplace add wcy/ai-plugins
@@ -127,9 +163,7 @@ questioning, not just `mspec`. Leave the import out to keep the convention off.
 
 (To iterate on the plugin from a local checkout instead, `/plugin marketplace add .` from the repo root also works and picks up uncommitted local edits.)
 
-That registers all eight skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mfix`, `mexecute`, `mquick`, `mreq`) and makes them invokable. The skills read their standards, template, and schemas straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
-
-Neither manifest declares a runtime dependency, and none is needed: `schemas/validate.py` runs on a stock Python 3, using `PyYAML`/`ruamel.yaml` and `jsonschema` only when already importable and falling back to bundled code otherwise. The plugin ships **no hooks** — nothing it installs runs automatically at session start, and installing it never installs packages into your environment.
+That registers all eight skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mfix`, `mexecute`, `mquick`, `mreq`) and makes them invokable. The skills read their standards, template, schemas, and tool straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
 
 ## Workflow
 
@@ -156,7 +190,6 @@ Eight skills close the coherence loop **ship → validate → conform → record
 code or the spec is authoritative and fixes the one that's wrong. `mspec`/`mreverse` still own the
 cases `mfix` explicitly defers: missing architecture (no contract exists yet) and a repo with no
 spec tree at all, respectively.
-```
 
 **Gatekept** — invoke `mspec → mplan → mexecute` (→ `mverify`) yourself and review at each hand-off. `mexecute` still runs every wave through internally (no between-wave gate); it halts only on a genuine blocking condition.
 
@@ -180,7 +213,7 @@ The skills use Claude Code's orchestration primitives only where real parallelis
 - **Subagents (fan-out).** `mreverse` deep-dive readers + cross-repo inconsistency readers; `mverify`'s three shard kinds (change-conformance, cross-repo, coupling); `mspec`'s up-front risk scan; `mplan`'s post-generation story validators.
 - **Agent team.** The shared-interface **cascade** in `mspec`: a lead plus one teammate per consuming repo, the frozen shared contract as the sync point.
 - **Dynamic Workflow.** `mexecute` **only** — parallel stories per wave, each worktree-isolated, with a barrier, bounded retry, and merge. `mquick` is a plain sequential pipeline over the skills, not a workflow. Note: `mexecute` shells out to real `git worktree` commands, so it needs a git repo under `repos/<repo>/`.
-- **Two-level state (the ledger).** A project-level ledger (`context/project/state.yaml`) tracks each plan's status; a plan-level `state.yaml` tracks waves, per-story status/retries/worktree refs, and conformance. Orchestration (resume, retry, progress) reads this state, not prose. Both, plus the plan graph, change front-matter, and subagent reports, validate against JSON Schemas in `schemas/` (run `schemas/validate.py`).
+- **Two-level state (the ledger).** A project-level ledger (`context/project/state.yaml`) tracks each plan's status; a plan-level `state.yaml` tracks waves, per-story status/retries/worktree refs, and conformance. Orchestration (resume, retry, progress) reads this state, not prose. Both, plus the plan graph, change front-matter, and subagent reports, validate against JSON Schemas in `schemas/` (checked with `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate <kind> <file>`).
 
 ## License
 
