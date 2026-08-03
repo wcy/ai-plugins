@@ -1,0 +1,810 @@
+"""The ``check`` and ``status`` command groups.
+
+What TOOLS-TESTING.md asks of this suite: *each check finds its defect in a
+fixture built to contain exactly one, and reports nothing on a clean fixture*.
+Every test below is one of those two shapes, so a rule that stops detecting a
+violation fails here rather than returning a clean report in production.
+
+Both directions of the ``shared_interfaces`` <-> ``depends-on`` rule are
+covered, the ``stranded`` handoff rule is exercised on an ``applied`` change --
+the general "complete but unconsumed" rule, not its ``pending`` example -- and
+``status`` is asserted for shape, for reuse of ``check``'s stage walk, and for
+byte-identical output under a pinned ``--now``.
+
+Both groups are imported and called directly, never through ``argv``.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from conftest import NOW, PLUGIN_ROOT
+from tools import check, core, status
+
+TARGET = "demo"
+
+
+# ---------------------------------------------------------------------------
+# Fixture builders -- every workspace is synthetic and lives in tmp_path
+# ---------------------------------------------------------------------------
+
+
+def _spec(module, name, target=TARGET):
+    return "context/%s/spec/%s/%s" % (target, module, name)
+
+
+def _document(depends, heading):
+    """One spec file. ``depends is None`` means: no front matter at all."""
+    front = ""
+    if depends is not None:
+        front = "<!-- depends-on: %s -->\n\n" % ", ".join(depends)
+    return "%s# %s\n\nBody.\n" % (front, heading)
+
+
+def _layout(target=TARGET):
+    """A well-formed spec tree: path -> its ``depends-on`` list."""
+    return {
+        # COMMON-OVERVIEW.md is the documented exemption: it carries no
+        # front matter and must never be reported for the absence.
+        _spec("COMMON", "COMMON-OVERVIEW.md", target): None,
+        _spec("ALPHA", "ALPHA-OVERVIEW.md", target): [
+            _spec("COMMON", "COMMON-OVERVIEW.md", target)
+        ],
+        _spec("ALPHA", "ALPHA-INTERFACE.md", target): [
+            _spec("ALPHA", "ALPHA-OVERVIEW.md", target)
+        ],
+        _spec("ALPHA", "ALPHA-IMPLEMENTATION.md", target): [
+            _spec("ALPHA", "ALPHA-INTERFACE.md", target),
+            _spec("BETA", "BETA-INTERFACE.md", target),
+        ],
+        _spec("BETA", "BETA-OVERVIEW.md", target): [
+            _spec("COMMON", "COMMON-OVERVIEW.md", target)
+        ],
+        _spec("BETA", "BETA-INTERFACE.md", target): [
+            _spec("BETA", "BETA-OVERVIEW.md", target)
+        ],
+        _spec("BETA", "BETA-IMPLEMENTATION.md", target): [
+            _spec("BETA", "BETA-INTERFACE.md", target)
+        ],
+    }
+
+
+def _catalog_text(target=TARGET, modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",))), shared=None):
+    lines = [
+        "version: 1",
+        "repo: %s" % target,
+    ]
+    if shared is not None:
+        lines.append("shared_interfaces: [%s]" % ", ".join(shared))
+    lines.extend(["layers:", "  L1-core:", "    modules: [%s]" % ", ".join(name for name, _ in modules), "modules:"])
+    for name, requirements in modules:
+        lines.append("  %s:" % name)
+        lines.append("    layer: L1-core")
+        if requirements:
+            lines.append("    requirements: [%s]" % ", ".join(requirements))
+        lines.append("    files:")
+        lines.append("      - path: %s" % _spec(name, "%s-OVERVIEW.md" % name, target))
+        lines.append("        facet: overview")
+    return "\n".join(lines) + "\n"
+
+
+def _requirements_text(entries=("REQ-001", "REQ-002"), target=TARGET):
+    out = ["<!-- requirements: %s -->" % target, "<!-- updated: 2026-01-01 -->", "", "# Requirements", ""]
+    for identifier in entries:
+        out.extend(
+            [
+                "### %s: Something" % identifier,
+                "",
+                "**Need:** a need",
+                "**Rationale:** a rationale",
+                "**Status:** active",
+                "",
+            ]
+        )
+    return "\n".join(out) + "\n"
+
+
+def _tree(workspace, layout=None, catalog=None, requirements=None, target=TARGET):
+    """Write a spec tree, its catalog, and its requirements tier."""
+    layout = _layout(target) if layout is None else layout
+    for path, depends in sorted(layout.items()):
+        workspace.write(path, _document(depends, Path(path).stem))
+    workspace.write(
+        "context/%s/spec/CATALOG.yaml" % target,
+        _catalog_text(target) if catalog is None else catalog,
+    )
+    workspace.write(
+        "context/%s/requirements/REQUIREMENTS.md" % target,
+        _requirements_text(target=target) if requirements is None else requirements,
+    )
+    return layout
+
+
+def _change_text(number, slug, statusname, repo=TARGET):
+    return (
+        "<!-- change: %s -->\n"
+        "<!-- scope: repo -->\n"
+        "<!-- repo: %s -->\n"
+        "<!-- status: %s -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# CHANGE-%s: %s\n\n## Summary\n\nA change.\n" % (number, repo, statusname, number, slug)
+    )
+
+
+def _index_text(number, slug, statusname, change_files=(), repo=TARGET):
+    rows = "".join("| `%s` | `%s` | a change |\n" % (repo, path) for path in change_files)
+    return (
+        "<!-- project-change: %s -->\n"
+        "<!-- scope: repo -->\n"
+        "<!-- repos: %s -->\n"
+        "<!-- status: %s -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# PROJECT-CHANGE-%s: %s\n"
+        "\n## Summary\n\nAn index.\n"
+        "\n## Repo Change Files\n\n"
+        "| Repo | Change File | Summary |\n"
+        "|------|-------------|---------|\n"
+        "%s" % (number, repo, statusname, number, slug, rows)
+    )
+
+
+def _graph_text(plan_id, stories=("01-01-demo-ALPHA",), project_change=None):
+    lines = [
+        "version: 2",
+        "plan_id: %s" % plan_id,
+        "type: incremental" if project_change else "type: full",
+    ]
+    if project_change:
+        lines.append('project_change: "%s"' % project_change)
+    lines.extend(["repos:", "  - %s" % TARGET, "waves:", "  - wave: 1", "    stories:"])
+    lines.extend("      - %s" % story for story in stories)
+    lines.append("stories:")
+    for story in stories:
+        lines.extend(
+            [
+                "  %s:" % story,
+                "    file: PLAN-%s.md" % story,
+                "    repo: %s" % TARGET,
+                "    module: ALPHA",
+                "    wave: 1",
+                "    prerequisites: []",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _plan_state_text(plan_id, run=1, statusname="applied", stories=(("01-01-demo-ALPHA", "applied"),), conformance=None):
+    lines = [
+        "version: 2",
+        "plan_id: %s" % plan_id,
+        "run: %d" % run,
+        "status: %s" % statusname,
+        "stories:",
+    ]
+    for story, story_status in stories:
+        lines.extend(
+            [
+                "  %s:" % story,
+                "    repo: %s" % TARGET,
+                "    wave: 1",
+                "    status: %s" % story_status,
+                "    retries: 0",
+            ]
+        )
+    if conformance is not None:
+        conformance_status, findings = conformance
+        lines.extend(
+            [
+                "conformance:",
+                "  status: %s" % conformance_status,
+                "  findings: %d" % findings,
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _ledger_text(plans=(("001-demo", "applied", "001"),)):
+    lines = ["version: 1", "plans:"]
+    for plan_id, plan_status, project_change in plans:
+        lines.extend(
+            [
+                "  %s:" % plan_id,
+                "    status: %s" % plan_status,
+                '    project_change: "%s"' % project_change,
+                "    plan_dir: context/project/plans/%s" % plan_id,
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _chain(workspace):
+    """A workspace whose stage chain is complete end to end.
+
+    mreq -> mspec -> mplan -> mexecute -> mverify all hand off cleanly, so any
+    finding a test sees comes from the one defect that test introduced.
+    """
+    _tree(workspace)
+    change_path = "context/%s/changes/CHANGE-001-demo.md" % TARGET
+    workspace.write(change_path, _change_text("001", "demo", "applied"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-001-demo.md",
+        _index_text("001", "demo", "applied", [change_path]),
+    )
+    workspace.write("context/project/plans/001-demo/plan.yaml", _graph_text("001-demo", project_change="001"))
+    workspace.write(
+        "context/project/plans/001-demo/state.yaml",
+        _plan_state_text("001-demo", conformance=("clean", 0)),
+    )
+    workspace.write("context/project/state.yaml", _ledger_text())
+    return workspace
+
+
+# ---------------------------------------------------------------------------
+# Calling the groups -- directly, never through argv
+# ---------------------------------------------------------------------------
+
+
+def _check(workspace, verb, target=None):
+    """Call ``check`` and return ``(result, exit_code)``."""
+    result = check.run(workspace.args(verb=verb, target=target), workspace.ws)
+    return result, core.exit_code(result)
+
+
+def _findings(workspace, verb, target=None):
+    result, _code = _check(workspace, verb, target)
+    return result.data["findings"] if verb != "all" else result.data["reports"]
+
+
+def _codes(findings):
+    return [item["code"] for item in findings]
+
+
+def _status(workspace):
+    result = status.run(workspace.args(), workspace.ws)
+    return result, core.exit_code(result)
+
+
+# ---------------------------------------------------------------------------
+# check depends-on
+# ---------------------------------------------------------------------------
+
+
+def test_depends_on_reports_nothing_on_a_clean_tree(workspace):
+    _tree(workspace)
+    result, code = _check(workspace, "depends-on", TARGET)
+    assert result.data["findings"] == []
+    assert result.diagnostics == []
+    assert result.ok is True
+    assert code == 0
+
+
+def test_depends_on_reports_the_one_dangling_path(workspace):
+    layout = _layout()
+    layout[_spec("ALPHA", "ALPHA-OVERVIEW.md")] = [_spec("COMMON", "COMMON-GONE.md")]
+    _tree(workspace, layout)
+
+    result, code = _check(workspace, "depends-on", TARGET)
+    findings = result.data["findings"]
+    assert _codes(findings) == [core.E_DANGLING_DEPENDS_ON]
+    assert findings[0]["file"] == _spec("ALPHA", "ALPHA-OVERVIEW.md")
+    assert findings[0]["line"] == 1
+    assert "COMMON-GONE.md" in findings[0]["message"]
+    assert code == 1
+
+
+def test_depends_on_exempts_only_the_root_file(workspace):
+    """``COMMON-OVERVIEW.md`` may carry no front matter; nothing else may."""
+    layout = _layout()
+    layout[_spec("BETA", "BETA-OVERVIEW.md")] = None
+    _tree(workspace, layout)
+
+    findings = _findings(workspace, "depends-on", TARGET)
+    assert _codes(findings) == [check.E_MISSING_DEPENDS_ON]
+    assert findings[0]["file"] == _spec("BETA", "BETA-OVERVIEW.md")
+
+
+def test_depends_on_report_shape(workspace):
+    _tree(workspace)
+    result, _code = _check(workspace, "depends-on", TARGET)
+    assert result.data["check"] == "depends-on"
+    assert result.data["target"] == TARGET
+    assert result.command == "check.depends-on"
+
+
+# ---------------------------------------------------------------------------
+# check coupling
+# ---------------------------------------------------------------------------
+
+
+def test_coupling_reports_nothing_on_a_clean_tree(workspace):
+    _tree(workspace)
+    result, code = _check(workspace, "coupling", TARGET)
+    assert result.data["findings"] == []
+    assert result.diagnostics == []
+    assert code == 0
+
+
+def test_coupling_reports_implementation_to_implementation(workspace):
+    layout = _layout()
+    layout[_spec("ALPHA", "ALPHA-IMPLEMENTATION.md")] = [
+        _spec("ALPHA", "ALPHA-INTERFACE.md"),
+        _spec("BETA", "BETA-IMPLEMENTATION.md"),
+    ]
+    _tree(workspace, layout)
+
+    findings = _findings(workspace, "coupling", TARGET)
+    assert _codes(findings) == [check.E_COUPLING_IMPL]
+    assert findings[0]["file"] == _spec("ALPHA", "ALPHA-IMPLEMENTATION.md")
+    # The path still exists, so the depends-on check stays clean: the fixture
+    # holds exactly one defect and it is a coupling defect.
+    assert _findings(workspace, "depends-on", TARGET) == []
+
+
+def test_coupling_reports_a_cross_repo_bypass(workspace):
+    layout = _layout()
+    other = _spec("GAMMA", "GAMMA-INTERFACE.md", "other")
+    layout[_spec("ALPHA", "ALPHA-INTERFACE.md")] = [
+        _spec("ALPHA", "ALPHA-OVERVIEW.md"),
+        other,
+    ]
+    _tree(workspace, layout)
+    workspace.write(other, _document([], "GAMMA-INTERFACE"))
+
+    findings = _findings(workspace, "coupling", TARGET)
+    assert _codes(findings) == [check.E_COUPLING_CROSS_REPO]
+    assert "context/shared/spec/" in findings[0]["message"]
+
+
+def test_coupling_allows_the_shared_contract_layer(workspace):
+    """A cross-target path *through* ``context/shared/spec/``, declared in both
+    places, is the one sanctioned form and is not a finding."""
+    layout = _layout()
+    shared = "context/shared/spec/BUS/BUS-INTERFACE.md"
+    layout[_spec("ALPHA", "ALPHA-INTERFACE.md")] = [_spec("ALPHA", "ALPHA-OVERVIEW.md"), shared]
+    _tree(workspace, layout, catalog=_catalog_text(shared=["BUS"]))
+    workspace.write(shared, _document([], "BUS-INTERFACE"))
+
+    assert _findings(workspace, "coupling", TARGET) == []
+    assert _findings(workspace, "depends-on", TARGET) == []
+
+
+def test_coupling_reports_a_declaration_with_no_dependency(workspace):
+    """``shared_interfaces`` names a TAG no spec file depends on."""
+    _tree(workspace, catalog=_catalog_text(shared=["BUS"]))
+
+    findings = _findings(workspace, "coupling", TARGET)
+    assert _codes(findings) == [check.E_COUPLING_SHARED_DECL]
+    assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
+    assert "shared_interfaces" in findings[0]["message"]
+    assert "no spec file" in findings[0]["message"]
+
+
+def test_coupling_reports_a_dependency_with_no_declaration(workspace):
+    """The converse: a shared INTERFACE is depended on but never declared."""
+    layout = _layout()
+    shared = "context/shared/spec/BUS/BUS-INTERFACE.md"
+    layout[_spec("ALPHA", "ALPHA-INTERFACE.md")] = [_spec("ALPHA", "ALPHA-OVERVIEW.md"), shared]
+    _tree(workspace, layout)  # catalog carries no shared_interfaces
+    workspace.write(shared, _document([], "BUS-INTERFACE"))
+
+    findings = _findings(workspace, "coupling", TARGET)
+    assert _codes(findings) == [check.E_COUPLING_SHARED_DECL]
+    assert findings[0]["file"] == _spec("ALPHA", "ALPHA-INTERFACE.md")
+    assert "does not declare it" in findings[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# check requirements
+# ---------------------------------------------------------------------------
+
+
+def test_requirements_reports_nothing_on_a_clean_tree(workspace):
+    _tree(workspace)
+    result, code = _check(workspace, "requirements", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_requirements_reports_a_reference_to_an_absent_entry(workspace):
+    _tree(workspace, catalog=_catalog_text(modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002", "REQ-009")))))
+
+    findings = _findings(workspace, "requirements", TARGET)
+    assert _codes(findings) == [core.E_MISSING_REQUIREMENT]
+    assert "REQ-009" in findings[0]["message"]
+    assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
+
+
+def test_requirements_reports_an_entry_no_module_references(workspace):
+    _tree(workspace, requirements=_requirements_text(("REQ-001", "REQ-002", "REQ-003")))
+
+    findings = _findings(workspace, "requirements", TARGET)
+    assert _codes(findings) == [core.E_ORPHAN_REQUIREMENT]
+    assert "REQ-003" in findings[0]["message"]
+    assert findings[0]["file"] == "context/%s/requirements/REQUIREMENTS.md" % TARGET
+    assert findings[0]["line"] > 0
+
+
+# ---------------------------------------------------------------------------
+# check handoff
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_reports_nothing_on_a_complete_chain(workspace):
+    _chain(workspace)
+    result, code = _check(workspace, "handoff")
+    assert result.data["findings"] == []
+    assert result.data["target"] is None
+    assert result.diagnostics == []
+    assert code == 0
+
+
+def test_handoff_strands_an_applied_change_with_no_index(workspace):
+    """``stranded`` is the general rule, not its ``pending`` example.
+
+    An ``applied`` repo change is complete; if no project index references it,
+    no plan can ever reach it and it is stranded exactly as a ``pending`` one
+    is. This is the defect REQ-019 exists to surface.
+    """
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["code"] == core.E_HANDOFF
+    assert finding["state"] == "stranded"
+    assert finding["from_stage"] == "mspec"
+    assert finding["to_stage"] == "mplan"
+    assert finding["artifact"] == "context/%s/changes/CHANGE-002-orphaned.md" % TARGET
+
+
+def test_handoff_strands_a_pending_change_with_no_index(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-fresh.md" % TARGET,
+        _change_text("002", "fresh", "pending"),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["state"] == "stranded"
+    assert "CHANGE-002-fresh.md" in findings[0]["artifact"]
+
+
+def test_handoff_strands_an_index_with_no_plan(workspace):
+    _chain(workspace)
+    change_path = "context/%s/changes/CHANGE-002-next.md" % TARGET
+    workspace.write(change_path, _change_text("002", "next", "pending"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-002-next.md",
+        _index_text("002", "next", "pending", [change_path]),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["artifact"] == "context/project/changes/PROJECT-CHANGE-002-next.md"
+    assert findings[0]["state"] == "stranded"
+    assert findings[0]["to_stage"] == "mplan"
+
+
+def test_handoff_reports_an_index_naming_no_change(workspace):
+    """``incomplete``: the successor's input is present but partial."""
+    _chain(workspace)
+    workspace.write("context/project/plans/002-empty/plan.yaml", _graph_text("002-empty", project_change="002"))
+    workspace.write("context/project/plans/002-empty/state.yaml", _plan_state_text("002-empty"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-002-empty.md",
+        _index_text("002", "empty", "pending", []),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["state"] == "incomplete"
+    assert findings[0]["artifact"] == "context/project/changes/PROJECT-CHANGE-002-empty.md"
+
+
+def test_handoff_strands_a_plan_with_no_recorded_run(workspace):
+    _chain(workspace)
+    workspace.write("context/project/plans/002-next/plan.yaml", _graph_text("002-next"))
+    workspace.write(
+        "context/project/plans/002-next/state.yaml",
+        _plan_state_text("002-next", run=0, statusname="pending", stories=(("01-01-demo-ALPHA", "pending"),)),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["state"] == "stranded"
+    assert findings[0]["from_stage"] == "mplan"
+    assert findings[0]["to_stage"] == "mexecute"
+    assert findings[0]["artifact"] == "context/project/plans/002-next"
+
+
+def test_handoff_reports_a_plan_directory_with_no_graph(workspace):
+    _chain(workspace)
+    workspace.write("context/project/plans/002-partial/state.yaml", _plan_state_text("002-partial"))
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["state"] == "incomplete"
+    assert findings[0]["artifact"] == "context/project/plans/002-partial/plan.yaml"
+
+
+def test_handoff_strands_drift_no_change_followed(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/project/plans/001-demo/state.yaml",
+        _plan_state_text("001-demo", conformance=("drift", 3)),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["from_stage"] == "mverify"
+    assert findings[0]["to_stage"] == "mfix"
+    assert findings[0]["state"] == "stranded"
+    assert "3 finding" in findings[0]["message"]
+
+
+def test_handoff_accepts_drift_a_later_change_answers(workspace):
+    """Drift followed by a new index is consumed, not stranded."""
+    _chain(workspace)
+    workspace.write(
+        "context/project/plans/001-demo/state.yaml",
+        _plan_state_text("001-demo", conformance=("drift", 3)),
+    )
+    change_path = "context/%s/changes/CHANGE-002-fix.md" % TARGET
+    workspace.write(change_path, _change_text("002", "fix", "pending"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-002-fix.md",
+        _index_text("002", "fix", "pending", [change_path]),
+    )
+    workspace.write("context/project/plans/002-fix/plan.yaml", _graph_text("002-fix", project_change="002"))
+    workspace.write("context/project/plans/002-fix/state.yaml", _plan_state_text("002-fix"))
+
+    assert _findings(workspace, "handoff") == []
+
+
+def test_handoff_reports_an_ownership_violation(workspace):
+    """A conformance report is mverify's; a plan directory is not its tree."""
+    _chain(workspace)
+    workspace.write(
+        "context/project/plans/001-demo/mverify-report.json",
+        '{\n  "scope": {"kind": "aggregate"},\n  "findings": [],\n  "clean": true\n}\n',
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["code"] == check.E_OWNERSHIP
+    assert findings[0]["artifact"] == "context/project/plans/001-demo/mverify-report.json"
+    # Named in stage-chain order, which is what keeps both enums satisfiable.
+    assert (findings[0]["from_stage"], findings[0]["to_stage"]) == ("mplan", "mverify")
+
+
+def test_handoff_reports_a_requirement_no_module_covers(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/REQUIREMENTS.md" % TARGET,
+        _requirements_text(("REQ-001", "REQ-002", "REQ-004")),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["artifact"] == "REQ-004"
+    assert findings[0]["from_stage"] == "mreq"
+    assert findings[0]["to_stage"] == "mspec"
+
+
+def test_handoff_finding_is_a_diagnostic(workspace):
+    """``HandoffFinding = Diagnostic & {...}`` -- it is reported as both."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    result, code = _check(workspace, "handoff")
+    assert code == 1
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert isinstance(diagnostic, core.Diagnostic)
+    assert diagnostic.severity == core.SEVERITY_ERROR
+    assert diagnostic.to_dict()["state"] == "stranded"
+
+
+# ---------------------------------------------------------------------------
+# check all
+# ---------------------------------------------------------------------------
+
+
+def test_all_runs_every_check_for_one_target(workspace):
+    _chain(workspace)
+    result, code = _check(workspace, "all", TARGET)
+    assert [report["check"] for report in result.data["reports"]] == [
+        "depends-on",
+        "coupling",
+        "requirements",
+        "handoff",
+    ]
+    assert result.data["targets"] == [TARGET]
+    assert code == 0
+
+
+def test_all_without_a_target_covers_every_target(workspace):
+    _chain(workspace)
+    _tree(workspace, layout=_layout("other"), catalog=_catalog_text("other"), target="other")
+    result, code = _check(workspace, "all")
+    assert result.data["target"] is None
+    assert result.data["targets"] == ["demo", "other"]
+    assert [report["target"] for report in result.data["reports"]] == [
+        "demo",
+        "demo",
+        "demo",
+        "other",
+        "other",
+        "other",
+        None,
+    ]
+    assert code == 0
+
+
+def test_all_carries_every_finding_into_the_envelope(workspace):
+    _chain(workspace)
+    layout = _layout()
+    layout[_spec("ALPHA", "ALPHA-OVERVIEW.md")] = [_spec("COMMON", "COMMON-GONE.md")]
+    _tree(workspace, layout)
+
+    result, code = _check(workspace, "all", TARGET)
+    assert code == 1
+    assert [item.code for item in result.diagnostics] == [core.E_DANGLING_DEPENDS_ON]
+
+
+# ---------------------------------------------------------------------------
+# Exit codes and usage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("verb", ["depends-on", "coupling", "requirements"])
+def test_exit_code_follows_the_findings(workspace, verb):
+    _tree(workspace)
+    assert _check(workspace, verb, TARGET)[1] == 0
+
+    layout = _layout()
+    layout[_spec("ALPHA", "ALPHA-IMPLEMENTATION.md")] = [
+        _spec("BETA", "BETA-IMPLEMENTATION.md"),
+        _spec("ALPHA", "ALPHA-GONE.md"),
+    ]
+    _tree(workspace, layout, catalog=_catalog_text(modules=(("ALPHA", ("REQ-009",)),)))
+    result, code = _check(workspace, verb, TARGET)
+    assert result.data["findings"], "the defective fixture must report something"
+    assert code == 1
+
+
+def test_an_unknown_verb_is_a_usage_error(workspace):
+    result, code = _check(workspace, None)
+    assert code == 2
+    assert [item.code for item in result.diagnostics] == [core.E_USAGE]
+
+
+def test_a_bad_target_is_rejected_never_sanitized(workspace):
+    _tree(workspace)
+    result, code = _check(workspace, "depends-on", "../escape")
+    assert code == 2
+    assert [item.code for item in result.diagnostics] == [core.E_BAD_IDENT]
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+def test_status_reports_the_documented_shape(workspace):
+    _chain(workspace)
+    result, code = _status(workspace)
+    assert code == 0
+    report = result.data
+    assert sorted(report) == ["generated", "handoff", "stages"]
+    assert report["generated"] == NOW
+    assert sorted(report["stages"]) == ["changes", "conformance", "plans", "requirements"]
+    assert sorted(report["stages"]["requirements"]) == ["dangling", "uncovered"]
+    assert sorted(report["stages"]["changes"]) == ["pending", "unindexed"]
+    assert sorted(report["stages"]["plans"]) == ["unfinished", "unplanned_indexes"]
+    assert report["stages"]["conformance"] == [
+        {"plan_id": "001-demo", "status": "clean", "findings": 0}
+    ]
+    assert report["handoff"] == []
+
+
+def test_status_reports_the_work_in_progress(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "pending"),
+    )
+    report = _status(workspace)[0].data
+    pending = report["stages"]["changes"]["pending"]
+    assert [ref["path"] for ref in pending] == ["context/%s/changes/CHANGE-002-orphaned.md" % TARGET]
+    assert [ref["number"] for ref in report["stages"]["changes"]["unindexed"]] == ["002"]
+    assert [finding["artifact"] for finding in report["handoff"]] == [
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET
+    ]
+
+
+def test_status_reuses_the_check_stage_walk(workspace):
+    """One traversal, two presentations -- never two stage walks."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    report = _status(workspace)[0].data
+    handoff = _findings(workspace, "handoff")
+    assert report["handoff"] == handoff
+
+
+def test_status_reports_an_unfinished_plan_as_a_resolution(workspace):
+    _chain(workspace)
+    workspace.write("context/project/plans/002-next/plan.yaml", _graph_text("002-next"))
+    workspace.write(
+        "context/project/plans/002-next/state.yaml",
+        _plan_state_text("002-next", run=2, statusname="in-progress", stories=(("01-01-demo-ALPHA", "pending"),)),
+    )
+    report = _status(workspace)[0].data
+    assert report["stages"]["plans"]["unfinished"] == [
+        {
+            "plan_id": "002-next",
+            "plan_dir": "context/project/plans/002-next",
+            "status": "in-progress",
+            "run": 2,
+            "resume_wave": 1,
+            "pending_stories": ["01-01-demo-ALPHA"],
+        }
+    ]
+
+
+def test_status_is_deterministic_under_a_pinned_clock(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    first = status.run(workspace.args(), workspace.ws).to_json()
+    second = status.run(workspace.args(), workspace.ws).to_json()
+    assert first == second
+    assert '"generated": "%s"' % NOW in first
+
+
+def test_status_reports_findings_as_data_not_as_failure(workspace):
+    """``status`` describes the workspace; ``check`` judges it."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    result, code = _status(workspace)
+    assert result.data["handoff"]
+    assert result.ok is True
+    assert code == 0
+    assert _check(workspace, "handoff")[1] == 1
+
+
+# ---------------------------------------------------------------------------
+# Module boundaries
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["check.py", "status.py"])
+def test_no_dependency_on_a_concurrent_sibling(name):
+    """Neither group may reach for ``tools/state.py`` or ``tools/worktree.py``."""
+    source = (PLUGIN_ROOT / "tools" / name).read_text(encoding="utf-8")
+    assert "tools import" in source or "from tools" in source
+    for sibling in ("state", "worktree"):
+        assert "from tools import %s" % sibling not in source
+        assert "tools.%s" % sibling not in source
+
+
+def test_no_fixture_file_is_committed_under_the_plugin_tree(workspace):
+    """Every fixture is synthetic and lives in ``tmp_path``."""
+    _chain(workspace)
+    assert workspace.root.exists()
+    assert not (PLUGIN_ROOT / "tests").exists()
