@@ -46,6 +46,23 @@ The project-level index references the repo-level change files produced in that 
 
 **Key rule:** `mplan` reads `context/project/changes/` to determine what to plan. Repo-level change files in `context/<repo>/changes/` contain the implementation detail agents need.
 
+### Sequence resolution and create-vs-continue
+
+A run either **continues** an existing change file or **creates** a new one at the next free number. Both the decision and the allocation are performed by the tool and must not be re-derived by the reader:
+
+- `mc.py change resolve <repo> [--slug <slug>]` — repo-level, for `context/<repo>/changes/`.
+- `mc.py change index-resolve [--slug <slug>]` — project-level, for `context/project/changes/`.
+
+The rule they apply, keyed on `status` first:
+
+- A change file is **continuable** only when its `status` is `pending` or `in-progress` **and** no plan directory in `context/project/plans/` corresponds to it. Both conditions must hold.
+- Every other status is **terminal**: `applied`, `superseded`, and `complete` are never re-opened, and neither is any initial-spec baseline record. A terminal file is left untouched and a new file is created instead.
+- Plan existence alone never decides this. A terminal file with no plan is still terminal.
+
+Allocation takes the next number **above the highest `<NNN>` already present** in that sequence — repo-level per repo, project-level workspace-global — never a count of files and never a gap-filling reuse.
+
+A failed invocation is a hard error that halts the phase. There is no prose fallback, because a fallback is a second implementation of the same step.
+
 ---
 
 ## Initial-Spec Baseline Records
