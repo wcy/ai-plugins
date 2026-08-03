@@ -94,16 +94,33 @@ def _emit(workspace, plan_id, draft, now=NOW):
     )
 
 
-def _write_plan(workspace, plan_id, waves, statuses=None, run=0, status="pending"):
-    """A plan directory with a graph and a state file, written directly."""
+def _write_plan(
+    workspace,
+    plan_id,
+    waves,
+    statuses=None,
+    run=0,
+    status="pending",
+    overrides=None,
+    project_change=None,
+):
+    """A plan directory with a graph and a state file, written directly.
+
+    ``overrides`` maps a story id to extra/overridden story fields -- ``repo``,
+    ``module``, ``change_file`` -- for the shards tests that need a second
+    repo or a change document a story references.
+    """
+    overrides = overrides or {}
     graph_stories = {}
     state_stories = {}
     for wave, story_ids in waves:
         for story_id in story_ids:
-            graph_stories[story_id] = dict(_story(story_id, wave=wave)[1])
-            graph_stories[story_id]["file"] = "PLAN-%s.md" % story_id
+            story = dict(_story(story_id, wave=wave)[1])
+            story.update(overrides.get(story_id, {}))
+            story["file"] = "PLAN-%s.md" % story_id
+            graph_stories[story_id] = story
             state_stories[story_id] = {
-                "repo": "demo",
+                "repo": story.get("repo", "demo"),
                 "wave": wave,
                 "status": (statuses or {}).get(story_id, "pending"),
                 "retries": 0,
@@ -111,11 +128,13 @@ def _write_plan(workspace, plan_id, waves, statuses=None, run=0, status="pending
     graph = {
         "version": 2,
         "plan_id": plan_id,
-        "type": "full",
-        "repos": ["demo"],
+        "type": "incremental" if project_change else "full",
+        "repos": sorted({story.get("repo", "demo") for story in graph_stories.values()}),
         "waves": [{"wave": wave, "stories": list(story_ids)} for wave, story_ids in waves],
         "stories": graph_stories,
     }
+    if project_change is not None:
+        graph["project_change"] = project_change
     state = {
         "version": 2,
         "plan_id": plan_id,
@@ -928,3 +947,209 @@ def test_story_emit_reports_a_missing_plan_graph(workspace):
     )
     assert code == 1
     assert [d.code for d in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+# ---------------------------------------------------------------------------
+# plan shards
+# ---------------------------------------------------------------------------
+
+
+def _change_document(scope="repo", repo="demo", paths=()):
+    lines = [
+        "<!-- change: 001 -->",
+        "<!-- scope: %s -->" % scope,
+        "<!-- repo: %s -->" % repo,
+        "<!-- status: pending -->",
+        "<!-- date: 2026-01-01 -->",
+        "",
+        "# CHANGE-001: a change",
+        "",
+        "## Affected Code Paths",
+        "",
+    ]
+    lines.extend("- %s" % path for path in paths)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def test_shards_dedupes_repo_module_pairs_across_stories(workspace):
+    _write_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA", "01-02-demo-ALPHA-TWO"]), (2, ["02-01-demo-BETA"])],
+        overrides={"02-01-demo-BETA": {"module": "BETA"}},
+    )
+    result, code = _run(workspace, verb="shards", plan_id="001-first")
+    assert code == 0
+    change_conformance = [s for s in result.data["shards"] if s["shard"] == "change-conformance"]
+    assert [s["id"] for s in change_conformance] == [
+        "change-conformance-demo-ALPHA",
+        "change-conformance-demo-BETA",
+    ]
+
+
+def test_shards_returns_the_full_entry_order(workspace):
+    _write_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        overrides={"02-01-demo-BETA": {"module": "BETA"}},
+    )
+    result, code = _run(workspace, verb="shards", plan_id="001-first")
+    assert code == 0
+    assert [s["shard"] for s in result.data["shards"]] == [
+        "change-conformance",
+        "change-conformance",
+        "coupling",
+    ]
+
+
+def test_each_shard_id_form_is_byte_exact(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    result, code = _run(workspace, verb="shards", plan_id="001-first")
+    assert code == 0
+    assert [s["id"] for s in result.data["shards"]] == [
+        "change-conformance-demo-ALPHA",
+        "coupling-demo",
+    ]
+
+
+def test_every_shard_carries_exactly_the_five_datamodel_keys(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    result, _ = _run(workspace, verb="shards", plan_id="001-first")
+    change_conformance, coupling = result.data["shards"]
+    assert list(change_conformance) == ["shard", "id", "repo", "module", "interface"]
+    assert change_conformance == {
+        "shard": "change-conformance",
+        "id": "change-conformance-demo-ALPHA",
+        "repo": "demo",
+        "module": "ALPHA",
+        "interface": None,
+    }
+    assert list(coupling) == ["shard", "id", "repo", "module", "interface"]
+    assert coupling == {
+        "shard": "coupling",
+        "id": "coupling-demo",
+        "repo": "demo",
+        "module": None,
+        "interface": None,
+    }
+
+
+def test_no_shared_tree_yields_no_cross_repo_entries_and_no_diagnostic(workspace):
+    workspace.write(
+        "context/demo/changes/CHANGE-001-x.md", _change_document(scope="repo")
+    )
+    _write_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"])],
+        overrides={"01-01-demo-ALPHA": {"change_file": "context/demo/changes/CHANGE-001-x.md"}},
+    )
+    result, code = _run(workspace, verb="shards", plan_id="001-first")
+    assert code == 0
+    assert result.diagnostics == []
+    assert [s for s in result.data["shards"] if s["shard"] == "cross-repo"] == []
+
+
+def test_cross_repo_entries_on_the_multi_repo_fixture(multi_repo_workspace):
+    _write_plan(
+        multi_repo_workspace,
+        "001-cascade",
+        [(1, ["01-01-repo-a-WIDGET", "01-02-repo-b-WIDGET"])],
+        overrides={
+            "01-01-repo-a-WIDGET": {
+                "repo": "repo-a",
+                "module": "WIDGET",
+                "change_file": "context/repo-a/changes/CHANGE-001-auth-consumer.md",
+            },
+            "01-02-repo-b-WIDGET": {
+                "repo": "repo-b",
+                "module": "WIDGET",
+                "change_file": "context/repo-b/changes/CHANGE-001-auth-consumer.md",
+            },
+        },
+        project_change="001",
+    )
+    result, code = _run(multi_repo_workspace, verb="shards", plan_id="001-cascade")
+    assert code == 0
+    cross_repo = [s for s in result.data["shards"] if s["shard"] == "cross-repo"]
+    assert cross_repo == [
+        {
+            "shard": "cross-repo",
+            "id": "cross-repo-AUTH",
+            "repo": None,
+            "module": None,
+            "interface": "AUTH",
+        }
+    ]
+
+
+def test_granularity_module_replaces_only_the_coupling_entries(workspace):
+    _write_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        overrides={"02-01-demo-BETA": {"module": "BETA"}},
+    )
+    default_result, default_code = _run(workspace, verb="shards", plan_id="001-first")
+    module_result, module_code = _run(
+        workspace, verb="shards", plan_id="001-first", granularity="module"
+    )
+    assert default_code == 0
+    assert module_code == 0
+    non_coupling_default = [s for s in default_result.data["shards"] if s["shard"] != "coupling"]
+    non_coupling_module = [s for s in module_result.data["shards"] if s["shard"] != "coupling"]
+    assert non_coupling_default == non_coupling_module
+    assert [s["id"] for s in default_result.data["shards"] if s["shard"] == "coupling"] == [
+        "coupling-demo"
+    ]
+    assert [s["id"] for s in module_result.data["shards"] if s["shard"] == "coupling"] == [
+        "coupling-demo-ALPHA",
+        "coupling-demo-BETA",
+    ]
+    for shard in module_result.data["shards"]:
+        if shard["shard"] == "coupling":
+            assert shard["module"] is not None
+
+
+def test_shards_default_granularity_is_repo(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    result, code = _run(workspace, verb="shards", plan_id="001-first")
+    assert code == 0
+    assert result.data["granularity"] == "repo"
+
+
+def test_shards_are_deterministic_across_two_runs(workspace):
+    _write_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        overrides={"02-01-demo-BETA": {"module": "BETA"}},
+    )
+    first, first_code = _run(workspace, verb="shards", plan_id="001-first")
+    second, second_code = _run(workspace, verb="shards", plan_id="001-first")
+    assert first_code == 0
+    assert second_code == 0
+    assert first.data == second.data
+
+
+def test_shards_reports_an_unknown_plan_directory(workspace):
+    result, code = _run(workspace, verb="shards", plan_id="009-nope")
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+def test_shards_rejects_a_plan_id_that_is_not_plan_shaped(workspace):
+    result, code = _run(workspace, verb="shards", plan_id="../escape")
+    assert code == 2
+    assert [d.code for d in result.diagnostics] == [core.E_BAD_IDENT]
+
+
+def test_shards_writes_nothing(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    plan_dir = workspace.path("context/project/plans/001-first")
+    before = sorted(p.name for p in plan_dir.iterdir())
+    _run(workspace, verb="shards", plan_id="001-first")
+    after = sorted(p.name for p in plan_dir.iterdir())
+    assert before == after

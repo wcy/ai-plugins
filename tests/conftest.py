@@ -225,6 +225,91 @@ def workspace(tmp_path):
 
 
 @pytest.fixture
+def multi_repo_workspace(tmp_path):
+    """Two consumer repos plus a ``context/shared/`` tree with a ``scope:
+    shared`` cascade -- the only fixture that can exercise ``plan shards``'s
+    cross-repo entries and ``check catalog`` against a shared catalog, neither
+    of which the single-repo ``workspace`` fixture can reach.
+
+    ``repo-a`` and ``repo-b`` each list the ``AUTH`` TAG under
+    ``shared_interfaces`` and carry a ``scope: shared`` repo-level change file
+    naming the shared interface path; the project index carries the matching
+    ``consumers:`` front-matter.
+    """
+    ws = SyntheticWorkspace(tmp_path)
+
+    ws.write(
+        "context/shared/spec/CATALOG.yaml",
+        "version: 1\n"
+        "scope: shared\n"
+        "interfaces:\n"
+        "  AUTH:\n"
+        "    files:\n"
+        "      - path: context/shared/spec/AUTH/AUTH-OVERVIEW.md\n"
+        "        facet: overview\n"
+        "      - path: context/shared/spec/AUTH/AUTH-INTERFACE.md\n"
+        "        facet: interface\n"
+        "        depends_on:\n"
+        "          - context/shared/spec/AUTH/AUTH-OVERVIEW.md\n",
+    )
+    ws.write("context/shared/spec/AUTH/AUTH-OVERVIEW.md", "# AUTH -- shared interface\n")
+    ws.write(
+        "context/shared/spec/AUTH/AUTH-INTERFACE.md",
+        "<!-- depends-on: context/shared/spec/AUTH/AUTH-OVERVIEW.md -->\n\n# AUTH -- Interface\n",
+    )
+
+    for repo in ("repo-a", "repo-b"):
+        ws.write(
+            "context/%s/spec/CATALOG.yaml" % repo,
+            "version: 1\n"
+            "repo: %s\n"
+            "shared_interfaces: [AUTH]\n"
+            "layers:\n"
+            "  L1-core:\n"
+            "    modules: [WIDGET]\n"
+            "modules:\n"
+            "  WIDGET:\n"
+            "    layer: L1-core\n"
+            "    files:\n"
+            "      - path: context/%s/spec/WIDGET/WIDGET-OVERVIEW.md\n"
+            "        facet: overview\n" % (repo, repo),
+        )
+        ws.write(
+            "context/%s/spec/WIDGET/WIDGET-OVERVIEW.md" % repo,
+            "# WIDGET -- %s\n" % repo,
+        )
+        ws.write(
+            "context/%s/changes/CHANGE-001-auth-consumer.md" % repo,
+            "<!-- change: 001 -->\n"
+            "<!-- scope: shared -->\n"
+            "<!-- repo: %s -->\n"
+            "<!-- status: pending -->\n"
+            "<!-- date: 2026-01-01 -->\n"
+            "\n# CHANGE-001: AUTH cascade -- %s\n"
+            "\n## Affected Code Paths\n\n"
+            "- context/shared/spec/AUTH/AUTH-INTERFACE.md\n" % (repo, repo),
+        )
+
+    ws.write(
+        "context/project/changes/PROJECT-CHANGE-001-auth-cascade.md",
+        "<!-- project-change: 001 -->\n"
+        "<!-- scope: shared -->\n"
+        "<!-- repos: repo-a, repo-b -->\n"
+        "<!-- status: pending -->\n"
+        "<!-- consumers: repo-a, repo-b -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# PROJECT-CHANGE-001: AUTH cascade\n"
+        "\n## Summary\n\nFreezes AUTH.\n"
+        "\n## Repo Change Files\n\n"
+        "| Repo | Change File | Summary |\n"
+        "|------|-------------|---------|\n"
+        "| `repo-a` | `context/repo-a/changes/CHANGE-001-auth-consumer.md` | consumer |\n"
+        "| `repo-b` | `context/repo-b/changes/CHANGE-001-auth-consumer.md` | consumer |\n",
+    )
+    return ws
+
+
+@pytest.fixture
 def instances(workspace):
     """Every canonical kind's valid instance, written into the workspace."""
     return workspace.add_all_instances()

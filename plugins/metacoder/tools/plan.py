@@ -6,8 +6,9 @@
     mc.py plan waves <target>
     mc.py plan emit <plan-id>            # draft graph as JSON on stdin
     mc.py plan story-emit <plan-id> <story-id>
+    mc.py plan shards <plan-id> [--granularity repo|module]
 
-Six verbs, each a pure function of the workspace bytes plus the injected clock:
+Seven verbs, each a pure function of the workspace bytes plus the injected clock:
 
 * ``scope`` -- ``incremental`` when ``context/project/changes/`` holds a
   ``pending`` index, naming the highest-numbered one; ``full`` otherwise.
@@ -18,6 +19,9 @@ Six verbs, each a pure function of the workspace bytes plus the injected clock:
 * ``emit`` -- ``plan.yaml``, the initial ``state.yaml``, and the ledger entry.
 * ``story-emit`` -- a story file rendered from ``shared/PLAN-STORY-TEMPLATE.md``
   with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``.
+* ``shards`` -- the ``ShardSpec[]`` conformance shard list ``mverify`` fans out
+  over: change-conformance by ``(repo, module)``, then cross-repo by shared
+  TAG, then coupling.
 
 Two boundaries this module keeps deliberately:
 
@@ -85,6 +89,15 @@ _INDEX_RE = re.compile(r"^PROJECT-CHANGE-([0-9]{3,4})-(.+)\.md$")
 _CHANGE_REF_RE = re.compile(
     r"context/[A-Za-z0-9._-]+/changes/CHANGE-[0-9]{3,4}-[A-Za-z0-9._-]+\.md"
 )
+
+#: A shared-interface spec path named inside a ``scope: shared`` change
+#: document -- the ``<IFACE>`` segment is the changed TAG a cross-repo shard
+#: covers.
+_SHARED_SPEC_TAG_RE = re.compile(r"context/shared/spec/([A-Za-z0-9._-]+)/")
+
+#: ``scope: shared`` is the value that makes a change document's referenced
+#: shared interfaces feed the ``cross-repo`` shard kind.
+SHARED_SCOPE = "shared"
 
 #: The statuses that make an index drive an incremental plan.
 SCOPE_STATUS = "pending"
@@ -216,6 +229,24 @@ def register(subparsers) -> None:
     )
     story_emit.add_argument("plan_id", metavar="<plan-id>")
     story_emit.add_argument("story_id", metavar="<story-id>")
+
+    shards = verbs.add_parser(
+        "shards",
+        help="the conformance shard list mverify fans out over",
+        description=(
+            "Derive ShardSpec[] for the plan: change-conformance entries by "
+            "(repo, module), cross-repo entries by shared-interface TAG, then "
+            "coupling entries -- per repo by default, per (repo, module) with "
+            "--granularity module."
+        ),
+    )
+    shards.add_argument("plan_id", metavar="<plan-id>")
+    shards.add_argument(
+        "--granularity",
+        choices=("repo", "module"),
+        default="repo",
+        help="coupling shard granularity (default: repo)",
+    )
 
 
 def run(args, ws) -> core.Result:
@@ -1345,6 +1376,165 @@ def _tidy(text: str) -> str:
     return "\n".join(kept) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# plan shards
+# ---------------------------------------------------------------------------
+
+
+def _shards(args, ws, now) -> core.Result:
+    """``ShardSpec[]`` -- the conformance shard list ``mverify`` fans out over.
+
+    Stable order: change-conformance by ``(repo, module)``, then cross-repo by
+    TAG, then coupling. Reads only -- no file is written and no git command is
+    invoked.
+    """
+    command = "%s.shards" % COMMAND
+    plan_id = _check_plan_id(args.plan_id)
+    granularity = getattr(args, "granularity", None) or "repo"
+
+    plan_dir_rel = _plan_dir_rel(plan_id)
+    graph_rel = "%s/%s" % (plan_dir_rel, PLAN_FILE)
+    graph_path = ws.safe_path(*(PLANS_DIR + (plan_id, PLAN_FILE)))
+    if not graph_path.is_file():
+        return core.Result(
+            command=command,
+            diagnostics=[core.error(core.E_NOT_FOUND, "no such file", file=graph_rel)],
+        )
+    graph = core.load_yaml(graph_path, graph_rel)
+    if not isinstance(graph, dict):
+        return core.Result(
+            command=command,
+            diagnostics=[core.error(core.E_PARSE, "plan graph is not a mapping", file=graph_rel)],
+        )
+
+    pairs = _story_repo_modules(graph)
+    shards: List[Dict[str, Any]] = []
+
+    for repo, module in pairs:
+        core.check_ident(repo, "repo")
+        core.check_ident(module, "module")
+        shards.append(
+            {
+                "shard": "change-conformance",
+                "id": "change-conformance-%s-%s" % (repo, module),
+                "repo": repo,
+                "module": module,
+                "interface": None,
+            }
+        )
+
+    for tag in _cross_repo_tags(ws, graph):
+        core.check_ident(tag, "interface")
+        shards.append(
+            {
+                "shard": "cross-repo",
+                "id": "cross-repo-%s" % (tag,),
+                "repo": None,
+                "module": None,
+                "interface": tag,
+            }
+        )
+
+    if granularity == "module":
+        for repo, module in pairs:
+            # Already Ident-checked above.
+            shards.append(
+                {
+                    "shard": "coupling",
+                    "id": "coupling-%s-%s" % (repo, module),
+                    "repo": repo,
+                    "module": module,
+                    "interface": None,
+                }
+            )
+    else:
+        for repo in sorted({repo for repo, _ in pairs}):
+            # Already Ident-checked above.
+            shards.append(
+                {
+                    "shard": "coupling",
+                    "id": "coupling-%s" % (repo,),
+                    "repo": repo,
+                    "module": None,
+                    "interface": None,
+                }
+            )
+
+    data = {"plan_id": plan_id, "granularity": granularity, "shards": shards}
+    return core.Result(command=command, data=data)
+
+
+def _story_repo_modules(graph: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Every story's ``(repo, module)``, deduped and sorted."""
+    stories = graph.get("stories")
+    if not isinstance(stories, dict):
+        return []
+    pairs = set()
+    for story in stories.values():
+        if not isinstance(story, dict):
+            continue
+        repo, module = story.get("repo"), story.get("module")
+        if isinstance(repo, str) and isinstance(module, str):
+            pairs.add((repo, module))
+    return sorted(pairs)
+
+
+def _cross_repo_tags(ws, graph: Dict[str, Any]) -> List[str]:
+    """The shared-interface TAGs named by this graph's ``scope: shared``
+    change documents -- read via ``core.load_front_matter``, never through
+    ``tools/change.py``. No ``context/shared/`` tree yields no entries and no
+    diagnostic: a single-repo workspace is conforming, not defective."""
+    tags = set()
+    for path in _change_document_paths(ws, graph):
+        if not path.is_file():
+            continue
+        display = ws.rel(path)
+        matter = core.load_front_matter(path, display)
+        if matter.get("scope") != SHARED_SCOPE:
+            continue
+        text = core.read_text(path, display)
+        for match in _SHARED_SPEC_TAG_RE.finditer(text):
+            tags.add(match.group(1))
+    return sorted(tags)
+
+
+def _change_document_paths(ws, graph: Dict[str, Any]) -> List[Path]:
+    """Every change document the graph references: each story's
+    ``change_file`` plus the project index its ``project_change`` names."""
+    paths: List[Path] = []
+    seen = set()
+    stories = graph.get("stories")
+    if isinstance(stories, dict):
+        for story_id in sorted(stories):
+            story = stories[story_id]
+            if not isinstance(story, dict):
+                continue
+            change_file = story.get("change_file")
+            if isinstance(change_file, str) and change_file and change_file not in seen:
+                seen.add(change_file)
+                paths.append(ws.safe_path(change_file))
+    index_path = _project_index_path(ws, graph.get("project_change"))
+    if index_path is not None:
+        paths.append(index_path)
+    return paths
+
+
+def _project_index_path(ws, project_change: Any) -> Optional[Path]:
+    """The ``PROJECT-CHANGE-<project_change>-*.md`` index, if any."""
+    if not isinstance(project_change, str) or not project_change:
+        return None
+    directory = ws.safe_path(*CHANGES_DIR)
+    if not directory.is_dir():
+        return None
+    for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+        if not entry.is_file():
+            continue
+        match = _INDEX_RE.match(entry.name)
+        if match is not None and match.group(1) == project_change:
+            return entry
+    return None
+
+
 _VERBS = {
     "scope": _scope,
     "resolve": _resolve,
@@ -1352,4 +1542,5 @@ _VERBS = {
     "waves": _waves,
     "emit": _emit,
     "story-emit": _story_emit,
+    "shards": _shards,
 }
