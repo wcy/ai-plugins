@@ -276,7 +276,7 @@ modules:
 
 ### Shared catalog — `context/shared/spec/CATALOG.yaml`
 
-Lists the interface modules only. It does **not** enumerate consumers — the set of consuming repos is derived by scanning every per-repo catalog's `shared_interfaces` field.
+Lists the interface modules only. It does **not** enumerate consumers — `mc.py spec consumers <IFACE>` derives that set from every per-repo catalog's `shared_interfaces` field.
 
 ```yaml
 version: 1

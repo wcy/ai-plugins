@@ -93,7 +93,7 @@ Tooling that scans `context/<repo>/changes/` treats `CHANGE-*-initial-spec.md` r
 
 A change to a shared interface in `context/shared/spec/` ripples into every repo that consumes that interface. The cascade is recorded with **one change file per affected repo** plus one project-level index that ties them together:
 
-1. **Find the consumers.** Scan every `context/*/spec/CATALOG.yaml` and collect the repos whose `shared_interfaces` field lists the changed interface TAG.
+1. **Find the consumers.** `mc.py spec consumers <IFACE>` returns them. The scan is performed by the tool and must not be re-derived by the reader. The rule it applies: a repo consumes `<IFACE>` when its `context/<repo>/spec/CATALOG.yaml` lists the TAG under `shared_interfaces`.
 
 2. **Write a repo-level change for the shared layer.** Create `context/shared/changes/CHANGE-<NNN>-<slug>.md` listing the `*-INTERFACE.md`/`*-DATAMODEL.md` edits.
 
