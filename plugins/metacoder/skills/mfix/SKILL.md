@@ -10,16 +10,38 @@ question — **which artefact is authoritative here, the code or the spec?** —
 the one that is wrong. Not always the code. Not always the spec. Sometimes both, sometimes
 neither (the finding is a symptom of missing architecture, which belongs to `mspec`).
 
-**`mfix` writes code and spec.** That makes it the second writing skill alongside `mexecute`,
-so its scope is deliberately fenced: it may only change what a **finding** points at. It does
-not add features, does not restructure beyond the finding's blast radius, and does not invent
-work the report did not raise. If a fix would grow past that fence, it is escalated, not taken.
+**`mfix` writes remediation — code and spec — never feature work.** That makes it the second
+writing skill alongside `mexecute`, so its scope is deliberately fenced: it may only change what
+a **finding** points at. It does not add features, does not restructure beyond the finding's
+blast radius, and does not invent work the report did not raise. If a fix would grow past that
+fence, it is escalated, not taken.
+
+## Invoking the Tool
+
+Every mechanical step of a run — resolving the plan a report belongs to, sequencing the
+remediation change document, validating any artefact, and checking coupling or `depends-on`
+correctness — is a single invocation of
+`python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`, never a procedure you re-enact from prose. **A
+non-zero exit is a hard error: report the diagnostic and halt the phase.** There is no prose
+fallback anywhere in this skill, in any phase — a fallback would be a second implementation of
+the step, and the two would drift.
+
+What is *not* delegated is the judgement: which artefact is authoritative, what the root cause
+is, and what the fix should be are yours to decide, on the evidence the tool returns.
 
 ## Step 0: Resolve the Findings
 
 Take findings from, in order of preference: an explicit report path; the `conformance.report`
-recorded in a plan's `state.yaml`; or the newest report under `context/project/out/*/`. Parse
-against `${CLAUDE_PLUGIN_ROOT}/schemas/conformance-report.schema.json`.
+recorded in a plan's `state.yaml`; or the newest report under `context/project/out/*/`.
+
+Resolve which plan a finding belongs to — and, absent an explicit path, whose `state.yaml`
+carries the `conformance.report` to read — with the tool, then validate the report before
+trusting a field of it:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan resolve [<plan-id>]
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate conformance <report-path>
+```
 
 If the user names a subset ("just the blocking ones", "the warnings"), honour it and say which
 findings you are leaving.
@@ -39,11 +61,16 @@ them — a report that over-claims is itself worth knowing about.
 This is the skill. Work through it per finding, in this order:
 
 1. **Is the spec describing intended architecture the code drifted from?** → **fix the code.**
-   Signals: the spec names a module/layer/boundary and the code is somewhere else; the code
-   violates STANDARD-SPEC's dependency rules (an IMPLEMENTATION importing another module's
-   IMPLEMENTATION, a cross-repo reference bypassing `context/shared/spec/`); `CATALOG.yaml`
+   Signals: the spec names a module/layer/boundary and the code is somewhere else; the checker
+   still reports the dependency-rule or `depends-on` violation the finding names; `CATALOG.yaml`
    declares an export the code hides. A catalog and a module disagreeing about what is public
-   is the code's bug, not the catalog's.
+   is the code's bug, not the catalog's. Get the first two signals from the tool — the rules are
+   its to apply, not yours to re-derive:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check coupling <repo>
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check depends-on <repo>
+   ```
 
 2. **Is the code a deliberate decision the spec over-promised past?** → **fix the spec.**
    Signals: the behaviour is documented in a docstring or change file with a stated reason; it
@@ -110,11 +137,24 @@ context-injected.
 
 **Every run writes a change file** per `STANDARD-CHANGE.md` in `context/<repo>/changes/`, even
 when only the spec moved. It records, per finding: the decision, the reason, and — for a spec
-fix — why the code was left alone. Validate what you write:
+fix — why the code was left alone. Do not pick its number or decide create-vs-continue
+yourself; the tool does both, continuing an open document rather than allocating a new one
+exactly when that document's `status` is still `pending` or `in-progress` and no plan directory
+corresponds to it:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py change-frontmatter context/<repo>/changes/CHANGE-<NNN>-*.md
-python3 ${CLAUDE_PLUGIN_ROOT}/schemas/validate.py catalog context/<repo>/spec/CATALOG.yaml
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change resolve <repo> --slug <slug>
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<repo>/changes/CHANGE-<NNN>-<slug>.md \
+    --scope repo --repo <repo> --status pending --title "<title>"
+```
+
+`change emit` writes the front-matter and the section skeleton; the per-finding prose is yours.
+Then validate what you wrote, and re-run the mechanical checks over any spec you edited:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change context/<repo>/changes/CHANGE-<NNN>-<slug>.md
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<repo>/spec/CATALOG.yaml
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check depends-on <repo>
 ```
 
 A fix that lands **after** the code shipped — a retroactive record — says so in the change file.
@@ -122,8 +162,14 @@ Silent reconciliation of a released symbol is how the gap got there.
 
 ## Step 6: Re-verify and Report
 
-Re-run `/mverify` over the same scope and confirm each finding is closed. Findings that survive
-are reported with why; do not edit twice hoping the report changes.
+Re-run `/mverify` over the same scope and confirm each finding is closed. For findings the
+mechanical checks raised, confirm closure with the checker rather than by reading the rules back:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <repo>
+```
+
+Findings that survive are reported with why; do not edit twice hoping the report changes.
 
 The run report lists, per finding: `code` | `spec` | `both` | `deferred` | `not-reproduced`, the
 one-line reason, the files touched, and any release/propagation the fix forced. Deferred items
@@ -133,11 +179,14 @@ debt rather than an unnoticed violation.
 
 ## What mfix does / does NOT do
 
-- **Does:** verify findings; decide code-vs-spec per finding; fix at root cause; write a change
-  file; keep gates green; re-verify; record deferrals.
-- **Does NOT:** add features or refactor beyond a finding's fence; author `context/shared/spec/`
-  contracts (that is `mspec`); generate a spec tree for a repo that has none (that is
-  `mreverse`); re-plan (`mplan`); publish or push without explicit authorisation.
+- **Does:** verify findings; decide code-vs-spec per finding — that call is `mfix`'s, not the
+  user's and not the tool's; fix at root cause; write a change file; keep gates green;
+  re-verify; record deferrals.
+- **Does NOT:** ship feature code — remediation of a raised finding only, never new
+  functionality (that is `mexecute`); refactor beyond a finding's fence; author
+  `context/shared/spec/` contracts (that is `mspec`); generate a spec tree for a repo that has
+  none (that is `mreverse`); re-plan (`mplan`); re-derive a mechanical step `mc.py` owns or
+  carry on past a failed invocation; publish or push without explicit authorisation.
 
 ## Asking Questions
 
