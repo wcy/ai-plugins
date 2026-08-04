@@ -22,15 +22,15 @@ Then register this repo as a plugin marketplace and install whichever plugin you
 /plugin install metacoder@ai-plugins
 ```
 
-Installing `metacoder` registers all eight skills — `mspec`, `mreverse`, `mplan`, `mverify`,
-`mexecute`, `mquick`, `mreq`, and `mfix` — and makes them invokable. Nothing is copied into the
-target project's `.claude/`.
+Installing `metacoder` registers all nine skills — `mspec`, `mreverse`, `mplan`, `mverify`,
+`mexecute`, `mquick`, `mreq`, `mfix`, and `mmigrate` — and makes them invokable. Nothing is copied
+into the target project's `.claude/`.
 
 ## Plugins
 
 | Plugin | Description |
 |---|---|
-| [metacoder](plugins/metacoder/README.md) | Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), fix the drift it finds by deciding code-vs-spec (mfix), execute plans as worktree-isolated waves (mexecute), run the whole loop autonomously (mquick), and author or derive the requirements layer (mreq) that specs build from |
+| [metacoder](plugins/metacoder/README.md) | Spec-to-ship workflow that keeps codebases coherent: write specs (mspec), reverse-engineer/reconcile specs from code (mreverse), plan implementations (mplan), verify conformance (mverify), fix the drift it finds by deciding code-vs-spec (mfix), execute plans as worktree-isolated waves (mexecute), run the whole loop autonomously (mquick), author or derive the requirements layer (mreq) that specs build from, and keep every tracked artifact's own schema, identifiers, and cross-references conformant (mmigrate) |
 
 ## License
 
