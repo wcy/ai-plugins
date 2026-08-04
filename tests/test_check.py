@@ -19,9 +19,24 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import check, core, status
+from tools import check, core, spec, status
 
 TARGET = "demo"
+
+#: The files ``_layout`` writes per module -- kept in one place so
+#: ``_catalog_text`` can declare exactly what the tree holds.
+_LAYOUT_FILES = {
+    "COMMON": ("COMMON-OVERVIEW.md",),
+    "ALPHA": ("ALPHA-OVERVIEW.md", "ALPHA-INTERFACE.md", "ALPHA-IMPLEMENTATION.md"),
+    "BETA": ("BETA-OVERVIEW.md", "BETA-INTERFACE.md", "BETA-IMPLEMENTATION.md"),
+}
+
+
+def _facet_of(module, filename):
+    facet = spec.facet_for(filename)
+    if facet is None and module == spec.COMMON_MODULE:
+        facet = spec.COMMON_FACET
+    return facet
 
 
 # ---------------------------------------------------------------------------
@@ -70,21 +85,33 @@ def _layout(target=TARGET):
 
 
 def _catalog_text(target=TARGET, modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",))), shared=None):
+    """A catalog declaring every file ``_layout`` writes for the given modules.
+
+    ``COMMON`` is always included -- in both the ``layers:`` block and
+    ``modules:`` -- with no ``requirements`` key, so the catalog check has a
+    complete tree to compare against and ``check requirements`` is unaffected.
+    """
+    all_modules = list(modules)
+    if not any(name == "COMMON" for name, _requirements in all_modules):
+        all_modules = [("COMMON", ())] + all_modules
+
     lines = [
         "version: 1",
         "repo: %s" % target,
     ]
     if shared is not None:
         lines.append("shared_interfaces: [%s]" % ", ".join(shared))
-    lines.extend(["layers:", "  L1-core:", "    modules: [%s]" % ", ".join(name for name, _ in modules), "modules:"])
-    for name, requirements in modules:
+    names = [name for name, _requirements in all_modules]
+    lines.extend(["layers:", "  L1-core:", "    modules: [%s]" % ", ".join(names), "modules:"])
+    for name, requirements in all_modules:
         lines.append("  %s:" % name)
         lines.append("    layer: L1-core")
         if requirements:
             lines.append("    requirements: [%s]" % ", ".join(requirements))
         lines.append("    files:")
-        lines.append("      - path: %s" % _spec(name, "%s-OVERVIEW.md" % name, target))
-        lines.append("        facet: overview")
+        for filename in _LAYOUT_FILES.get(name, ("%s-OVERVIEW.md" % name,)):
+            lines.append("      - path: %s" % _spec(name, filename, target))
+            lines.append("        facet: %s" % _facet_of(name, filename))
     return "\n".join(lines) + "\n"
 
 
@@ -425,6 +452,114 @@ def test_requirements_reports_an_entry_no_module_references(workspace):
 
 
 # ---------------------------------------------------------------------------
+# check catalog
+# ---------------------------------------------------------------------------
+
+
+def _remove_catalog_entry(text, path):
+    """Drop one ``- path: <path>`` entry (and its ``facet:`` line)."""
+    lines = text.splitlines()
+    out = []
+    skip_next = False
+    for line in lines:
+        if skip_next:
+            skip_next = False
+            continue
+        if line.strip() == "- path: %s" % path:
+            skip_next = True
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _append_catalog_entry(text, path, facet):
+    """Add one more ``files[]`` entry to the last module in the text."""
+    return text.rstrip("\n") + "\n      - path: %s\n        facet: %s\n" % (path, facet)
+
+
+def _set_catalog_facet(text, path, facet):
+    """Rewrite the ``facet:`` line that follows one ``- path: <path>`` entry."""
+    lines = text.splitlines()
+    out = []
+    replace_next = False
+    for line in lines:
+        if replace_next:
+            out.append("        facet: %s" % facet)
+            replace_next = False
+            continue
+        out.append(line)
+        if line.strip() == "- path: %s" % path:
+            replace_next = True
+    return "\n".join(out) + "\n"
+
+
+def _set_catalog_layer(text, module, layer):
+    """Rewrite one module's ``layer:`` line, leaving the ``layers:`` block as is."""
+    lines = text.splitlines()
+    out = []
+    in_module = False
+    for line in lines:
+        if line == "  %s:" % module:
+            in_module = True
+            out.append(line)
+            continue
+        if in_module and line.strip().startswith("layer:"):
+            out.append("    layer: %s" % layer)
+            in_module = False
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def test_catalog_reports_nothing_on_a_clean_tree(workspace):
+    _tree(workspace)
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_catalog_reports_a_spec_file_the_catalog_does_not_declare(workspace):
+    """File-set agreement: a spec file no entry declares."""
+    path = _spec("BETA", "BETA-IMPLEMENTATION.md")
+    catalog = _remove_catalog_entry(_catalog_text(), path)
+    _tree(workspace, catalog=catalog)
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_UNLISTED_FILE]
+    assert findings[0]["file"] == path
+
+
+def test_catalog_reports_an_entry_whose_path_names_no_file(workspace):
+    """File-set agreement: a declared path with no matching file."""
+    catalog = _append_catalog_entry(_catalog_text(), _spec("BETA", "BETA-GONE.md"), "overview")
+    _tree(workspace, catalog=catalog)
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_ABSENT_PATH]
+    assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
+    assert "BETA-GONE.md" in findings[0]["message"]
+
+
+def test_catalog_reports_a_facet_disagreeing_with_the_filename(workspace):
+    path = _spec("ALPHA", "ALPHA-OVERVIEW.md")
+    catalog = _set_catalog_facet(_catalog_text(), path, "interface")
+    _tree(workspace, catalog=catalog)
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_FACET]
+    assert findings[0]["file"] == path
+
+
+def test_catalog_reports_a_layer_disagreeing_with_the_layers_block(workspace):
+    catalog = _set_catalog_layer(_catalog_text(), "BETA", "L2-services")
+    _tree(workspace, catalog=catalog)
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_LAYER]
+    assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
+
+
+# ---------------------------------------------------------------------------
 # check handoff
 # ---------------------------------------------------------------------------
 
@@ -624,6 +759,7 @@ def test_all_runs_every_check_for_one_target(workspace):
         "depends-on",
         "coupling",
         "requirements",
+        "catalog",
         "handoff",
     ]
     assert result.data["targets"] == [TARGET]
@@ -640,6 +776,8 @@ def test_all_without_a_target_covers_every_target(workspace):
         "demo",
         "demo",
         "demo",
+        "demo",
+        "other",
         "other",
         "other",
         "other",
