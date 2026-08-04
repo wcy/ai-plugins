@@ -373,7 +373,11 @@ class Workspace:
     def _listing(directory: Path) -> List[str]:
         if not directory.is_dir():
             return []
-        return sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
+        return sorted(
+            entry.name
+            for entry in directory.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
 
     # -- path safety --------------------------------------------------------
     def safe_path(self, *parts: Any) -> Path:

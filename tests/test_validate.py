@@ -301,6 +301,18 @@ def test_workspace_listings_are_sorted(workspace):
     }
 
 
+def test_workspace_listings_exclude_dot_directories(workspace):
+    """``repos/`` or ``context/`` may itself be a git-tracked directory; its own
+    ``.git`` must never be mistaken for a repo or a target."""
+    workspace.add_repo("alpha")
+    workspace.add_repo(".git")
+    workspace.add_target("alpha")
+    workspace.add_target(".git")
+    ws = workspace.ws
+    assert ws.repos == ["alpha"]
+    assert ws.targets == ["alpha"]
+
+
 def test_dump_yaml_uses_schema_key_order_not_insertion_or_alphabetical():
     schema = core.load_schema("project-state")
     scrambled = {
