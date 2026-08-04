@@ -3,6 +3,7 @@
     mc.py check depends-on <target>
     mc.py check coupling <target>
     mc.py check requirements <target>
+    mc.py check catalog <target>
     mc.py check handoff
     mc.py check all [<target>]
 
@@ -11,7 +12,7 @@ handoff") and every finding is a ``Diagnostic`` with a stable code, so a rule
 that stops detecting a violation fails a test instead of silently returning a
 clean report.
 
-Four rules live here, and **only** here -- no other module re-derives one:
+Several rules live here, and **only** here -- no other module re-derives one:
 
 * **dangling ``depends-on``** -- a front-matter path that resolves to no file.
   ``COMMON-OVERVIEW.md`` is the one file exempt from carrying the front-matter
@@ -25,6 +26,14 @@ Four rules live here, and **only** here -- no other module re-derives one:
 * **the double declaration** -- a shared interface is declared in *both* the
   repo catalog's ``shared_interfaces`` and some spec file's ``depends-on``.
   Either half without the other is a finding.
+* **catalog file-set agreement** -- every ``.md`` under the spec tree appears
+  exactly once in ``CATALOG.yaml``'s ``files``, and every declared path exists.
+* **catalog facet** -- a declared entry's ``facet`` matches what the filename
+  suffix implies.
+* **catalog layer** -- a module's declared ``layer`` matches the layer whose
+  ``layers:`` block lists it. It deliberately does **not** check an INTERFACE
+  file's ``exports`` against the document -- no authoring convention makes
+  that decidable.
 
 ``check handoff`` walks the stage chain once. **``stranded`` is the general
 rule** ``TOOLS-DATAMODEL.md`` states -- *the artifact is complete but no
@@ -79,14 +88,30 @@ E_COUPLING_SHARED_DECL = "E_COUPLING_SHARED_DECL"
 #: A file written by a stage that does not own where it sits.
 E_OWNERSHIP = "E_OWNERSHIP"
 
+#: A spec file under the tree that no catalog entry declares.
+E_CATALOG_UNLISTED_FILE = "E_CATALOG_UNLISTED_FILE"
+
+#: A catalog entry whose `path` names no file in the tree.
+E_CATALOG_ABSENT_PATH = "E_CATALOG_ABSENT_PATH"
+
+#: A `path` declared by more than one catalog entry.
+E_CATALOG_DUPLICATE_PATH = "E_CATALOG_DUPLICATE_PATH"
+
+#: A declared `facet` disagreeing with what the filename suffix implies.
+E_CATALOG_FACET = "E_CATALOG_FACET"
+
+#: A module's declared `layer` disagreeing with the `layers:` block.
+E_CATALOG_LAYER = "E_CATALOG_LAYER"
+
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
 CHECK_REQUIREMENTS = "requirements"
+CHECK_CATALOG = "catalog"
 CHECK_HANDOFF = "handoff"
 
 #: `check all` runs these per-target checks, in this order.
-TARGET_CHECKS = (CHECK_DEPENDS_ON, CHECK_COUPLING, CHECK_REQUIREMENTS)
+TARGET_CHECKS = (CHECK_DEPENDS_ON, CHECK_COUPLING, CHECK_REQUIREMENTS, CHECK_CATALOG)
 
 # ---------------------------------------------------------------------------
 # Spec-tree vocabulary
@@ -566,6 +591,163 @@ def requirements_findings(ws: core.Workspace, target: str) -> List[core.Diagnost
 
 
 # ---------------------------------------------------------------------------
+# check catalog
+# ---------------------------------------------------------------------------
+
+
+def _catalog_module_key(target: str) -> str:
+    """``"modules"`` for a repo target, ``"interfaces"`` for the shared tree."""
+    return "interfaces" if target == SHARED_TARGET else "modules"
+
+
+def _catalog_declared_files(
+    catalog: spec.ExistingCatalog, key: str
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """``(path, entry)`` for every ``files[]`` entry, in catalog order."""
+    declared: List[Tuple[str, Dict[str, Any]]] = []
+    for module in catalog.module_names(key):
+        entries = catalog.field(key, module, "files")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and "path" in entry:
+                declared.append((str(entry["path"]), entry))
+    return declared
+
+
+def _catalog_file_set(
+    files: Sequence[SpecFile], declared: Sequence[Tuple[str, Dict[str, Any]]], relative: str
+) -> List[core.Diagnostic]:
+    """Spec files no entry declares; declared paths with no file, or repeated."""
+    findings: List[core.Diagnostic] = []
+    walked = {item.path: item for item in files}
+    declared_paths = [path for path, _entry in declared]
+    declared_set = set(declared_paths)
+
+    for item in files:  # already sorted -- stable finding order
+        if item.path not in declared_set:
+            findings.append(
+                core.error(
+                    E_CATALOG_UNLISTED_FILE,
+                    "spec file is under the tree but no catalog entry declares it",
+                    file=item.path,
+                )
+            )
+
+    seen: Dict[str, int] = {}
+    for path in declared_paths:
+        seen[path] = seen.get(path, 0) + 1
+    reported_duplicate: Set[str] = set()
+    for path in declared_paths:
+        if path not in walked:
+            findings.append(
+                core.error(
+                    E_CATALOG_ABSENT_PATH,
+                    "catalog entry names %r, which no file in the tree matches" % (path,),
+                    file=relative,
+                )
+            )
+        if seen[path] > 1 and path not in reported_duplicate:
+            reported_duplicate.add(path)
+            findings.append(
+                core.error(
+                    E_CATALOG_DUPLICATE_PATH,
+                    "%r is declared by more than one catalog entry" % (path,),
+                    file=relative,
+                )
+            )
+    return findings
+
+
+def _catalog_facet(
+    declared: Sequence[Tuple[str, Dict[str, Any]]]
+) -> List[core.Diagnostic]:
+    """A declared ``facet`` disagreeing with what the filename suffix implies."""
+    findings: List[core.Diagnostic] = []
+    for path, entry in declared:
+        name = path.rsplit("/", 1)[-1]
+        module = path.split("/")[-2] if "/" in path else ""
+        expected = spec.facet_for(name)
+        if expected is None and module == spec.COMMON_MODULE:
+            expected = spec.COMMON_FACET
+        if expected is None:
+            continue  # genuinely unlistable -- already reported by the file-set rule
+        actual = entry.get("facet")
+        if actual != expected:
+            findings.append(
+                core.error(
+                    E_CATALOG_FACET,
+                    "declared facet %r disagrees with %r, which the filename implies"
+                    % (actual, expected),
+                    file=path,
+                )
+            )
+    return findings
+
+
+def _catalog_layer(catalog: spec.ExistingCatalog, relative: str) -> List[core.Diagnostic]:
+    """A module's declared ``layer`` disagreeing with the ``layers:`` block."""
+    layers_block = catalog.top("layers")
+    layer_of: Dict[str, str] = {}
+    if isinstance(layers_block, dict):
+        for name, entry in layers_block.items():
+            listed = entry.get("modules") if isinstance(entry, dict) else None
+            if isinstance(listed, list):
+                for module in listed:
+                    layer_of.setdefault(str(module), name)
+
+    findings: List[core.Diagnostic] = []
+    for module in catalog.module_names("modules"):
+        # `ExistingCatalog.layer_of` falls back to the module entry itself,
+        # which would compare a value with itself -- read the block directly.
+        declared_layer = catalog.field("modules", module, "layer")
+        actual_layer = layer_of.get(module)
+        if actual_layer is None:
+            findings.append(
+                core.error(
+                    E_CATALOG_LAYER,
+                    "module %r has declared layer %r but no `layers:` block lists it"
+                    % (module, declared_layer),
+                    file=relative,
+                )
+            )
+        elif declared_layer != actual_layer:
+            findings.append(
+                core.error(
+                    E_CATALOG_LAYER,
+                    "module %r declares layer %r but the `layers:` block lists it under %r"
+                    % (module, declared_layer, actual_layer),
+                    file=relative,
+                )
+            )
+    return findings
+
+
+def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
+    """Compare ``CATALOG.yaml`` against the spec tree it describes.
+
+    Three rules, applied in this fixed order so finding order is stable
+    between runs: file-set agreement, facet, then layer. The layer rule is
+    skipped for ``spec.SHARED_TARGET``, whose catalog has no ``layers:``
+    block.
+    """
+    catalog, relative, exists = _catalog(ws, target)
+    if not exists or catalog is None:
+        return [core.error(core.E_NO_SUCH_FILE, "no such file", file=relative)]
+
+    files = spec_files(ws, target)
+    key = _catalog_module_key(target)
+    declared = _catalog_declared_files(catalog, key)
+
+    findings: List[core.Diagnostic] = []
+    findings.extend(_catalog_file_set(files, declared, relative))
+    findings.extend(_catalog_facet(declared))
+    if target != SHARED_TARGET:
+        findings.extend(_catalog_layer(catalog, relative))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # check handoff -- the single stage walk
 # ---------------------------------------------------------------------------
 
@@ -1027,6 +1209,7 @@ TARGET_RUNNERS = {
     CHECK_DEPENDS_ON: depends_on_findings,
     CHECK_COUPLING: coupling_findings,
     CHECK_REQUIREMENTS: requirements_findings,
+    CHECK_CATALOG: catalog_findings,
 }
 
 
@@ -1062,6 +1245,11 @@ def _coupling(args, ws: core.Workspace) -> core.Result:
 def _requirements(args, ws: core.Workspace) -> core.Result:
     target = core.check_ident(getattr(args, "target", None), "target")
     return _report_result(run_target_check(ws, CHECK_REQUIREMENTS, target))
+
+
+def _catalog_check(args, ws: core.Workspace) -> core.Result:
+    target = core.check_ident(getattr(args, "target", None), "target")
+    return _report_result(run_target_check(ws, CHECK_CATALOG, target))
 
 
 def _handoff(args, ws: core.Workspace) -> core.Result:
@@ -1102,6 +1290,7 @@ VERBS = {
     CHECK_DEPENDS_ON: _depends_on,
     CHECK_COUPLING: _coupling,
     CHECK_REQUIREMENTS: _requirements,
+    CHECK_CATALOG: _catalog_check,
     CHECK_HANDOFF: _handoff,
     "all": _all,
 }
@@ -1119,8 +1308,8 @@ def register(subparsers) -> None:
         help="the mechanical spec rules and the cross-stage handoff report",
         description=(
             "Run one of the mechanical checks: dangling depends-on paths, the three "
-            "dependency rules, requirement coverage, or the cross-stage handoff walk. "
-            "Any finding sets exit 1."
+            "dependency rules, requirement coverage, catalog agreement with the spec "
+            "tree, or the cross-stage handoff walk. Any finding sets exit 1."
         ),
     )
     parser.set_defaults(group=COMMAND, verb=None)
@@ -1157,6 +1346,18 @@ def register(subparsers) -> None:
     )
     requirements.add_argument("target", help="a repo name or 'shared'")
     requirements.set_defaults(verb=CHECK_REQUIREMENTS)
+
+    catalog_parser = verbs.add_parser(
+        CHECK_CATALOG,
+        help="CATALOG.yaml file coverage, facet, and layer agreement with the spec tree",
+        description=(
+            "Compare CATALOG.yaml against the spec tree it describes: every spec file is "
+            "declared exactly once and every declared path exists, each entry's facet "
+            "matches the filename, and each module's layer matches the layers: block."
+        ),
+    )
+    catalog_parser.add_argument("target", help="a repo name or 'shared'")
+    catalog_parser.set_defaults(verb=CHECK_CATALOG)
 
     handoff_parser = verbs.add_parser(
         CHECK_HANDOFF,

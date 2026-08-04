@@ -369,6 +369,7 @@ def arguments():
             "stdin": io.StringIO(json.dumps(draft(project_change="002"))),
         },
         "plan.story-emit": {"plan_id": PLAN_ID, "story_id": LAST_STORY},
+        "plan.shards": {"plan_id": PLAN_ID},
         "state.run-increment": {"plan_id": PLAN_ID},
         "state.set-plan": {"plan_id": PLAN_ID, "status": "in-progress"},
         "state.set-story": {
@@ -391,6 +392,7 @@ def arguments():
         "check.depends-on": {"target": "demo"},
         "check.coupling": {"target": "demo"},
         "check.requirements": {"target": "demo"},
+        "check.catalog": {"target": "demo"},
         "check.handoff": {},
         "check.all": {"target": "demo"},
         "status": {},
