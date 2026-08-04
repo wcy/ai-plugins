@@ -71,6 +71,8 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 
    Returns one `ShardSpec` per shard — `shard` (`change-conformance|cross-repo|coupling`), `id`, `repo`, `module`, `interface` — in a stable order (change-conformance by `(repo, module)`, then cross-repo by TAG, then coupling); `--json` puts the list at `data.shards`. This list **is** the fan-out set for Step 2 — do not add to it or drop from it by reading.
 
+   **Known limitation:** that rule has one sanctioned exception, and only one. When Step 0 resolves an ad-hoc change — no plan directory, `mc.py plan resolve` exiting `E_NOT_FOUND` — there is no plan graph for `mc.py plan shards` to read, so the tool offers no support there and the shard list is derived by reading instead. This is the sole exception to REQ-018's single-implementation rule and it does not extend to any path where a plan directory exists; everywhere else, the tool's list stands as given above.
+
    Granularity is this skill's judgement, expressed as the flag: the tool defaults to per-repo coupling shards and applies no numeric threshold for "small repo"; pass `--granularity module` when per-module coupling shards are wanted instead.
 
    A workspace with no `context/shared/` tree yields no cross-repo entries and no diagnostic — that is a conforming single-repo workspace, not a failure to investigate.
