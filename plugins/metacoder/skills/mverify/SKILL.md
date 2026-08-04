@@ -63,10 +63,17 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 1. Read the plan graph `context/project/plans/<plan-id>/plan.yaml` — the set of stories, the repos touched, and each story's `module`/`repo`/`change_file`/`target_paths`.
 2. Read the driving change docs: the project-level index `context/project/changes/PROJECT-CHANGE-<NNN>-*.md` and each repo-level `CHANGE-<NNN>-*.md` it references. The **Affected Code Paths** and **Spec Files Modified** tables define exactly what to check.
 3. From the change docs, note whether `scope: shared` — if so, the cross-repo conformance set is the `consumers:` list plus the repos `mc.py spec consumers <IFACE>` returns. Do not re-derive that scan by hand.
-4. Build the **shard list**:
-   - One **change-conformance shard** per `(repo, module)` the change/plan touched.
-   - One **cross-repo shard** per changed shared interface, covering all its producer/consumer repos.
-   - One **coupling shard** per touched module (or per repo for small repos).
+4. Take the **shard list** from the tool rather than building it:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan shards <plan-id> [--granularity repo|module]
+   ```
+
+   Returns one `ShardSpec` per shard — `shard` (`change-conformance|cross-repo|coupling`), `id`, `repo`, `module`, `interface` — in a stable order (change-conformance by `(repo, module)`, then cross-repo by TAG, then coupling); `--json` puts the list at `data.shards`. This list **is** the fan-out set for Step 2 — do not add to it or drop from it by reading.
+
+   Granularity is this skill's judgement, expressed as the flag: the tool defaults to per-repo coupling shards and applies no numeric threshold for "small repo"; pass `--granularity module` when per-module coupling shards are wanted instead.
+
+   A workspace with no `context/shared/` tree yields no cross-repo entries and no diagnostic — that is a conforming single-repo workspace, not a failure to investigate.
 
 Validate the plan graph on read before trusting it:
 
@@ -100,7 +107,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
 ## Step 3: Aggregate + Write the Change-Shaped Report
 
-1. **Write the shard files.** The **orchestrator** — not the shard — writes each returned JSON object to `context/project/out/<plan-id>/shards/<shard-id>.json`. Shards themselves write nothing; they only return the object (Step 2). `<shard-id>` is formed **per shard kind**, because no single template fits all three — a cross-repo shard spans every repo of one interface and has neither a single repo nor a module, and a coupling shard's per-repo variant has no module:
+1. **Write the shard files.** The **orchestrator** — not the shard — writes each returned JSON object to `context/project/out/<plan-id>/shards/<shard-id>.json`. Shards themselves write nothing; they only return the object (Step 2). `<shard-id>` is the `id` field of that shard's `ShardSpec` entry from `plan shards` (Step 1) — the tool forms it per shard kind, because no single template fits all three: a cross-repo shard spans every repo of one interface and has neither a single repo nor a module, and a coupling shard's per-repo variant has no module:
 
    | Shard kind | `<shard-id>` |
    |---|---|
