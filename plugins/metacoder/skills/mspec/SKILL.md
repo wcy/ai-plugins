@@ -193,7 +193,7 @@ This file is a historical record only. It is never updated by UPDATE mode. **Do 
 
 #### Validation
 
-Before reporting completion, verify. Items 1–2 are executed rather than confirmed by reading — one `check all` run covers both, and every `depends-on` and `coupling` finding it reports for `<target>` must be fixed before you continue:
+Before reporting completion, verify. Items 1–4 are executed rather than confirmed by reading — one `check all` run covers all four, and every `depends-on`, `coupling`, and `catalog` finding it reports for `<target>` must be fixed before you continue. Its `requirements` and `handoff` findings are reported but do not block — they name workspace-wide stranded artifacts no `mspec` run resolves:
 
 1. Every `depends-on` path points to a file that exists
 2. No IMPLEMENTATION file depends on another module's IMPLEMENTATION
@@ -202,7 +202,7 @@ Before reporting completion, verify. Items 1–2 are executed rather than confir
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
    ```
 
-3. CATALOG.yaml includes entries for all modules and all files
+3. CATALOG.yaml includes entries for all modules and all files. (Agreement between an INTERFACE entry's declared `exports` and the document it describes is not checked by any tool and stays read-confirmed.)
 4. Every module in CATALOG.yaml has correct layer and facet assignments
 5. COMMON-OVERVIEW.md covers all primary lifecycles identified in brainstorm
 6. `context/<repo>/changes/CHANGE-000-initial-spec.md` exists
@@ -380,7 +380,7 @@ The same status-keyed continue rule applies here.
 
 ### Phase 4: Validate
 
-Before reporting completion, verify. Items 1–2 are executed rather than confirmed by reading — one `check all` run per target covers both, and every `depends-on` and `coupling` finding it reports for `<target>` must be fixed before you continue:
+Before reporting completion, verify. Items 1–3 are executed rather than confirmed by reading — one `check all` run per target covers all three, and every `depends-on`, `coupling`, and `catalog` finding it reports for `<target>` must be fixed before you continue. Its `requirements` and `handoff` findings are reported but do not block — they name workspace-wide stranded artifacts no `mspec` run resolves:
 
 1. Every `depends-on` path in modified spec files points to a file that actually exists
 2. No IMPLEMENTATION file depends on another module's IMPLEMENTATION
@@ -389,7 +389,7 @@ Before reporting completion, verify. Items 1–2 are executed rather than confir
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
    ```
 
-3. CATALOG.yaml is updated for all new or modified modules
+3. CATALOG.yaml is updated for all new or modified modules. (Agreement between an INTERFACE entry's declared `exports` and the document it describes is not checked by any tool and stays read-confirmed.)
 4. A repo-level change file exists in `context/<repo>/changes/` with the correct naming
 5. The repo-level change file's "Affected Code Paths" table covers every spec change made
 6. A project-level index exists in `context/project/changes/` referencing the repo change file(s)
