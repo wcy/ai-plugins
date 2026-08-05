@@ -64,6 +64,10 @@ PLACEHOLDER_SLUG = "unnamed"
 #: The status a freshly allocated change file is born with.
 INITIAL_STATUS = "pending"
 
+#: Front-matter ``plan`` value marking a change document with no code phase to
+#: plan or execute, per ``STANDARD-CHANGE.md`` §"No-Plan-Needed Records".
+PLAN_NOT_REQUIRED = "not-required"
+
 REPO_PREFIX = "CHANGE-"
 INDEX_PREFIX = "PROJECT-CHANGE-"
 
@@ -103,6 +107,7 @@ class ChangeRef:
     path: str  # workspace-relative
     status: str
     baseline: bool  # true for *-initial-spec.md records
+    plan_not_required: bool = False  # true when front-matter carries `plan: not-required`
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -113,6 +118,7 @@ class ChangeRef:
             "path": self.path,
             "status": self.status,
             "baseline": self.baseline,
+            "plan_not_required": self.plan_not_required,
         }
 
 
@@ -194,6 +200,12 @@ def register(subparsers) -> None:
         "--repo",
         default=None,
         help="the repo the document belongs to; comma-separated for a project-level index",
+    )
+    emit.add_argument(
+        "--plan",
+        default=None,
+        choices=[PLAN_NOT_REQUIRED],
+        help="mark a change with no code phase to plan or execute (%s)" % (PLAN_NOT_REQUIRED,),
     )
     emit.set_defaults(verb="emit")
 
@@ -352,6 +364,7 @@ def _scan(
                 )
             )
             continue
+        status, plan_not_required = _front_matter_of(entry, relative, diagnostics)
         refs.append(
             ChangeRef(
                 scope=scope,
@@ -359,15 +372,19 @@ def _scan(
                 number=number,
                 slug=slug,
                 path=relative,
-                status=_status_of(entry, relative, diagnostics),
+                status=status,
                 baseline=_is_baseline(slug),
+                plan_not_required=plan_not_required,
             )
         )
     return refs
 
 
-def _status_of(entry: Path, relative: str, diagnostics: List[core.Diagnostic]) -> str:
-    """The file's front-matter ``status``, or ``""`` with a warning."""
+def _front_matter_of(
+    entry: Path, relative: str, diagnostics: List[core.Diagnostic]
+) -> Tuple[str, bool]:
+    """The file's front-matter ``status`` (or ``""`` with a warning) and whether it
+    carries ``plan: not-required``."""
     try:
         matter = core.load_front_matter(entry, relative)
     except core.ToolError as exc:
@@ -378,7 +395,7 @@ def _status_of(entry: Path, relative: str, diagnostics: List[core.Diagnostic]) -
                 file=relative,
             )
         )
-        return ""
+        return "", False
     status = matter.get("status")
     if not status:
         diagnostics.append(
@@ -388,8 +405,8 @@ def _status_of(entry: Path, relative: str, diagnostics: List[core.Diagnostic]) -
                 file=relative,
             )
         )
-        return ""
-    return status
+        return "", matter.get("plan") == PLAN_NOT_REQUIRED
+    return status, matter.get("plan") == PLAN_NOT_REQUIRED
 
 
 def _is_baseline(slug: str) -> bool:
@@ -544,6 +561,7 @@ def _emit(args, ws, diagnostics: List[core.Diagnostic]) -> Dict[str, Any]:
     if not title:
         raise core.fail(core.E_USAGE, "change emit requires --title")
     now = getattr(args, "now", None) or core.system_instant()
+    plan = getattr(args, "plan", None)
 
     if index_match is not None:
         matter = {
@@ -553,6 +571,8 @@ def _emit(args, ws, diagnostics: List[core.Diagnostic]) -> Dict[str, Any]:
             "status": args.status,
             "date": now,
         }
+        if plan:
+            matter["plan"] = plan
         heading = "%s%s: %s" % (INDEX_PREFIX, number, title)
         sections = list(INDEX_SECTIONS)
         if len(repos) > 1:
@@ -571,6 +591,8 @@ def _emit(args, ws, diagnostics: List[core.Diagnostic]) -> Dict[str, Any]:
             "status": args.status,
             "date": now,
         }
+        if plan:
+            matter["plan"] = plan
         heading = "%s%s: %s" % (REPO_PREFIX, number, title)
         sections = list(BASELINE_SECTIONS if _is_baseline(slug) else REPO_SECTIONS)
 

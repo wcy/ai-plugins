@@ -884,6 +884,8 @@ def _changes_stage(ws: core.Workspace, walk: StageWalk) -> List[change.ChangeRef
     for ref in repo_changes:
         if ref.baseline:
             continue  # a baseline record documents what exists; it is never planned
+        if ref.plan_not_required:
+            continue  # `plan: not-required` -- no code phase for an index to reach
         if (ref.repo, ref.path.rsplit("/", 1)[-1]) in referenced:
             continue
         walk.unindexed_changes.append(ref.to_dict())
@@ -936,6 +938,8 @@ def _plans_stage(
     for ref in indexes:
         if change._plan_dir_for(plan_dirs, ref.number, ref.slug) is not None:
             continue
+        if ref.plan_not_required:
+            continue  # `plan: not-required` -- no code phase to plan
         walk.unplanned_indexes.append(ref.path)
         walk.findings.append(
             handoff(

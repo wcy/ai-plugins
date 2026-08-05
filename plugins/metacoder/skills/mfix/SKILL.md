@@ -145,8 +145,14 @@ corresponds to it:
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change resolve <repo> --slug <slug>
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<repo>/changes/CHANGE-<NNN>-<slug>.md \
-    --scope repo --repo <repo> --status pending --title "<title>"
+    --scope repo --repo <repo> --status pending --title "<title>" --plan not-required
 ```
+
+Pass `--plan not-required`: an `mfix` record documents fixes already applied in this same run, so
+it has no further code phase for a plan to reach — see `STANDARD-CHANGE.md` §"No-Plan-Needed
+Records". This also means it never needs a project-level index to avoid `check handoff` stranding it;
+write one anyway if the fix is worth surfacing to a human scanning `context/project/changes/`, but
+it is no longer required for conformance.
 
 `change emit` writes the front-matter and the section skeleton; the per-finding prose is yours.
 Then validate what you wrote, and re-run the mechanical checks over any spec you edited:

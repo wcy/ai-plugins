@@ -147,31 +147,36 @@ def _tree(workspace, layout=None, catalog=None, requirements=None, target=TARGET
     return layout
 
 
-def _change_text(number, slug, statusname, repo=TARGET):
+def _change_text(number, slug, statusname, repo=TARGET, plan=None):
+    plan_line = "<!-- plan: %s -->\n" % plan if plan else ""
     return (
         "<!-- change: %s -->\n"
         "<!-- scope: repo -->\n"
         "<!-- repo: %s -->\n"
         "<!-- status: %s -->\n"
         "<!-- date: 2026-01-01 -->\n"
-        "\n# CHANGE-%s: %s\n\n## Summary\n\nA change.\n" % (number, repo, statusname, number, slug)
+        "%s"
+        "\n# CHANGE-%s: %s\n\n## Summary\n\nA change.\n"
+        % (number, repo, statusname, plan_line, number, slug)
     )
 
 
-def _index_text(number, slug, statusname, change_files=(), repo=TARGET):
+def _index_text(number, slug, statusname, change_files=(), repo=TARGET, plan=None):
     rows = "".join("| `%s` | `%s` | a change |\n" % (repo, path) for path in change_files)
+    plan_line = "<!-- plan: %s -->\n" % plan if plan else ""
     return (
         "<!-- project-change: %s -->\n"
         "<!-- scope: repo -->\n"
         "<!-- repos: %s -->\n"
         "<!-- status: %s -->\n"
         "<!-- date: 2026-01-01 -->\n"
+        "%s"
         "\n# PROJECT-CHANGE-%s: %s\n"
         "\n## Summary\n\nAn index.\n"
         "\n## Repo Change Files\n\n"
         "| Repo | Change File | Summary |\n"
         "|------|-------------|---------|\n"
-        "%s" % (number, repo, statusname, number, slug, rows)
+        "%s" % (number, repo, statusname, plan_line, number, slug, rows)
     )
 
 
@@ -609,6 +614,17 @@ def test_handoff_strands_a_pending_change_with_no_index(workspace):
     assert "CHANGE-002-fresh.md" in findings[0]["artifact"]
 
 
+def test_handoff_does_not_strand_a_pending_change_marked_plan_not_required(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-fresh.md" % TARGET,
+        _change_text("002", "fresh", "pending", plan="not-required"),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert findings == []
+
+
 def test_handoff_strands_an_index_with_no_plan(workspace):
     _chain(workspace)
     change_path = "context/%s/changes/CHANGE-002-next.md" % TARGET
@@ -623,6 +639,19 @@ def test_handoff_strands_an_index_with_no_plan(workspace):
     assert findings[0]["artifact"] == "context/project/changes/PROJECT-CHANGE-002-next.md"
     assert findings[0]["state"] == "stranded"
     assert findings[0]["to_stage"] == "mplan"
+
+
+def test_handoff_does_not_strand_an_index_with_no_plan_marked_plan_not_required(workspace):
+    _chain(workspace)
+    change_path = "context/%s/changes/CHANGE-002-next.md" % TARGET
+    workspace.write(change_path, _change_text("002", "next", "pending"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-002-next.md",
+        _index_text("002", "next", "pending", [change_path], plan="not-required"),
+    )
+
+    findings = _findings(workspace, "handoff")
+    assert findings == []
 
 
 def test_handoff_reports_an_index_naming_no_change(workspace):

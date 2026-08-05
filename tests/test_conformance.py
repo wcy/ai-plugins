@@ -478,7 +478,10 @@ def test_the_emitted_repo_change_carries_the_documented_keys_and_headings(emitte
     written = emitted.path(REPO_CHANGE).read_text(encoding="utf-8")
     documented = documented_repo_change()
 
-    assert front_matter_keys(written) == front_matter_keys(documented)
+    # `plan` is optional and only written when `--plan` is passed.
+    assert front_matter_keys(written) == [
+        key for key in front_matter_keys(documented) if key != "plan"
+    ]
     assert headings(written, 2) == headings(documented, 2)
     assert headings(written, 1) == ["CHANGE-001: Retry Policy"]
     # The schema's own required set is a floor under the document's list.
@@ -490,10 +493,10 @@ def test_the_emitted_project_index_carries_the_documented_keys_and_headings(emit
     written = emitted.path(INDEX_CHANGE).read_text(encoding="utf-8")
     documented = documented_index_change()
 
-    # `consumers` is the one documented key the CLI has no flag for; it is
-    # shared-scope-only and TOOLS-INTERFACE.md's `change emit` signature omits it.
+    # `consumers` is shared-scope-only with no flag in TOOLS-INTERFACE.md's signature;
+    # `plan` is optional and only written when `--plan` is passed.
     assert front_matter_keys(written) == [
-        key for key in front_matter_keys(documented) if key != "consumers"
+        key for key in front_matter_keys(documented) if key not in ("consumers", "plan")
     ]
     assert headings(written, 2) == headings(documented, 2)
     assert headings(written, 1) == ["PROJECT-CHANGE-001: Retry Policy"]

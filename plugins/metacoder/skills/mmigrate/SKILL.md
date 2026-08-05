@@ -186,9 +186,13 @@ the fix, then re-run the check to confirm closure:
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change resolve <repo> --slug <slug>
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<repo>/changes/CHANGE-<NNN>-<slug>.md \
-    --scope repo --repo <repo> --status pending --title "<title>"
+    --scope repo --repo <repo> --status pending --title "<title>" --plan not-required
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change context/<repo>/changes/CHANGE-<NNN>-<slug>.md
 ```
+
+Pass `--plan not-required`, same as `mfix`: a mechanical-sweep fix is already applied by the time
+this record is written, so it has no further code phase for a plan to reach (`STANDARD-CHANGE.md`
+§"No-Plan-Needed Records").
 
 Fixes confined to bookkeeping artifacts — a change file's own filename, a `REQ` heading's
 zero-padding, `plan.yaml`/`state.yaml` schema shape, the project ledger — are not spec changes and

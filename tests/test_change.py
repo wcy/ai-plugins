@@ -367,7 +367,16 @@ def test_sequence_decision_and_change_ref_match_the_datamodel_field_for_field(wo
 
     assert list(result.data) == ["action", "target", "considered"]
     for ref in [result.data["target"]] + result.data["considered"]:
-        assert list(ref) == ["scope", "repo", "number", "slug", "path", "status", "baseline"]
+        assert list(ref) == [
+            "scope",
+            "repo",
+            "number",
+            "slug",
+            "path",
+            "status",
+            "baseline",
+            "plan_not_required",
+        ]
         assert isinstance(ref["number"], str)  # zero-padded string, not an int
         assert ref["scope"] == "repo"
         assert ref["repo"] == "demo"
@@ -548,7 +557,10 @@ def test_emitted_repo_document_matches_the_standard(workspace):
     written = workspace.path(relative).read_text(encoding="utf-8")
     documented = _first_fence(_doc_section(_standard_change_text(), "Change Document Schemas", "Repo-level change document"))
 
-    assert _front_matter_keys(written) == _front_matter_keys(documented)
+    # `plan` is the one documented key `emit` does not write unless `--plan` is passed.
+    assert _front_matter_keys(written) == [
+        key for key in _front_matter_keys(documented) if key != "plan"
+    ]
     assert set(_required_keys("repoChange")) <= set(_front_matter_keys(written))
     assert _headings(written, _H2_RE) == _headings(documented, _H2_RE)
     assert _headings(written, _H1_RE) == ["CHANGE-006: A Title"]
@@ -570,6 +582,16 @@ def test_emitted_repo_document_validates_against_the_change_kind(workspace):
     }
 
 
+def test_emit_writes_plan_not_required_when_passed(workspace):
+    relative = "context/demo/changes/CHANGE-006-retry-policy.md"
+    _emit(workspace, relative, plan="not-required")
+
+    outcome = core.validate_instance("change", workspace.path(relative), workspace.ws)
+    assert outcome.ok is True
+    matter = core.load_front_matter(workspace.path(relative))
+    assert matter["plan"] == "not-required"
+
+
 def test_emitted_project_index_matches_the_standard(workspace):
     relative = "context/project/changes/PROJECT-CHANGE-004-retry-policy.md"
     result, code = _emit(workspace, relative, repo="demo, other", scope="shared")
@@ -578,10 +600,10 @@ def test_emitted_project_index_matches_the_standard(workspace):
     written = workspace.path(relative).read_text(encoding="utf-8")
     documented = _first_fence(_doc_section(_standard_change_text(), "Change Document Schemas", "Project-level change index"))
 
-    # `consumers` is the one documented key `emit` does not write: it is
-    # shared-scope-only and has no flag in TOOLS-INTERFACE.md's signature.
+    # `consumers` is shared-scope-only with no flag in TOOLS-INTERFACE.md's signature;
+    # `plan` is only written when `--plan` is passed. Neither is written here.
     assert _front_matter_keys(written) == [
-        key for key in _front_matter_keys(documented) if key != "consumers"
+        key for key in _front_matter_keys(documented) if key not in ("consumers", "plan")
     ]
     assert set(_required_keys("projectChange")) <= set(_front_matter_keys(written))
     assert _headings(written, _H2_RE) == _headings(documented, _H2_RE)

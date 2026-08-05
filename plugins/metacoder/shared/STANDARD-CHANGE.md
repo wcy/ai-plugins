@@ -131,6 +131,7 @@ Every repo-level change document in `context/<repo>/changes/` must follow this s
 <!-- repo: <repo> -->                  # the repo this change file belongs to
 <!-- status: pending | in-progress | applied | superseded -->
 <!-- date: YYYY-MM-DD -->
+<!-- plan: not-required -->            # optional -- see "No-Plan-Needed Records"
 
 # CHANGE-<NNN>: <Title>
 
@@ -230,6 +231,7 @@ Every project-level index in `context/project/changes/` must follow this structu
 <!-- status: pending | in-progress | applied | superseded -->
 <!-- date: YYYY-MM-DD -->
 <!-- consumers: <repo, ...> -->        # shared scope only: consuming repos that have change files
+<!-- plan: not-required -->            # optional -- see "No-Plan-Needed Records"
 
 # PROJECT-CHANGE-<NNN>: <Title>
 
@@ -266,6 +268,29 @@ complete (terminal; baseline records only — see Initial-Spec Baseline Records)
 - **applied** — All code changes are complete and validated.
 - **superseded** — A later change document replaces or invalidates this one. Reference the superseding change number.
 - **complete** — Terminal status reserved for **initial-spec baseline records**. These document the starting state of a spec and have no code to implement, so they are born `complete` and never transition.
+
+A change document carrying `plan: not-required` may move directly from `pending` to `applied` — there
+is no code phase to pass through `in-progress` for.
+
+---
+
+## No-Plan-Needed Records
+
+Some change documents have no code phase at all: a documentation-only spec formalization, or a
+retroactive record of a fix `mfix`/`mmigrate` already made outside the plan process. `check handoff`
+(REQ-019) treats every `pending`/`applied` change as reachable by a future plan by default — a repo-level
+change needs a project index referencing it, and a project-level index needs a plan directory — and
+reports one that isn't as `stranded`. A record with nothing for a plan to do would strand permanently
+under that rule, not because anything was missed but because there's genuinely nothing to plan.
+
+Set `<!-- plan: not-required -->` in such a record's front-matter (repo-level, project-level, or
+both) to mark it exempt. `check handoff`'s `mspec`→`mplan` stage does not flag a marked record for
+lacking an index reference or a plan directory. This is not a substitute for filling in "Affected
+Code Paths" honestly — write "None" there and say why, per the Rules below — the marker only stops
+the record from being reported as an oversight when there truly is none.
+
+`mc.py change emit --plan not-required` sets the field at emission time. `mfix` and `mmigrate` set it
+on every retroactive record they write, since none of their fixes have a further code phase to plan.
 
 ---
 

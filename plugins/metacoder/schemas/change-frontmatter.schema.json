@@ -28,7 +28,8 @@
         "scope": { "enum": ["repo", "shared"] },
         "repo": { "type": "string", "minLength": 1 },
         "status": { "enum": ["pending", "in-progress", "applied", "superseded", "complete"] },
-        "date": { "$ref": "#/$defs/date" }
+        "date": { "$ref": "#/$defs/date" },
+        "plan": { "$ref": "#/$defs/planNotRequired" }
       },
       "description": "status 'complete' is reserved for CHANGE-<NNN>-initial-spec.md baseline records."
     },
@@ -42,9 +43,14 @@
         "repos": { "$ref": "#/$defs/csv" },
         "status": { "enum": ["pending", "in-progress", "applied", "superseded"] },
         "date": { "$ref": "#/$defs/date" },
-        "consumers": { "$ref": "#/$defs/csv" }
+        "consumers": { "$ref": "#/$defs/csv" },
+        "plan": { "$ref": "#/$defs/planNotRequired" }
       },
       "description": "Project-level index. 'consumers' is required in practice only for scope: shared."
+    },
+    "planNotRequired": {
+      "const": "not-required",
+      "description": "Optional. Marks a change document that has no code phase to plan or execute — a documentation-only spec formalization, or a retroactive record of a fix already made outside the plan process (mfix, mmigrate). check handoff's mspec-to-mplan stage does not flag a marked record as stranded for lacking a project index reference (repo-level) or a plan directory (project-level)."
     }
   }
 }
