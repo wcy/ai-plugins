@@ -1,6 +1,6 @@
 [project]
 name = "metacoder"
-version = "0.9.1"
+version = "0.10.0"
 description = "Deterministic step layer (TOOLS) for the metacoder Claude Code plugin"
 requires-python = ">=3.9"
 dependencies = [
