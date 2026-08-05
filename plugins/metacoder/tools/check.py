@@ -88,6 +88,11 @@ E_COUPLING_SHARED_DECL = "E_COUPLING_SHARED_DECL"
 #: A file written by a stage that does not own where it sits.
 E_OWNERSHIP = "E_OWNERSHIP"
 
+#: A catalog reference whose mnemonic disagrees with the entry's own heading.
+#: It still resolves -- it names a live requirement, not a dangling one -- so
+#: this is a warning, never an error.
+W_STALE_REQ_MNEMONIC = "W_STALE_REQ_MNEMONIC"
+
 #: A spec file under the tree that no catalog entry declares.
 E_CATALOG_UNLISTED_FILE = "E_CATALOG_UNLISTED_FILE"
 
@@ -135,10 +140,6 @@ SHARED_SPEC_PREFIX = "%s/%s/%s/" % (CONTEXT_DIRNAME, SHARED_TARGET, SPEC_DIR)
 SHARED_INTERFACE_RE = re.compile(
     r"^context/shared/spec/([A-Z0-9-]+)/\1-INTERFACE\.md$"
 )
-
-#: `REQ-<NNN>`, optionally qualified with the project tier, per
-#: catalog.schema.json's `requirements` item pattern.
-REQUIREMENT_REF_RE = re.compile(r"^(?:(project):)?(REQ-[0-9]{3,})$")
 
 PROJECT_TIER = "project"
 
@@ -189,10 +190,18 @@ def handoff(
     state: str,
     file: Optional[str] = None,
     line: Optional[int] = None,
+    severity: str = core.SEVERITY_ERROR,
 ) -> HandoffFinding:
-    """One handoff finding, always at ``error`` severity so it sets exit 1."""
+    """One handoff finding, at the given severity (``error`` by default).
+
+    Every pre-existing call site stays ``error``, which is what sets exit 1.
+    The one exception is the open-`REQ-CHANGE` finding, passed
+    ``severity=core.SEVERITY_WARNING`` at its call site: a captured
+    requirement awaiting its spec change is a normal in-progress state, not a
+    defect, and must leave exit 0.
+    """
     return HandoffFinding(
-        core.SEVERITY_ERROR,
+        severity,
         code,
         message,
         file,
@@ -507,20 +516,41 @@ def _module_of(reference: str) -> Optional[Tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _canonical_req_id(number: Any) -> str:
+    """The bare canonical form of a requirement number -- the display form of
+    the identity ``parse_req_id`` resolves every written form onto."""
+    return req.ID_FORMAT % int(number)
+
+
 @dataclass
 class RequirementCoverage:
-    """One target's catalog references measured against its requirements tier."""
+    """One target's catalog references measured against its requirements tier.
+
+    Every dict and set here is keyed on the *canonical* bare id -- the number
+    alone, per ``parse_req_id`` -- never on the raw written text. That is what
+    lets a mnemonic-bearing reference and a bare entry heading resolve to the
+    same requirement instead of comparing as different strings.
+    """
 
     target: str
     catalog_path: str
     requirements_path: str
-    #: id -> the modules referencing it, in catalog order.
+    #: canonical id -> the modules referencing it, in catalog order.
     referenced: Dict[str, List[str]] = field(default_factory=dict)
-    #: id -> the line it is declared on in the tier document.
+    #: canonical id -> the line it is declared on in the tier document.
     present: Dict[str, Optional[int]] = field(default_factory=dict)
+    #: canonical id -> that entry's own mnemonic (or ``None``).
+    present_mnemonic: Dict[str, Optional[str]] = field(default_factory=dict)
     #: `project:REQ-<NNN>` references, measured against the project tier.
     project_referenced: Dict[str, List[str]] = field(default_factory=dict)
     project_present: Set[str] = field(default_factory=set)
+    project_present_mnemonic: Dict[str, Optional[str]] = field(default_factory=dict)
+    #: `(canonical id, reference mnemonic, module, tier)` for every reference
+    #: that carried a mnemonic -- checked against `present_mnemonic` once the
+    #: whole tier has been read.
+    mnemonic_refs: List[Tuple[str, str, str, str]] = field(default_factory=list)
+    #: `(raw, module)` for every catalog reference that does not parse at all.
+    unparsed: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def dangling(self) -> List[str]:
@@ -538,6 +568,25 @@ class RequirementCoverage:
         """Declared ids that no module references."""
         return [item for item in sorted(self.present) if item not in self.referenced]
 
+    @property
+    def stale_mnemonics(self) -> List[Tuple[str, str, str]]:
+        """`(canonical id, reference mnemonic, module)` where the reference's
+        mnemonic disagrees with the entry's own heading. A reference to an
+        absent entry is reported as dangling, never as stale, and a
+        reference agreeing with the heading is not reported at all."""
+        stale: List[Tuple[str, str, str]] = []
+        for canonical, ref_mnemonic, module, tier in self.mnemonic_refs:
+            present = self.project_present if tier == PROJECT_TIER else self.present
+            if canonical not in present:
+                continue
+            heading = (
+                self.project_present_mnemonic if tier == PROJECT_TIER else self.present_mnemonic
+            ).get(canonical)
+            if heading == ref_mnemonic:
+                continue
+            stale.append((canonical, ref_mnemonic, module))
+        return stale
+
 
 def requirement_coverage(ws: core.Workspace, target: str) -> RequirementCoverage:
     """Read one target's catalog references and its requirements tier."""
@@ -547,26 +596,41 @@ def requirement_coverage(ws: core.Workspace, target: str) -> RequirementCoverage
         target=target, catalog_path=catalog_rel, requirements_path=document.path
     )
     for entry in document.entries:
-        coverage.present.setdefault(entry.id, entry.line)
+        canonical = _canonical_req_id(entry.number)
+        coverage.present.setdefault(canonical, entry.line)
+        coverage.present_mnemonic.setdefault(canonical, entry.mnemonic)
     if exists and catalog is not None:
         for module in catalog.module_names("modules"):
             listed = catalog.field("modules", module, "requirements")
             if not isinstance(listed, list):
                 continue
             for raw in listed:
-                match = REQUIREMENT_REF_RE.match(str(raw))
-                if match is None:
+                try:
+                    parsed = req.parse_req_id(raw)
+                except core.ToolError:
+                    coverage.unparsed.append((str(raw), module))
                     continue
-                tier, identifier = match.group(1), match.group(2)
-                table = coverage.project_referenced if tier else coverage.referenced
-                table.setdefault(identifier, []).append(module)
+                canonical = _canonical_req_id(parsed.number)
+                table = (
+                    coverage.project_referenced
+                    if parsed.tier == PROJECT_TIER
+                    else coverage.referenced
+                )
+                table.setdefault(canonical, []).append(module)
+                if parsed.mnemonic is not None:
+                    coverage.mnemonic_refs.append((canonical, parsed.mnemonic, module, parsed.tier))
     if coverage.project_referenced:
-        coverage.project_present.update(req.read_requirements(ws, PROJECT_TIER).ids)
+        for entry in req.read_requirements(ws, PROJECT_TIER).entries:
+            canonical = _canonical_req_id(entry.number)
+            coverage.project_present.add(canonical)
+            coverage.project_present_mnemonic.setdefault(canonical, entry.mnemonic)
     return coverage
 
 
 def requirements_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
-    """Catalog references to absent ids, and ids no module references."""
+    """Catalog references to absent ids, ids no module references, a
+    reference whose mnemonic disagrees with its entry's heading, and a
+    reference that does not parse as an id at all."""
     coverage = requirement_coverage(ws, target)
     findings: List[core.Diagnostic] = []
     for identifier in coverage.dangling:
@@ -585,6 +649,25 @@ def requirements_findings(ws: core.Workspace, target: str) -> List[core.Diagnost
                 "%s is referenced by no module in %s" % (identifier, coverage.catalog_path),
                 file=coverage.requirements_path,
                 line=coverage.present.get(identifier),
+            )
+        )
+    for raw, module in coverage.unparsed:
+        findings.append(
+            core.error(
+                req.E_BAD_REQ_REF,
+                "module %r's catalog reference %r does not parse as a requirement id"
+                % (module, raw),
+                file=coverage.catalog_path,
+            )
+        )
+    for canonical, ref_mnemonic, module in coverage.stale_mnemonics:
+        findings.append(
+            core.warning(
+                W_STALE_REQ_MNEMONIC,
+                "module %r references %s-%s, which disagrees with %s's own heading "
+                "mnemonic; it still resolves to a live requirement"
+                % (module, canonical, ref_mnemonic, canonical),
+                file=coverage.catalog_path,
             )
         )
     return findings
@@ -772,6 +855,7 @@ class StageWalk:
 
     uncovered: List[str] = field(default_factory=list)
     dangling: List[str] = field(default_factory=list)
+    open_req_changes: List[str] = field(default_factory=list)
     pending_changes: List[Dict[str, Any]] = field(default_factory=list)
     unindexed_changes: List[Dict[str, Any]] = field(default_factory=list)
     unplanned_indexes: List[str] = field(default_factory=list)
@@ -801,7 +885,8 @@ def handoff_findings(ws: core.Workspace) -> List[HandoffFinding]:
 
 
 def _requirements_stage(ws: core.Workspace, walk: StageWalk) -> None:
-    """A requirement no module covers has not reached ``mspec``."""
+    """A requirement no module covers, and a `REQ-CHANGE` no spec change has
+    answered, have both not reached ``mspec``."""
     uncovered: List[str] = []
     dangling: List[str] = []
     for target in ws.targets:
@@ -824,6 +909,38 @@ def _requirements_stage(ws: core.Workspace, walk: StageWalk) -> None:
             )
     walk.uncovered = sorted(set(uncovered))
     walk.dangling = sorted(set(dangling))
+    _open_req_changes_stage(ws, walk)
+
+
+def _open_req_changes_stage(ws: core.Workspace, walk: StageWalk) -> None:
+    """Every `REQ-CHANGE` still `open` with no spec change answering it.
+
+    Extends the same mreq->mspec pass rather than adding a second traversal:
+    `walk_stages` calls only `_requirements_stage`, and this is a step of it.
+    A record carrying `spec-change: not-required` is exempt -- it is a
+    revision with no spec delta, complete as written, whatever its `status`.
+    Reported at `warning` severity: a captured requirement awaiting its spec
+    change is a normal in-progress state, not a defect.
+    """
+    open_records: List[str] = []
+    for tier in list(ws.targets) + [PROJECT_TIER]:
+        for ref in req._scan_req_changes(ws, tier, walk.diagnostics):
+            if ref.status != "open" or ref.spec_change == req.SPEC_CHANGE_NOT_REQUIRED:
+                continue
+            open_records.append(ref.path)
+            walk.findings.append(
+                handoff(
+                    core.E_HANDOFF,
+                    "%s is open and no spec change has answered it yet" % (ref.path,),
+                    STAGE_MREQ,
+                    STAGE_MSPEC,
+                    ref.path,
+                    STATE_STRANDED,
+                    file=ref.path,
+                    severity=core.SEVERITY_WARNING,
+                )
+            )
+    walk.open_req_changes = sorted(set(open_records))
 
 
 # -- mspec -> mplan ----------------------------------------------------------
@@ -1130,15 +1247,23 @@ def _directory_owners(parts: Sequence[str]) -> Optional[Tuple[str, ...]]:
         if sub == CHANGES_DIRNAME:
             return (STAGE_MSPEC,)
         if sub == REQUIREMENTS_DIRNAME:
-            return (STAGE_MREQ,)
+            return (STAGE_MREQ,)  # authoring writes; a REQ-CHANGE close is tool-owned, see below
         return (STAGE_MPLAN, STAGE_MEXECUTE)  # the ledger's own directory
     if sub == SPEC_DIR:
         return (STAGE_MSPEC,)
     if sub == CHANGES_DIRNAME:
         return (STAGE_MSPEC,)
     if sub == REQUIREMENTS_DIRNAME:
-        return (STAGE_MREQ,)
+        return (STAGE_MREQ,)  # authoring writes; a REQ-CHANGE close is tool-owned, see below
     return None
+
+
+#: A path written only through a named `mc.py` verb -- a third ownership
+#: class alongside single-stage and co-owned paths. `req change-close`'s
+#: write is the one instance: the ownership pass skips it rather than
+#: charging it to whichever skill invoked the verb. `mreq` still owns every
+#: *authoring* write under `context/<tier>/requirements/`.
+TOOL_OWNED: Tuple[str, ...] = ()
 
 
 def _writing_stages(name: str) -> Optional[Tuple[str, ...]]:
@@ -1146,10 +1271,13 @@ def _writing_stages(name: str) -> Optional[Tuple[str, ...]]:
 
     An unrecognised filename yields ``None`` and is never reported: this rule
     exists to catch a stage writing into another's tree, not to police every
-    file a workspace happens to hold.
+    file a workspace happens to hold. `REQ-CHANGE-*.md` is recognised but
+    yields :data:`TOOL_OWNED` rather than a stage -- see its docstring.
     """
     if name == REQUIREMENTS_FILENAME:
         return (STAGE_MREQ,)
+    if req.REQ_CHANGE_RE.match(name):
+        return TOOL_OWNED
     if name == plan.STATE_FILE:
         return (STAGE_MPLAN, STAGE_MEXECUTE)
     if name == plan.PLAN_FILE or (
@@ -1175,8 +1303,10 @@ def _ownership(ws: core.Workspace, walk: StageWalk) -> None:
         parts = _path_parts(relative)
         owners = _directory_owners(parts)
         writers = _writing_stages(path.name)
+        if writers == TOOL_OWNED and req.REQ_CHANGE_RE.match(path.name):
+            continue  # tool-owned: charged to no stage, per TOOL_OWNED's docstring
         if not owners or not writers or set(owners) & set(writers):
-            continue
+            continue  # `writers is None` (unrecognised) also lands here, unchanged
         earlier, later = stage_pair(writers[0], owners[0])
         walk.findings.append(
             handoff(

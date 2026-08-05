@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import check, core, spec, status
+from tools import check, core, req, spec, status
 
 TARGET = "demo"
 
@@ -456,6 +456,63 @@ def test_requirements_reports_an_entry_no_module_references(workspace):
     assert findings[0]["line"] > 0
 
 
+def test_requirements_reports_a_stale_mnemonic_as_a_warning(workspace):
+    """A reference whose mnemonic disagrees with the entry heading still
+    resolves -- it names a live requirement, not a dangling one."""
+    _tree(
+        workspace,
+        catalog=_catalog_text(
+            modules=(("ALPHA", ("REQ-001-different-name",)), ("BETA", ("REQ-002",)))
+        ),
+        requirements=_requirements_text(("REQ-001-original-name", "REQ-002")),
+    )
+
+    findings = _findings(workspace, "requirements", TARGET)
+    assert _codes(findings) == [check.W_STALE_REQ_MNEMONIC]
+    assert findings[0]["severity"] == "warning"
+    assert "REQ-001" in findings[0]["message"]
+    # A stale mnemonic is not a dangling reference: no orphan/missing finding.
+    assert core.E_MISSING_REQUIREMENT not in _codes(findings)
+    assert core.E_ORPHAN_REQUIREMENT not in _codes(findings)
+
+
+def test_requirements_does_not_report_a_reference_that_agrees_with_the_heading(workspace):
+    _tree(
+        workspace,
+        catalog=_catalog_text(
+            modules=(("ALPHA", ("REQ-001-same-name",)), ("BETA", ("REQ-002",)))
+        ),
+        requirements=_requirements_text(("REQ-001-same-name", "REQ-002")),
+    )
+    assert _findings(workspace, "requirements", TARGET) == []
+
+
+def test_requirements_does_not_report_a_bare_reference_as_stale(workspace):
+    """A bare reference to a mnemonic-bearing entry stays conforming."""
+    _tree(
+        workspace,
+        catalog=_catalog_text(modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",)))),
+        requirements=_requirements_text(("REQ-001-has-a-mnemonic", "REQ-002")),
+    )
+    assert _findings(workspace, "requirements", TARGET) == []
+
+
+def test_requirements_reports_an_unparseable_reference(workspace):
+    """An unparseable reference is an error, never a silent skip."""
+    _tree(
+        workspace,
+        catalog=_catalog_text(modules=(("ALPHA", ("REQ-01", "REQ-001")),)),
+        requirements=_requirements_text(("REQ-001",)),
+    )
+
+    findings = _findings(workspace, "requirements", TARGET)
+    assert _codes(findings) == [req.E_BAD_REQ_REF]
+    assert findings[0]["severity"] == "error"
+    assert "REQ-01" in findings[0]["message"]
+    # The one valid reference in the same module still covers its entry.
+    assert core.E_ORPHAN_REQUIREMENT not in _codes(findings)
+
+
 # ---------------------------------------------------------------------------
 # check catalog
 # ---------------------------------------------------------------------------
@@ -760,6 +817,85 @@ def test_handoff_reports_a_requirement_no_module_covers(workspace):
     assert findings[0]["to_stage"] == "mspec"
 
 
+def _req_change_text(number, tier, statusname, spec_change=None):
+    spec_line = "<!-- spec-change: %s -->\n" % spec_change if spec_change else ""
+    return (
+        "<!-- req-change: %s -->\n"
+        "<!-- tier: %s -->\n"
+        "<!-- status: %s -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "%s"
+        "\n# REQ-CHANGE-%s: A Requirements Change\n" % (number, tier, statusname, spec_line, number)
+    )
+
+
+def test_handoff_reports_an_open_req_change_as_a_warning_and_leaves_exit_0(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "open"),
+    )
+
+    result, code = _check(workspace, "handoff")
+    findings = result.data["findings"]
+    assert len(findings) == 1
+    assert findings[0]["code"] == core.E_HANDOFF
+    assert findings[0]["from_stage"] == "mreq"
+    assert findings[0]["to_stage"] == "mspec"
+    assert findings[0]["state"] == "stranded"
+    assert findings[0]["severity"] == "warning"
+    assert code == 0
+
+
+def test_handoff_does_not_report_a_closed_req_change(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "closed", spec_change="CHANGE-001"),
+    )
+    assert _findings(workspace, "handoff") == []
+
+
+def test_handoff_exempts_an_open_req_change_carrying_spec_change_not_required(workspace):
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-no-delta.md" % TARGET,
+        _req_change_text("001", TARGET, "open", spec_change="not-required"),
+    )
+    assert _findings(workspace, "handoff") == []
+
+
+def test_handoff_reports_every_other_finding_at_error_with_exit_1(workspace):
+    """An open REQ-CHANGE (warning) alongside a real defect (error) still
+    exits 1 -- the warning never masks a genuine finding."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "open"),
+    )
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    result, code = _check(workspace, "handoff")
+    findings = result.data["findings"]
+    assert sorted(item["severity"] for item in findings) == ["error", "warning"]
+    assert code == 1
+
+
+def test_handoff_charges_a_req_change_write_to_no_stage(workspace):
+    """`req change-close`'s write is tool-owned -- charged to no stage, so a
+    closed REQ-CHANGE record never trips the ownership rule."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-002-closed-by-tool.md" % TARGET,
+        _req_change_text("002", TARGET, "closed", spec_change="CHANGE-001"),
+    )
+    findings = _findings(workspace, "handoff")
+    assert [item for item in findings if item["code"] == check.E_OWNERSHIP] == []
+    assert findings == []
+
+
 def test_handoff_finding_is_a_diagnostic(workspace):
     """``HandoffFinding = Diagnostic & {...}`` -- it is reported as both."""
     _chain(workspace)
@@ -873,7 +1009,8 @@ def test_status_reports_the_documented_shape(workspace):
     assert sorted(report) == ["generated", "handoff", "stages"]
     assert report["generated"] == NOW
     assert sorted(report["stages"]) == ["changes", "conformance", "plans", "requirements"]
-    assert sorted(report["stages"]["requirements"]) == ["dangling", "uncovered"]
+    assert sorted(report["stages"]["requirements"]) == ["dangling", "open_req_changes", "uncovered"]
+    assert report["stages"]["requirements"]["open_req_changes"] == []
     assert sorted(report["stages"]["changes"]) == ["pending", "unindexed"]
     assert sorted(report["stages"]["plans"]) == ["unfinished", "unplanned_indexes"]
     assert report["stages"]["conformance"] == [
@@ -939,6 +1076,21 @@ def test_status_is_deterministic_under_a_pinned_clock(workspace):
     second = status.run(workspace.args(), workspace.ws).to_json()
     assert first == second
     assert '"generated": "%s"' % NOW in first
+
+
+def test_status_reports_open_req_changes_from_the_same_walk(workspace):
+    """`status` renders `open_req_changes` from the same single stage walk
+    `check handoff` uses -- no second traversal."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "open"),
+    )
+    result, code = _status(workspace)
+    assert result.data["stages"]["requirements"]["open_req_changes"] == [
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET
+    ]
+    assert code == 0
 
 
 def test_status_reports_findings_as_data_not_as_failure(workspace):

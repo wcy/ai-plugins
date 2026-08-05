@@ -52,6 +52,7 @@ SHARED_DIR = PLUGIN_ROOT / "shared"
 SCHEMAS_README = PLUGIN_ROOT / "schemas" / "README.md"
 STANDARD_CHANGE = SHARED_DIR / "STANDARD-CHANGE.md"
 STANDARD_SPEC = SHARED_DIR / "STANDARD-SPEC.md"
+STANDARD_REQ = SHARED_DIR / "STANDARD-REQ.md"
 
 E2E_HEADING = "## E2E Testing Hard Rules"
 
@@ -665,6 +666,41 @@ def test_the_owner_still_carries_the_unperturbed_rules(emitted):
     """The perturbation lives and dies in ``tmp_path``; the owner never sees it."""
     assert e2e_mismatches(story_text(emitted), STANDARD_SPEC) == []
     assert "stand-ins" not in STANDARD_SPEC.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 4. STANDARD-REQ.md's stability rule matches its own declared grep expression
+# ---------------------------------------------------------------------------
+
+_GREP_QE = re.compile(r"`grep -qE '([^']+)' ([^`\s]+)`")
+
+
+def documented_req_stability_check():
+    """The ``grep -qE`` expression STANDARD-REQ.md declares for its own
+    stability rule, read out of the document rather than hardcoded here."""
+    text = STANDARD_REQ.read_text(encoding="utf-8")
+    match = _GREP_QE.search(text)
+    assert match is not None, "STANDARD-REQ.md declares no grep -qE expression"
+    return match.group(1), match.group(2)
+
+
+def test_the_standard_req_declares_a_readable_grep_expression():
+    """Guards the derivation this case rests on."""
+    pattern, target = documented_req_stability_check()
+    assert pattern
+    assert target.endswith("STANDARD-REQ.md")
+
+
+def test_the_standard_req_stability_rule_matches_its_own_declared_expression():
+    """The claim STANDARD-REQ.md makes about itself, turned into a real
+    assertion: the expression it declares actually matches its own text.
+
+    Previously this existed only as a claim inside the document, run by
+    nothing -- see TOOLS-TESTING.md §"Conformance to the standards".
+    """
+    pattern, _target = documented_req_stability_check()
+    text = STANDARD_REQ.read_text(encoding="utf-8")
+    assert re.search(pattern, text) is not None
 
 
 # ---------------------------------------------------------------------------

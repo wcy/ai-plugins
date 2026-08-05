@@ -58,6 +58,11 @@ GOLDEN = [
         "OK    {d}/requirements.md (requirements-frontmatter)\n",
         0,
     ),
+    (
+        ["req-change-frontmatter", "{d}/req-change.md"],
+        "OK    {d}/req-change.md (req-change-frontmatter)\n",
+        0,
+    ),
     (["story-report", "{d}/story.json"], "OK    {d}/story.json (story-report)\n", 0),
     # -- exit 0: every alias -------------------------------------------------
     (["change", "{d}/change.md"], "OK    {d}/change.md (change)\n", 0),
@@ -77,6 +82,11 @@ GOLDEN = [
     (
         ["requirements", "{d}/requirements.md"],
         "OK    {d}/requirements.md (requirements)\n",
+        0,
+    ),
+    (
+        ["req-change", "{d}/req-change.md"],
+        "OK    {d}/req-change.md (req-change)\n",
         0,
     ),
     # -- exit 0: the explicit <name>.schema.json form ------------------------

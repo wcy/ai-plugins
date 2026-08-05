@@ -52,6 +52,11 @@ REPORT_REL = "context/project/out/003-demo-plan/mverify-report.json"
 BRANCH = "mexec/003-demo-plan/02-01-demo-BETA/r1/1"
 WORKTREE = "repos/demo/02-01-demo-BETA-r1-1"
 
+#: The requirements-change record `req.change-close` closes, and the fresh
+#: path `req.change-emit` writes -- both under the fixture's own tier.
+REQ_CHANGE_CLOSE_REL = "context/demo/requirements/changes/REQ-CHANGE-001-tightened-scope.md"
+REQ_CHANGE_EMIT_REL = "context/demo/requirements/changes/REQ-CHANGE-002-emitted-here.md"
+
 #: Emitted files whose top-level key order must follow their schema's.
 SCHEMA_ORDERED = (
     ("context/project/plans/%s/plan.yaml" % PLAN_ID, "plan-graph"),
@@ -226,6 +231,17 @@ def _index(number, slug, status, refs):
     )
 
 
+def _req_change(number, slug, status):
+    return (
+        "context/demo/requirements/changes/REQ-CHANGE-%s-%s.md" % (number, slug),
+        "<!-- req-change: %s -->\n"
+        "<!-- tier: demo -->\n"
+        "<!-- status: %s -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# REQ-CHANGE-%s: %s\n" % (number, status, number, slug),
+    )
+
+
 def layout():
     """Every file the fixture writes, as an ordered list of ``(path, text)``.
 
@@ -235,6 +251,7 @@ def layout():
     """
     return [
         ("context/demo/requirements/REQUIREMENTS.md", REQUIREMENTS),
+        _req_change("001", "tightened-scope", "open"),
         (COMMON_OVERVIEW, "\n# COMMON-OVERVIEW\n\nThe root file: exempt from depends-on.\n"),
         (
             SHARED_INTERFACE,
@@ -360,6 +377,14 @@ def arguments():
         "spec.consumers": {"interface": "EVENT-BUS"},
         "req.next": {"tier": "demo"},
         "req.gate": {"tier": "demo"},
+        "req.change-resolve": {"tier": "demo", "slug": "narrowed-scope"},
+        "req.change-emit": {
+            "path": REQ_CHANGE_EMIT_REL,
+            "tier": "demo",
+            "status": "open",
+        },
+        "req.change-close": {"path": REQ_CHANGE_CLOSE_REL, "change": "002"},
+        "req.change-list": {"tier": "demo", "open": True},
         "plan.scope": {},
         "plan.resolve": {"plan_id": None},
         "plan.story-id": {"file": "PLAN-%s.md" % LAST_STORY},
@@ -409,6 +434,7 @@ COVERED = sorted(arguments())
 #: against what the tool actually writes, so it cannot quietly go stale.
 DOCUMENTED_EMITTING = sorted(
     {"change.emit", "spec.catalog-emit", "plan.emit", "plan.story-emit"}
+    | {"req.change-emit", "req.change-close"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )
 
