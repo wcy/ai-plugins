@@ -59,7 +59,7 @@ facet/layer dependency graph `CATALOG.yaml` governs, so it is **exempt** from th
 never-reused ID order:
 
 ```markdown
-### REQ-<NNN>: <Title>
+### REQ-<NNN>-<mnemonic>: <Title>
 
 **Need:** <the user need or business goal, in plain language, no technical detail>
 **Rationale:** <why this matters — business justification>
@@ -69,6 +69,12 @@ never-reused ID order:
 ```
 
 - `<NNN>` — zero-padded, ascending, unique **within this tier's file** (see REQ-ID Scoping below).
+  `<NNN>` is the whole of the identity: resolution is on it alone, and it is never reassigned.
+- `<mnemonic>` — 2–4 kebab-case words matching `^[a-z0-9]+(-[a-z0-9]+){1,3}$`, the same grammar
+  `STANDARD-CHANGE.md` gives a change slug, derived from the entry's own `<Title>`. It is
+  correctable prose, not part of the identity: **required** in an entry heading, **optional**
+  wherever the id is *referenced*, and **never consulted** when resolving what an id points at — a
+  bare `REQ-<NNN>` written before the mnemonic existed still resolves.
 - **`Need`** — required. Plain language, no technology, storage, API-style, or other spec-level
   decision. If it reads like a design choice, it belongs in a spec, not here.
 - **`Rationale`** — required. The business justification for the need. A DERIVE-drafted entry
@@ -114,11 +120,59 @@ IDs are **append-only** and stable across every DERIVE re-run:
 - An existing entry whose spec coverage has disappeared is marked `Status: stale` and **left in
   the file** — never deleted, never renumbered.
 
-Nothing is ever renumbered or deleted, by any mode, for any reason. This is what keeps a
-`CATALOG.yaml` `requirements:` back-reference from being silently orphaned by a later `mreq` run.
+The invariant this protects is that **no id is ever reassigned to a different requirement**.
+Adding or correcting a mnemonic leaves `<NNN>` untouched, so doing so is not a renumber. This is
+what keeps a `CATALOG.yaml` `requirements:` back-reference from being silently orphaned by a later
+`mreq` run.
 
 Mechanically checked: this file must always state the rule in a form
-`grep -qi 'never.{0,15}renumber' plugins/metacoder/shared/STANDARD-REQ.md` can find.
+`grep -qE 'reassigned to a different requirement' plugins/metacoder/shared/STANDARD-REQ.md` can
+find.
+
+---
+
+## Requirements Change Record
+
+Every write to `REQUIREMENTS.md` — a BRAINSTORM append/amend or a DERIVE reconciliation — is
+accompanied by a companion record, filed at:
+
+```
+context/<tier>/requirements/changes/REQ-CHANGE-<NNN>-<slug>.md
+```
+
+One file per change, sequenced **per tier**, independently of the `REQ-<NNN>` sequence it
+documents. It is the record of *why* an entry was added or revised and what it replaced — the
+reason a `REQUIREMENTS.md` diff alone cannot carry.
+
+**Front-matter** — four required keys, plus one conditional:
+
+```markdown
+<!-- req-change: NNN -->
+<!-- tier: <target>|shared|project -->
+<!-- status: open|closed -->
+<!-- date: YYYY-MM-DD -->
+<!-- spec-change: CHANGE-<NNN> | not-required -->
+```
+
+- `req-change` — zero-padded, sequenced within this tier.
+- `tier` — the same target/tier name `REQUIREMENTS.md`'s own front-matter uses.
+- `status` — `open` until a spec change answers for it, `closed` once one does.
+- `date` — the date this record was written.
+- `spec-change` — absent while `open`. On a `closed` record it names the covering `CHANGE-<NNN>`,
+  or is the literal `not-required` for a revision that produces no spec delta — the mreq→mspec
+  analogue of `STANDARD-CHANGE.md`'s `plan: not-required`, and what keeps a no-delta revision from
+  reading as outstanding work forever.
+
+**Lifecycle.** `mreq` writes a record `open` on every amending run — BRAINSTORM or DERIVE — and it
+stays `open` until `mspec` writes the spec change that covers it. Closing a record is **not an
+authoring act and is never performed by hand**: `mspec` invokes the tool's `req change-close` verb,
+and the tool — not the skill — sets `status` and `spec-change` together in one write. This is the
+one write under `context/<tier>/requirements/` that `mreq` does not itself make — `mreq` still owns
+everything *authored* under this tree.
+
+**Id resolution.** Every consumer resolving a `REQ-<NNN>-<mnemonic>` reference does so on `<NNN>`
+alone: match on the number, ignore any mnemonic suffix, and treat a suffix that disagrees with the
+entry's own heading as a stale *reference* to a live requirement — never as an unresolved one.
 
 ---
 
@@ -130,7 +184,7 @@ Mechanically checked: this file must always state the rule in a form
 
 # Requirements — repo-a
 
-### REQ-001: Faster checkout for repeat customers
+### REQ-001-faster-checkout: Faster checkout for repeat customers
 
 **Need:** Returning customers want to complete a purchase without re-entering payment details.
 **Rationale:** Cart abandonment rises sharply on longer checkout flows; repeat customers are our
@@ -141,7 +195,7 @@ highest-margin segment.
 - Saved payment methods are never displayed in full.
 **Source:** brainstormed
 
-### REQ-002: Session persistence across devices
+### REQ-002-session-persistence: Session persistence across devices
 
 **Need:** derived from spec — business rationale not yet captured
 **Rationale:** derived from spec — business rationale not yet captured
@@ -150,5 +204,5 @@ highest-margin segment.
 ```
 
 A minimal single-entry file is just the front-matter, the `# Requirements — <Target Name>`
-heading, and one `### REQ-001` block with `Need`, `Rationale`, and `Status` filled in —
+heading, and one `### REQ-001-<mnemonic>` block with `Need`, `Rationale`, and `Status` filled in —
 `Acceptance` and `Source` are optional and may be omitted rather than padded.
