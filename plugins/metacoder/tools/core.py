@@ -704,7 +704,7 @@ _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 def resolve_kind(kind: str) -> Path:
     """Resolve ``kind`` to a schema document inside the schema directory.
 
-    Accepts a canonical basename, one of the seven aliases, or an explicit
+    Accepts a canonical basename, one of the eight aliases, or an explicit
     ``<name>.schema.json``.
     """
     check_ident(kind, "schema kind")
