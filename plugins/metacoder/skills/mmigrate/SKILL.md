@@ -55,10 +55,17 @@ or `shared` if this workspace has one). Then enumerate every schema-bearing inst
 | `catalog` | `context/<target>/spec/CATALOG.yaml` for every target |
 | `requirements-frontmatter` | `context/<target>/requirements/REQUIREMENTS.md` for every target, plus `context/project/requirements/REQUIREMENTS.md` |
 | `change-frontmatter` | `context/<repo>/changes/CHANGE-*.md` for every repo target, plus `context/project/changes/PROJECT-CHANGE-*.md` |
+| `req-change-frontmatter` | `context/<tier>/requirements/changes/REQ-CHANGE-*.md` for every tier, **including the `project` tier** |
 
-A tier with no directory (no `context/project/requirements/`, no `shared` target) is absent, not
-defective — skip it without a finding, the same rule `TOOLS-IMPLEMENTATION.md` states for a
-workspace with no `context/shared/` tree.
+A tier with no directory (no `context/project/requirements/`, no `shared` target, no
+`requirements/changes/` subdirectory) is absent, not defective — skip it without a finding, the same
+rule `TOOLS-IMPLEMENTATION.md` states for a workspace with no `context/shared/` tree.
+
+**Scope stays `context/**`.** The inventory above is everything tracked under `context/**`. The
+plugin's own source tree — `SKILL.md` files, `shared/*.md`, `schemas/`, `tools/` — is out of scope
+for this sweep, even where those files (`STANDARD-REQ.md` included) describe the very identifier
+formats this skill polices. Migrating the plugin's own copies is a spec change shipped through
+`mplan`/`mexecute` like any other source edit, never something a conformance sweep reaches into.
 
 ## Step 1: Schema Conformance
 
@@ -72,10 +79,12 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate plan-state context/project/pl
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<target>/spec/CATALOG.yaml ...
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate requirements context/<target>/requirements/REQUIREMENTS.md ...
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change context/<repo>/changes/CHANGE-*.md ...
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate req-change context/<tier>/requirements/changes/REQ-CHANGE-*.md ...
 ```
 
-(`plan-state` has no shorthand alias — the canonical kind name is required. `requirements` and
-`change` are aliases for `requirements-frontmatter` and `change-frontmatter`.)
+(`plan-state` has no shorthand alias — the canonical kind name is required. `requirements`,
+`change`, and `req-change` are aliases for `requirements-frontmatter`, `change-frontmatter`, and
+`req-change-frontmatter`.)
 
 Every `FAIL` line names the JSON-Schema location and message — that is the fix target, taken
 verbatim, not re-derived by reading the schema again.
@@ -120,17 +129,46 @@ nothing mechanically checks today — read the file directly for these:
    means the *next* id it hands out can collide with one nobody can see. Zero-pad any such id to
    three digits — this is pure formatting, the number itself does not change.
 
-## Step 4: CHANGE / PROJECT-CHANGE Identifiers
+### Migrating a Tier onto the Mnemonic Id Format
 
-For every `CHANGE-<NNN>-<slug>.md` and `PROJECT-CHANGE-<NNN>-<slug>.md` found in Step 0, check
-what Step 1's schema pass cannot (the schema validates the front-matter block's shape only, never
-the filename):
+Beyond the two hand-checks above, apply the identifier-convention change itself: a heading still on
+the bare `### REQ-<NNN>: <Title>` form is migrated to `### REQ-<NNN>-<mnemonic>: <Title>` by deriving
+the mnemonic **mechanically from the entry's own `<Title>`** — lowercase it, collapse every run of
+non-alphanumeric characters to a single hyphen, then truncate to the first 2–4 significant words.
+This is a transform of content the artifact already contains, not an authoring act — the same class
+as zero-padding an id above, deterministic and re-runnable. `<NNN>` is preserved unchanged
+throughout: nothing here is a renumber, which is exactly what makes the migration legal under
+`STANDARD-REQ.md`'s stability rule — that rule prohibits reassigning an id to a different
+requirement, not editing a heading's mnemonic.
+
+A `<Title>` that yields no usable slug (absent, or entirely non-alphanumeric) is **deferred to
+`mreq`**, never invented — choosing words the artifact does not itself contain would be authoring
+content, which is outside this skill's fence.
+
+Every reference resolving to a migrated heading is rewritten in the same pass to carry that
+heading's mnemonic.
+
+**The standing rule, once a tier is migrated.** After migration this step degenerates to a standing
+check: `mc.py check requirements <target>` reports `W_STALE_REQ_MNEMONIC` when a reference's
+mnemonic disagrees with the heading it resolves to. Resolve it in **one direction only** — rewrite
+the disagreeing **reference** to match the heading. **Never** rewrite the heading to match the
+reference. The heading is where the requirement is defined; a reference is only a pointer to it, and
+letting a stale reference rename a live requirement's mnemonic is exactly what keeping the number as
+the identity was meant to prevent.
+
+## Step 4: CHANGE / PROJECT-CHANGE / REQ-CHANGE Identifiers
+
+For every `CHANGE-<NNN>-<slug>.md`, `PROJECT-CHANGE-<NNN>-<slug>.md`, and `REQ-CHANGE-<NNN>-<slug>.md`
+found in Step 0, check what Step 1's schema pass cannot (the schema validates the front-matter
+block's shape only, never the filename). All four checks below apply to `REQ-CHANGE-<NNN>-<slug>.md`
+**unchanged**, evaluated against the tier's own per-tier sequence rather than a repo's:
 
 1. **Filename agrees with front matter.** The filename's `<NNN>` must equal the front-matter
-   `change:`/`project-change:` value, same zero-padding. On a mismatch, the front-matter is
-   authoritative — it is what `change resolve`/`change emit` read and write — so rename the file to
-   match it, **unless** another file in the same directory already holds that number, in which case
-   this is a numbering collision, not a typo: defer it.
+   `change:`/`project-change:`/`req-change:` value, same zero-padding. On a mismatch, the
+   front-matter is authoritative — it is what `change resolve`/`change emit`/`req change-resolve`/
+   `req change-emit` read and write — so rename the file to match it, **unless** another file in the
+   same directory already holds that number, in which case this is a numbering collision, not a
+   typo: defer it.
 2. **Slug is well-formed.** 2–4 words, kebab-case (`^[a-z0-9]+(-[a-z0-9]+){1,3}$`), or the reserved
    `initial-spec` baseline slug. A malformed slug is cosmetic — normalize it (lowercase, hyphenate)
    and rename the file, unless the new name would collide with an existing one.
@@ -138,10 +176,22 @@ the filename):
    corruption. If a byte-for-byte `diff` shows them identical, the extra copy is a duplicate — say
    so and remove it. Otherwise, which one is "real" is not yours to decide: defer it with both
    paths and their content named, for a human or `mfix` to resolve.
-4. **`repo:` matches placement.** A repo-level change's front-matter `repo:` field should equal the
-   directory it lives under. A mismatch may mean the file is genuinely misfiled — that is a bigger
-   move than a rename, so defer it rather than relocating a document something else might reference
-   by path.
+4. **`repo:`/`tier:` matches placement.** A repo-level change's front-matter `repo:` field should
+   equal the directory it lives under; a `REQ-CHANGE` record's `tier:` field must likewise equal the
+   tier directory (`context/<tier>/requirements/changes/`) it lives under. A mismatch may mean the
+   file is genuinely misfiled — that is a bigger move than a rename, so defer it rather than
+   relocating a document something else might reference by path.
+
+Two more checks are specific to `REQ-CHANGE` records:
+
+5. **Dangling back-link.** A record whose `status` is `closed` must name a `spec-change` that
+   resolves to a `CHANGE-<NNN>` that actually exists. One that doesn't is **deferred, never
+   rewritten** — which of the two artifacts is wrong (the record's back-link, or the change file it
+   claims) is `mfix`'s call, not this sweep's.
+6. **Never edit the lifecycle.** `status` and `spec-change` are never edited by this skill, in
+   either direction — not even to "fix" a dangling back-link. That transition belongs solely to
+   `mc.py req change-close`; an open record surfaces here only as an inventoried artifact and in
+   Step 5's `check handoff` note, never as something this skill writes.
 
 ## Step 5: Reference Integrity Sweep
 

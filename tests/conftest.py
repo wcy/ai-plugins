@@ -116,6 +116,14 @@ VALID_INSTANCES = {
         "requirements.md",
         "<!-- requirements: demo -->\n<!-- updated: 2026-01-01 -->\n\n# Requirements\n",
     ),
+    "req-change-frontmatter": (
+        "req-change.md",
+        "<!-- req-change: 001 -->\n"
+        "<!-- tier: demo -->\n"
+        "<!-- status: open -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# REQ-CHANGE-001: Tightened Scope\n",
+    ),
     "story-report": (
         "story.json",
         '{\n'
@@ -138,6 +146,7 @@ KIND_ALIASES = {
     "story": "story-report",
     "inconsistency": "inconsistency-report",
     "requirements": "requirements-frontmatter",
+    "req-change": "req-change-frontmatter",
 }
 
 #: One instance per kind that parses but fails its schema.

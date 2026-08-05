@@ -22,7 +22,7 @@ description: Use when you want the whole spec-to-ship loop run autonomously from
 
 Run straight through, reusing the real skills exactly as a gatekept operator would, but without stopping:
 
-- **Phase B — `mreq`'s BRAINSTORM Phase 2 write (only if step A2 ran), then `mspec` Write (Stage 2).** If Phase A step 2 ran `mreq`'s BRAINSTORM Phase 1, invoke `mreq`'s Phase 2 write first — it appends the confirmed `### REQ-<NNN>` entries to `context/<tier>/requirements/REQUIREMENTS.md` — before invoking `mspec`'s write stage, so the requirements tier is populated before `mspec`'s CREATE-mode Prerequisites gate runs (otherwise the gate `mquick` just satisfied in Phase A would immediately re-fail in Phase B). Then invoke `mspec`'s write stage: spec files → change documents → validation → (for `shared`) the cascade. Produces the `PROJECT-CHANGE-<NNN>` that drives planning.
+- **Phase B — `mreq`'s BRAINSTORM Phase 2 write (only if step A2 ran), then `mspec` Write (Stage 2).** If Phase A step 2 ran `mreq`'s BRAINSTORM Phase 1, invoke `mreq`'s Phase 2 write first — it appends the confirmed `### REQ-<NNN>` entries to `context/<tier>/requirements/REQUIREMENTS.md` — before invoking `mspec`'s write stage, so the requirements tier is populated before `mspec`'s CREATE-mode Prerequisites gate runs (otherwise the gate `mquick` just satisfied in Phase A would immediately re-fail in Phase B). Then invoke `mspec`'s write stage: spec files → change documents → validation → (for `shared`) the cascade. Produces the `PROJECT-CHANGE-<NNN>` that drives planning. `mreq`'s inline contradiction check runs inside this write like any other part of it and introduces no gate: with no one to ask, it flags the contradiction into the run's `REQ-CHANGE` record and continues — the same treatment DERIVE gets, for the same reason. This is what keeps the no-further-gates guarantee above true without either resolving a contradiction silently or halting the run mid-pipeline.
 - **Phase C — `mplan`.** Generate the story files, the `plan.yaml` graph, the initial plan-level `state.yaml`, and the project-ledger entry.
 - **Phase D — `mexecute`.** Ship the plan: worktree-isolated waves, barrier merge (agent discretion), bounded retry (N=3), Post-Story/Final validation, two-level state, and the post-ship `/mverify` conformance sweep.
 
@@ -30,7 +30,7 @@ Run straight through, reusing the real skills exactly as a gatekept operator wou
 
 ## Phase E — Report & Escalate
 
-Summarize the whole run: **specced → planned → shipped → validated → conformed**, with the actual story/wave/parallelism breakdown, retries used, the conformance-sweep result, and the run's **actual cost/telemetry** (never a pre-run estimate — there is no cost gate).
+Summarize the whole run: **specced → planned → shipped → validated → conformed**, with the actual story/wave/parallelism breakdown, retries used, any open `REQ-CHANGE` records the run's Phase B write flagged, the conformance-sweep result, and the run's **actual cost/telemetry** (never a pre-run estimate — there is no cost gate).
 
 Handle the mid-run breaks per `mexecute`'s halt conditions:
 

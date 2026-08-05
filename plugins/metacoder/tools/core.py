@@ -669,7 +669,7 @@ def write_front_matter(path: Any, matter: Dict[str, str]) -> Path:
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 
-#: The nine canonical schema basenames, per SCHEMAS-INTERFACE.md.
+#: The ten canonical schema basenames, per SCHEMAS-INTERFACE.md.
 CANONICAL_KINDS = (
     "catalog",
     "change-frontmatter",
@@ -679,10 +679,11 @@ CANONICAL_KINDS = (
     "plan-state",
     "project-state",
     "requirements-frontmatter",
+    "req-change-frontmatter",
     "story-report",
 )
 
-#: The seven friendly aliases, per SCHEMAS-INTERFACE.md.
+#: The eight friendly aliases, per SCHEMAS-INTERFACE.md.
 KIND_ALIASES = {
     "change": "change-frontmatter",
     "plan": "plan-graph",
@@ -691,6 +692,7 @@ KIND_ALIASES = {
     "story": "story-report",
     "inconsistency": "inconsistency-report",
     "requirements": "requirements-frontmatter",
+    "req-change": "req-change-frontmatter",
 }
 
 SCHEMA_SUFFIX = ".schema.json"
