@@ -20,7 +20,7 @@ through ``argv``.
 import pytest
 
 from conftest import NOW
-from tools import core, spec
+from tools import core, req, spec
 
 FRONT_MATTER = "<!-- requirements: demo -->\n<!-- updated: 2026-01-01 -->\n"
 
@@ -188,6 +188,18 @@ def test_the_gate_result_is_independent_of_the_mode(workspace, build):
     assert with_requirements["mode"] == without["mode"]
     assert with_requirements["requirements"]["gate_passes"] is True
     assert with_requirements["requirements"]["entries"] == ["REQ-001"]
+
+
+def test_bare_req_ids_reported_by_the_gate_still_resolve(demo):
+    """A `REQ-<NNN>` written before mnemonics existed stays conforming: the
+    gate's `entries` list carries it verbatim, and it still resolves through
+    `parse_req_id` -- bare references remain valid, never dangling."""
+    entries = run(demo, "mode", "demo")[0].data["requirements"]["entries"]
+    assert entries == ["REQ-001"]
+    parsed = req.parse_req_id(entries[0])
+    assert parsed.number == "001"
+    assert parsed.mnemonic is None
+    assert parsed.tier == "self"
 
 
 def test_mode_writes_nothing(workspace):

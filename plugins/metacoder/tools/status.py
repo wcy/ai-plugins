@@ -38,7 +38,11 @@ def build_report(
     return {
         "generated": now,
         "stages": {
-            "requirements": {"uncovered": walk.uncovered, "dangling": walk.dangling},
+            "requirements": {
+                "uncovered": walk.uncovered,
+                "dangling": walk.dangling,
+                "open_req_changes": walk.open_req_changes,
+            },
             "changes": {
                 "pending": walk.pending_changes,
                 "unindexed": walk.unindexed_changes,

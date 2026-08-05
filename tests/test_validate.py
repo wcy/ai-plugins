@@ -49,10 +49,11 @@ def test_every_alias_resolves_to_its_canonical_schema(workspace, alias, canonica
     assert core.resolve_kind(alias) == core.resolve_kind(canonical)
 
 
-def test_alias_table_is_exactly_the_seven_documented_aliases():
+def test_alias_table_is_exactly_the_eight_documented_aliases():
     assert core.KIND_ALIASES == KIND_ALIASES
     assert set(core.CANONICAL_KINDS) == set(VALID_INSTANCES)
-    assert len(core.CANONICAL_KINDS) == 9
+    assert len(core.CANONICAL_KINDS) == 10
+    assert len(core.KIND_ALIASES) == 8
 
 
 @pytest.mark.parametrize("kind", sorted(VALID_INSTANCES))
@@ -62,6 +63,27 @@ def test_explicit_schema_filename_resolves(workspace, kind):
     result, code = _run(workspace, explicit, [path])
     assert code == 0
     assert result.data["lines"] == ["OK    %s (%s)" % (path, explicit)]
+
+
+def test_req_change_frontmatter_resolves_and_validates_a_conforming_record(workspace):
+    path = workspace.add_instance("req-change-frontmatter")
+    result, code = _run(workspace, "req-change-frontmatter", [path])
+    assert code == 0
+    assert result.ok is True
+
+
+def test_req_change_frontmatter_rejects_a_closed_record_with_no_spec_change(workspace):
+    path = workspace.write(
+        "instances/bad-req-change.md",
+        "<!-- req-change: 001 -->\n"
+        "<!-- tier: demo -->\n"
+        "<!-- status: closed -->\n"
+        "<!-- date: 2026-01-01 -->\n"
+        "\n# REQ-CHANGE-001: Tightened Scope\n",
+    )
+    result, code = _run(workspace, "req-change-frontmatter", [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
 
 
 def test_unknown_kind_is_rejected_with_exit_2(workspace):
