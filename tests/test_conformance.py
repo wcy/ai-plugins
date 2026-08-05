@@ -385,6 +385,7 @@ def test_the_artifact_mapping_is_read_from_the_document_that_owns_it():
         "project-state",
         "conformance-report",
         "requirements-frontmatter",
+        "req-change-frontmatter",
     }
     for glob in mapping:
         assert "<" not in glob and ">" not in glob, glob
