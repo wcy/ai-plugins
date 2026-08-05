@@ -237,6 +237,7 @@ CONFORMANCE_REPORT = (
 REPO_CHANGE = "context/demo/changes/CHANGE-001-retry-policy.md"
 INDEX_CHANGE = "context/project/changes/PROJECT-CHANGE-001-retry-policy.md"
 BASELINE_CHANGE = "context/demo/changes/CHANGE-000-initial-spec.md"
+REQ_CHANGE_RECORD = "context/demo/requirements/changes/REQ-CHANGE-001-retry-policy.md"
 REPORT_REL = "context/project/out/%s/mverify-report.json" % PLAN_ID
 
 
@@ -309,6 +310,14 @@ def emit_everything(workspace):
         status="pending",
         title="Retry Policy",
         repo="demo, other",
+    )
+    call(
+        workspace,
+        "req",
+        "change-emit",
+        path=REQ_CHANGE_RECORD,
+        tier="demo",
+        status="open",
     )
     call(
         workspace,
@@ -408,7 +417,7 @@ def test_every_emitted_artifact_validates_against_its_schema(emitted):
         )
         checked.setdefault(kind, []).append(relative)
 
-    # The six the change document names, all exercised by one run.
+    # Every kind the change document names, all exercised by one run.
     assert set(checked) == {
         "catalog",
         "change-frontmatter",
@@ -417,6 +426,7 @@ def test_every_emitted_artifact_validates_against_its_schema(emitted):
         "project-state",
         "conformance-report",
         "requirements-frontmatter",
+        "req-change-frontmatter",
     }, sorted(checked)
     assert sorted(checked["change-frontmatter"]) == sorted(
         [BASELINE_CHANGE, REPO_CHANGE, INDEX_CHANGE]
