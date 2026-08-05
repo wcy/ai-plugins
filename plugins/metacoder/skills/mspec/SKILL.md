@@ -29,9 +29,9 @@ As part of the diagnostic — after you've synthesized what's changing but **bef
 - **Security** — auth, secrets, input-validation, or exposure implications.
 - **Ambiguous requirements** — places the description underspecifies behavior.
 - **Dependency choices** — new libraries/services where a preferred option should be picked.
-- **Requirements drift** — evaluated only when a requirements tier exists for the target: a `REQ-<NNN>` with no corresponding spec coverage, spec content with no traceable requirement, or a `CATALOG.yaml` `requirements:` reference to a `REQ-<NNN>` no longer present in the requirements file.
+- **Requirements drift** — a **backstop**, evaluated only when a requirements tier exists for the target: a `REQ-<NNN>` with no corresponding spec coverage, spec content with no traceable requirement, or a `CATALOG.yaml` `requirements:` reference to a `REQ-<NNN>` no longer present in the requirements file. Drift the open `REQ-CHANGE` records already named at Prerequisites is **not** re-reported here — those records are the primary channel; this category only catches drift that predates the record convention or that no record was ever written for.
 
-Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. In a gatekept `/mspec` run you present these and iterate as normal; `/mquick` surfaces the exact same list at its Phase A gate. When a **Requirements drift** item surfaces, the Phase 1e "Confirm Before Writing" summary must present the user a per-item choice — widen this change's scope to cover the drifted requirement, or leave it flagged for a later `/mreq` pass to reconcile — since `mspec` never writes to `requirements/` itself.
+Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. In a gatekept `/mspec` run you present these and iterate as normal; `/mquick` surfaces the exact same list at its Phase A gate. When a **Requirements drift** item surfaces, the Phase 1e "Confirm Before Writing" summary must present the user a per-item choice — widen this change's scope to cover the drifted requirement, or leave it flagged for a later `/mreq` pass to reconcile — since `mspec` never authors content under `context/<repo|shared|project>/requirements/` itself — the one mutation an `mspec` run causes there (closing a `REQ-CHANGE` record, see UPDATE MODE Prerequisites and Phase 3c) is a tool-owned write, not an authoring act.
 
 ## Step 0: Determine the Target
 
@@ -241,6 +241,14 @@ Record the repos it returns; they are the consumers you must cascade into (Phase
 
 **Requirements read (advisory).** Step 1's `mc.py spec mode <target>` call already reported the gate — UPDATE mode never halts on it. Read the target's `REQUIREMENTS.md` and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context, and proceed with whatever exists (including none, for a spec that predates this feature).
 
+**Open `REQ-CHANGE` records (a UPDATE-mode input).** List the tier's open records — outstanding requirements work this run is the designated consumer of:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req change-list <tier> --open
+```
+
+Carry the returned records into Phase 1a, where each is presented alongside the user's own description, and into Phase 1e, where you state per record whether this change covers it.
+
 ### Phase 1: Understand the Change
 
 **Do NOT modify any spec files yet.** First, fully understand what needs to change and why.
@@ -253,6 +261,8 @@ From the user's description, synthesize and present back:
 - **Why** — What problem or need motivates this change?
 - **Scope** — Which parts of the system are affected?
 - **Type** — Is this a new feature, a modification, a removal, or a refactor?
+
+Alongside the user's own description — not instead of it — present each open `REQ-CHANGE` record the Prerequisites step listed, so the user sees them next to what they asked for.
 
 Ask the user to confirm or correct before proceeding.
 
@@ -300,6 +310,8 @@ Keep questions focused — only ask what's needed to write the spec accurately.
 
 #### 1e. Confirm Before Writing
 
+State, per open `REQ-CHANGE` record presented at 1a, whether this change covers it. Covering a record is what lets Phase 3c close it; leaving one open is a deliberate outcome you report, not an omission — say so explicitly rather than closing every record just to clear the list.
+
 Run the **Risk & Ambiguity Scan** (see "Two Separable Stages") now and fold its ranked decisions into your questions; iterate until they're resolved. Then present a final summary:
 
 ```
@@ -310,7 +322,8 @@ Breaking Changes: {yes/no — list if yes}
 New Modules: {list or "none"}
 Cascade: {for shared target — list of consuming repos whose spec updates this one change doc will record; otherwise "n/a"}
 Decisions Made: {list of key choices}
-Risks resolved: {the risk-scan items — breaking/migration/security/ambiguity/dependency/requirements-drift — and how each was decided}
+Open REQ-CHANGE records: {each presented record, covered or left open — deliberately, per record}
+Risks resolved: {the risk-scan items — breaking/migration/security/ambiguity/dependency/requirements-drift (backstop) — and how each was decided}
 ```
 
 **Get explicit user approval before moving to Phase 2.** This is the Stage 1 → Stage 2 boundary — do not write any file before approval.
@@ -377,6 +390,18 @@ The same status-keyed continue rule applies here.
   `--repo` takes every repo whose change file this index references, comma-separated. A shared-interface cascade uses `--scope shared` instead and is assembled in Phase 5.
 
 **Content:** fill the emitted sections using the project-level index schema from STANDARD-CHANGE.md §"Project-level change index". List every repo-level change file produced in this mspec run in the "Repo Change Files" table.
+
+#### Step 3c: Close the requirements records this change covers
+
+**Must run after Step 3a**, never before: 3a is what allocates the `CHANGE-<NNN>` number the closing back-link names, and `req change-close` refuses a `CHANGE-<NNN>` that does not exist. Running 3c before 3a would fail every time — the ordering is load-bearing, not stylistic.
+
+For each open `REQ-CHANGE` record Phase 1e decided this change covers, close it through the tool:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req change-close <path> --change <NNN>
+```
+
+`<NNN>` is the number Step 3a allocated. `mspec` writes nothing into the record itself — the verb sets `status` and `spec-change` together and validates before persisting, a tool-owned write charged to no skill stage. A record Phase 1e decided this change does not cover is left open, deliberately and visibly, rather than closed just to clear the list.
 
 ### Phase 4: Validate
 
