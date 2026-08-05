@@ -4,18 +4,19 @@ Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts. They 
 source of truth for the *shape* of every automated file, complementing the prose standards in
 `../shared/` (which remain the source of truth for *content and conventions*).
 
-This module is **purely declarative**: nine JSON documents plus this `README.md`, and no executable
+This module is **purely declarative**: ten JSON documents plus this `README.md`, and no executable
 code. The `validate.py` file sitting in this directory is the deprecated compatibility shim; it
 belongs to `../tools/`, not to this module.
 
 ## Kinds and aliases
 
-Nine canonical kinds, each resolving to `<kind>.schema.json` in this directory:
+Ten canonical kinds, each resolving to `<kind>.schema.json` in this directory:
 
 `catalog`, `change-frontmatter`, `conformance-report`, `inconsistency-report`, `plan-graph`,
-`plan-state`, `project-state`, `story-report`, `requirements-frontmatter`.
+`plan-state`, `project-state`, `story-report`, `requirements-frontmatter`,
+`req-change-frontmatter`.
 
-Seven friendly aliases name the same documents:
+Eight friendly aliases name the same documents:
 
 | Alias | Kind |
 |-------|------|
@@ -26,6 +27,7 @@ Seven friendly aliases name the same documents:
 | `story` | `story-report` |
 | `inconsistency` | `inconsistency-report` |
 | `requirements` | `requirements-frontmatter` |
+| `req-change` | `req-change-frontmatter` |
 
 The kinds and the aliases are this module's contract. The CLI that accepts them lives in `../tools/`:
 
@@ -46,6 +48,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate <kind> <file> [<file> ...]
 | `story-report.schema.json` | mexecute wave-agent return | mexecute subagents | mexecute |
 | `inconsistency-report.schema.json` | mreverse reader return + aggregate | mreverse subagents | mreverse |
 | `requirements-frontmatter.schema.json` | `context/<repo\|shared\|project>/requirements/REQUIREMENTS.md` front-matter | mreq | mspec (read-only — Prerequisites gate + Risk Scan's requirements-drift category) |
+| `req-change-frontmatter.schema.json` | `context/<tier>/requirements/changes/REQ-CHANGE-*.md` front-matter | mreq (authors the record), tools (`req change-close` writes the closing transition) | mspec, tools (`check handoff`), mmigrate |
 
 The "Written by" and "Read by" columns name the skill whose step produces or consumes the artifact.
 Every one of those reads and writes now goes through `../tools/`, which validates each artifact
