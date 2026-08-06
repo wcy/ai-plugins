@@ -621,6 +621,199 @@ def test_catalog_reports_a_layer_disagreeing_with_the_layers_block(workspace):
     assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
 
 
+# -- the exports rule -------------------------------------------------------
+#
+# Every case below varies exactly one thing about ALPHA-INTERFACE.md: the
+# ``Exports:`` trailer its document carries and the ``exports:`` list its
+# catalog entry declares. The rest of the tree stays clean, so any finding
+# comes from the defect the test introduced.
+
+_ALPHA_INTERFACE = _spec("ALPHA", "ALPHA-INTERFACE.md")
+
+
+def _set_catalog_exports(text, path, tokens):
+    """Give the entry declaring ``path`` an ``exports:`` list."""
+    out = []
+    pending = False
+    for line in text.splitlines():
+        out.append(line)
+        if line.strip() == "- path: %s" % path:
+            pending = True
+            continue
+        if pending and line.strip().startswith("facet:"):
+            out.append("        exports:")
+            out.extend("        - %s" % token for token in tokens)
+            pending = False
+    return "\n".join(out) + "\n"
+
+
+def _exports_tree(workspace, trailer=None, tokens=None):
+    """A clean tree, plus a trailer and/or an ``exports:`` list on ALPHA."""
+    layout = _layout()
+    catalog = _catalog_text()
+    if tokens is not None:
+        catalog = _set_catalog_exports(catalog, _ALPHA_INTERFACE, tokens)
+    _tree(workspace, layout, catalog=catalog)
+    if trailer is not None:
+        workspace.write(
+            _ALPHA_INTERFACE,
+            _document(layout[_ALPHA_INTERFACE], "ALPHA-INTERFACE") + "\n%s\n" % trailer,
+        )
+    return _ALPHA_INTERFACE
+
+
+def test_catalog_reports_a_trailer_token_the_catalog_omits(workspace):
+    _exports_tree(workspace, "Exports: `alpha-run`, `alpha-stop`.", ["alpha-run"])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert "`alpha-stop`" in findings[0]["message"]
+
+
+def test_catalog_reports_a_catalog_token_the_trailer_omits(workspace):
+    _exports_tree(workspace, "Exports: `alpha-run`.", ["alpha-run", "alpha-stop"])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert "`alpha-stop`" in findings[0]["message"]
+
+
+def test_catalog_accepts_the_same_tokens_in_a_different_order(workspace):
+    """The comparison is a set: order never matters."""
+    _exports_tree(workspace, "Exports: `alpha-run`, `alpha-stop`.", ["alpha-stop", "alpha-run"])
+
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_catalog_reports_a_trailer_with_no_exports_in_the_catalog(workspace):
+    _exports_tree(workspace, "Exports: `alpha-run`.", None)
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert "`alpha-run`" in findings[0]["message"]
+
+
+def test_catalog_reports_exports_in_the_catalog_with_no_trailer(workspace):
+    _exports_tree(workspace, None, ["alpha-run"])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert "`alpha-run`" in findings[0]["message"]
+
+
+def test_catalog_accepts_neither_a_trailer_nor_catalog_exports(workspace):
+    """Absence is symmetric: a module exporting nothing omits both."""
+    _exports_tree(workspace, None, None)
+
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        # A trailing parenthetical -- "nothing but" governs the paragraph.
+        "Exports: `alpha-run` (the entry point).",
+        # An unbackticked token.
+        "Exports: `alpha-run`, alpha-stop.",
+        # No terminal period.
+        "Exports: `alpha-run`",
+        # Prose before the first token.
+        "Exports: the commands `alpha-run`, `alpha-stop`.",
+    ],
+)
+def test_catalog_reports_a_trailer_that_does_not_parse(workspace, trailer):
+    """A trailer the checker cannot read is a finding, never a silent pass."""
+    _exports_tree(workspace, trailer, ["alpha-run"])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert findings[0]["severity"] == "error"
+
+
+def test_catalog_reports_nothing_when_a_wrapped_trailer_agrees(workspace):
+    """A clean fixture reports nothing from any of the four rules."""
+    _exports_tree(
+        workspace,
+        "Exports: `alpha-run`, `alpha-stop`,\n`alpha.py`.",
+        ["alpha-run", "alpha-stop", "alpha.py"],
+    )
+
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_catalog_reports_all_four_rules_in_their_fixed_order(workspace):
+    """file-set, facet, layer, exports -- so finding order is stable."""
+    catalog = _remove_catalog_entry(_catalog_text(), _spec("BETA", "BETA-IMPLEMENTATION.md"))
+    catalog = _set_catalog_facet(catalog, _spec("ALPHA", "ALPHA-OVERVIEW.md"), "datamodel")
+    catalog = _set_catalog_layer(catalog, "BETA", "L2-services")
+    layout = _layout()
+    _tree(workspace, layout, catalog=catalog)
+    workspace.write(
+        _ALPHA_INTERFACE,
+        _document(layout[_ALPHA_INTERFACE], "ALPHA-INTERFACE") + "\nExports: `alpha-run`.\n",
+    )
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [
+        check.E_CATALOG_UNLISTED_FILE,
+        check.E_CATALOG_FACET,
+        check.E_CATALOG_LAYER,
+        check.E_CATALOG_EXPORTS,
+    ]
+
+
+def test_catalog_checks_exports_against_a_shared_scope_catalog(workspace):
+    """Unlike the layer rule, the exports rule is not skipped for ``shared``."""
+    workspace.write(
+        "context/shared/spec/CATALOG.yaml",
+        "version: 1\n"
+        "scope: shared\n"
+        "interfaces:\n"
+        "  AUTH:\n"
+        "    files:\n"
+        "      - path: context/shared/spec/AUTH/AUTH-OVERVIEW.md\n"
+        "        facet: overview\n"
+        "      - path: context/shared/spec/AUTH/AUTH-INTERFACE.md\n"
+        "        facet: interface\n"
+        "        exports:\n"
+        "        - auth-token\n",
+    )
+    workspace.write("context/shared/spec/AUTH/AUTH-OVERVIEW.md", _document([], "AUTH-OVERVIEW"))
+    workspace.write(
+        "context/shared/spec/AUTH/AUTH-INTERFACE.md",
+        _document(["context/shared/spec/AUTH/AUTH-OVERVIEW.md"], "AUTH-INTERFACE")
+        + "\nExports: `auth-session`.\n",
+    )
+
+    findings = _findings(workspace, "catalog", spec.SHARED_TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS, check.E_CATALOG_EXPORTS]
+    assert all(item["file"] == "context/shared/spec/AUTH/AUTH-INTERFACE.md" for item in findings)
+    assert "`auth-session`" in findings[0]["message"]
+    assert "`auth-token`" in findings[1]["message"]
+    # The layer rule stays skipped -- a shared catalog has no `layers:` block.
+    assert check.E_CATALOG_LAYER not in _codes(findings)
+
+
+def test_catalog_exports_findings_are_errors(workspace):
+    """``E_CATALOG_EXPORTS`` is ``core.error``, like the five other codes."""
+    _exports_tree(workspace, "Exports: `alpha-run`.", ["alpha-stop"])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert [item["severity"] for item in findings] == ["error", "error"]
+    assert set(_codes(findings)) == {check.E_CATALOG_EXPORTS}
+
+
 # ---------------------------------------------------------------------------
 # check handoff
 # ---------------------------------------------------------------------------
