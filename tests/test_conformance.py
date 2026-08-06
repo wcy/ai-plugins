@@ -585,12 +585,12 @@ def e2e_mismatches(story_text, standard_path):
     occurrences = story_text.count(block)
     if occurrences != 2:
         problems.append("the owning block appears %d times, not twice" % occurrences)
-    post = story_text.split("## Post-Story Validation", 1)[-1].split("## Final Validation", 1)[0]
-    final = story_text.split("## Final Validation", 1)[-1]
+    post = story_text.split("## Post-Story Validation", 1)[-1].split("## Slice Acceptance", 1)[0]
+    acceptance = story_text.split("## Slice Acceptance", 1)[-1]
     if block not in post:
         problems.append("absent from Post-Story Validation")
-    if block not in final:
-        problems.append("absent from Final Validation")
+    if block not in acceptance:
+        problems.append("absent from Slice Acceptance")
     for rule in block.split("\n"):
         if rule.strip().startswith("- ") and story_text.count(rule) != 2:
             problems.append("rule appears %d times: %s" % (story_text.count(rule), rule.strip()))
@@ -616,11 +616,11 @@ def test_the_injected_rules_match_the_owning_section_verbatim(emitted):
 def test_the_rules_are_injected_at_both_marked_points(emitted):
     text = story_text(emitted)
     block = owning_e2e_block(STANDARD_SPEC)
-    post = text.split("## Post-Story Validation", 1)[1].split("## Final Validation", 1)[0]
-    final = text.split("## Final Validation", 1)[1]
+    post = text.split("## Post-Story Validation", 1)[1].split("## Slice Acceptance", 1)[0]
+    acceptance = text.split("## Slice Acceptance", 1)[1]
 
     assert block in post
-    assert block in final
+    assert block in acceptance
     assert "INJECT:E2E-HARD-RULES" not in text
 
 

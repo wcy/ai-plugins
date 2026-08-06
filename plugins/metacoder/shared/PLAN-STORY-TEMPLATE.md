@@ -5,8 +5,8 @@
   which emits the block between the BEGIN/END markers as PLAN-{WW}-{SS}-{REPO}-{MODULE}.md
   with {placeholders} substituted. No skill loads this file; no agent copies from it by hand.
 
-  Comment-gated sections (INCREMENTAL PLANS ONLY, last wave only, update sub-mode only) are
-  conditional — the renderer includes them only when the condition holds, dropping them
+  Comment-gated sections (INCREMENTAL PLANS ONLY, last story of a slice, update sub-mode only)
+  are conditional — the renderer includes them only when the condition holds, dropping them
   otherwise. Lines with an INJECT: marker are replaced whole with content from the named
   section. Each story file must stay self-contained and focused — as small as the work
   allows, with no hard line limit.
@@ -18,6 +18,7 @@
 # Story: {Module Name} ({Layer}) — {repo}
 
 **Repo:** {repo} <!-- repo dir under repos/ this story modifies -->
+**Slice:** {NN} — {slice name} <!-- the delivery slice this story belongs to; "00" is the walking skeleton -->
 **Wave:** {wave number} of {total waves}
 **Prerequisites:** {list all story files from earlier waves that must complete first, or "None"}
 **Parallel group:** {list other PLAN-{WW}-*-*.md files that run concurrently with this one, or "solo"}
@@ -130,10 +131,10 @@ Run before marking this story complete:
 
 <!-- INJECT:E2E-HARD-RULES — replace this line with the four rules from STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim, when the checkbox above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit` — never hand-copied. -->
 
-<!-- Include the section below only in stories belonging to the final wave ({WW} = last wave). -->
-## Final Validation (last wave only)
+<!-- Include the section below only in stories belonging to the final wave of this story's *slice* ({WW} = the slice's last wave), not of the plan. On a version-1/2 graph the single synthetic slice spans every wave, so the gate resolves to the plan's last wave and renders exactly what it always did. -->
+## Slice Acceptance
 
-Run after all waves are complete:
+Run after every story in this slice is complete:
 
 - [ ] E2E test scenarios pass (if E2E module exists in catalog)
 

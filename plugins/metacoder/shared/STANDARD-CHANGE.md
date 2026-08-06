@@ -222,7 +222,11 @@ The implementing agent must confirm each item before marking the change as appli
 
 ### Project-level change index
 
-Every project-level index in `context/project/changes/` must follow this structure:
+Every project-level index in `context/project/changes/` must follow this structure — `## Summary`,
+`## Repo Change Files`, then the delivery cut (`## Slices`, per the "Slices" section below), then an
+optional `## Cross-Repo Notes`. The skeleton `mc.py change emit` writes covers the front-matter and
+the fixed sections; the slice table is a design judgement and is written by `mspec`, which is why it
+does not appear in the emitted skeleton below:
 
 ```markdown
 <!-- project-change: <NNN> -->
@@ -254,6 +258,52 @@ or release sequencing. Omit this section for single-repo changes.
 
 ---
 
+## Slices
+
+A change is delivered in **slices** — increments each of which makes some behaviour work end to end,
+rather than batches of modules that only work once the last one lands. The `## Slices` table in a
+project-level change index states that cut, and it is the one section `mplan` consumes **verbatim**
+rather than deriving.
+
+One row per slice, in delivery order:
+
+| Column | Content |
+|--------|---------|
+| `Slice` | `00`-padded position in delivery order. `00` is the walking skeleton. |
+| `Name` | 2–5 words. |
+| `Behavior` | What completing this slice makes work, end to end. A **behaviour**, never a list of modules. |
+| `Acceptance` | How that behaviour is demonstrated. |
+| `Modules` | The TAGs it touches, across every repo the change spans. |
+
+Written out, in a project-level index:
+
+| Slice | Name | Behavior | Acceptance | Modules |
+|-------|------|----------|------------|---------|
+| `00` | retry end to end | An adapter call that fails once succeeds on retry, and the consumer sees the retried result | `pytest tests/e2e/test_retry.py -q` | `ADAPTER`, `CONSUMER`, `E2E` |
+| `01` | backoff policy | Retries space out under load instead of hammering a failing endpoint | `pytest tests/test_backoff.py -q` | `ADAPTER` |
+
+Two rules bind the table:
+
+1. **Slice `00` must touch every layer the change touches.** That is what makes it a walking skeleton
+   rather than merely the first item somebody listed: its acceptance proves the shape of the whole
+   system runs before any one part of it is finished.
+2. **At least one acceptance step per slice must be a runnable command.** A slice whose acceptance is
+   prose alone can only be confirmed by a person, and a plan made entirely of those turns delivery
+   back into supervision.
+
+The section is **required on new project-level change documents and optional on existing ones.** A
+document written before slices existed is planned by falling back to the lifecycles in
+`COMMON-OVERVIEW.md`, so its absence is not a defect and no existing change document is invalidated
+by the section's introduction.
+
+**Cutting slices is a design judgement**, of the same kind as module decomposition. That is why it
+sits in `mspec`'s output, behind the approval gate `mspec` already has, rather than being inferred
+later by `mplan`, which has no gate at all. `mc.py plan slices <plan-id>` reads the resulting cut back
+out of a plan, and `mc.py plan reslice <plan-id>` rewrites the slices still outstanding when a
+delivered one changes what the rest should be.
+
+---
+
 ## Status Lifecycle
 
 ```
@@ -271,6 +321,13 @@ complete (terminal; baseline records only — see Initial-Spec Baseline Records)
 
 A change document carrying `plan: not-required` may move directly from `pending` to `applied` — there
 is no code phase to pass through `in-progress` for.
+
+**The transition to a terminal status is performed only by `mc.py change close`.** `change emit`
+writes `pending`; before that verb existed no skill or tool ever moved a document off it, so every
+shipped change read as outstanding forever and the lifecycle above described an intent nothing
+implemented. `mship` invokes it when a plan's last slice is applied; `mfix` and `mmigrate` invoke it
+for a record their own run settled. It refuses `complete` — a baseline record's birth status, never a
+transition — and refuses a document that is already terminal.
 
 ---
 

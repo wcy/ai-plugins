@@ -1014,11 +1014,11 @@ def test_story_emit_injects_the_four_e2e_rules_at_both_markers(workspace):
     assert text.count(block) == 2, text
     assert result.data["e2e_injections"] == 2
 
-    # One copy under Post-Story Validation, one under Final Validation.
-    post = text.split("## Post-Story Validation", 1)[1].split("## Final Validation", 1)[0]
-    final = text.split("## Final Validation", 1)[1]
+    # One copy under Post-Story Validation, one under Slice Acceptance.
+    post = text.split("## Post-Story Validation", 1)[1].split("## Slice Acceptance", 1)[0]
+    acceptance = text.split("## Slice Acceptance", 1)[1]
     assert block in post
-    assert block in final
+    assert block in acceptance
     # No injection marker survives into the story.
     assert "INJECT:E2E-HARD-RULES" not in text
 
@@ -1039,11 +1039,16 @@ def test_the_injection_is_gated_on_the_catalog_naming_an_e2e_module(workspace):
     assert "- [ ] E2E scenarios for this module pass (if E2E module exists in catalog)" in text
 
 
-def test_the_final_validation_section_is_last_wave_only(workspace):
+def test_the_slice_acceptance_section_is_gated_on_the_slice_s_last_wave(workspace):
+    """The fixture graph is version 1/2, whose one synthetic slice spans every
+    wave — so the gate resolves to the plan's last wave and renders exactly what
+    ``## Final Validation (last wave only)`` always did, under its new name."""
     _, last = _emit_story(workspace, story_id="02-01-demo-BETA")
     _, earlier = _emit_story(workspace, story_id="01-01-demo-ALPHA")
-    assert "## Final Validation (last wave only)" in last
-    assert "## Final Validation" not in earlier
+    assert "## Slice Acceptance" in last
+    assert "## Slice Acceptance" not in earlier
+    # The section it replaced is gone from the rendered story entirely.
+    assert "## Final Validation" not in last
     # The earlier wave still carries its own Post-Story rules.
     assert "\n".join(_e2e_rules_from_standard()) in earlier
 
