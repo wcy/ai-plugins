@@ -31,9 +31,12 @@ Several rules live here, and **only** here -- no other module re-derives one:
 * **catalog facet** -- a declared entry's ``facet`` matches what the filename
   suffix implies.
 * **catalog layer** -- a module's declared ``layer`` matches the layer whose
-  ``layers:`` block lists it. It deliberately does **not** check an INTERFACE
-  file's ``exports`` against the document -- no authoring convention makes
-  that decidable.
+  ``layers:`` block lists it.
+* **catalog exports** -- an INTERFACE file's ``Exports:`` trailer, parsed per
+  ``SHARED-INTERFACE.md``'s grammar, matches the entry's ``exports:`` list as a
+  **set**: both directions are reported, absence is symmetric (neither side
+  present conforms, one side alone is a finding), and a paragraph that begins
+  ``Exports:`` but does not parse is a finding rather than a silent pass.
 
 ``check handoff`` walks the stage chain once. **``stranded`` is the general
 rule** ``TOOLS-DATAMODEL.md`` states -- *the artifact is complete but no
@@ -108,6 +111,10 @@ E_CATALOG_FACET = "E_CATALOG_FACET"
 #: A module's declared `layer` disagreeing with the `layers:` block.
 E_CATALOG_LAYER = "E_CATALOG_LAYER"
 
+#: An INTERFACE file's `Exports:` trailer disagreeing with the entry's
+#: `exports:` list -- in either direction, or by not parsing at all.
+E_CATALOG_EXPORTS = "E_CATALOG_EXPORTS"
+
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
@@ -130,6 +137,31 @@ ROOT_SPEC_FILE = "COMMON-OVERVIEW.md"
 
 IMPLEMENTATION_SUFFIX = "-IMPLEMENTATION.md"
 INTERFACE_SUFFIX = "-INTERFACE.md"
+
+#: The `facet` value a catalog entry carries for an INTERFACE document -- the
+#: only entries the exports rule looks at.
+INTERFACE_FACET = "interface"
+
+# ---------------------------------------------------------------------------
+# `Exports:` trailer vocabulary -- SHARED-INTERFACE.md
+# §"exports-trailer-grammar". The grammar is stated once, here, and parsed
+# once, in `_exports_trailer`.
+# ---------------------------------------------------------------------------
+
+#: The word the trailer paragraph begins with.
+EXPORTS_TRAILER_PREFIX = "Exports:"
+
+#: A blank line (whitespace-only lines included) separates paragraphs.
+PARAGRAPH_SPLIT_RE = re.compile(r"\n[ \t]*\n")
+
+#: One backtick-quoted bare identifier -- a command name, a schema kind, a
+#: skill's frontmatter `name`. `mc.py` is why a dot is admitted.
+EXPORTS_TOKEN_RE = re.compile(r"^`([A-Za-z0-9][A-Za-z0-9._-]*)`$")
+
+#: `_exports_trailer`'s three outcomes.
+EXPORTS_ABSENT = "absent"
+EXPORTS_PARSED = "parsed"
+EXPORTS_UNPARSEABLE = "unparseable"
 
 #: The contract layer: the only sanctioned cross-target dependency path.
 SHARED_TARGET = spec.SHARED_TARGET
@@ -806,13 +838,141 @@ def _catalog_layer(catalog: spec.ExistingCatalog, relative: str) -> List[core.Di
     return findings
 
 
+def _exports_list(tokens: Set[str]) -> str:
+    """Backticked tokens, sorted -- messages must not vary between runs."""
+    return ", ".join("`%s`" % token for token in sorted(tokens))
+
+
+def _exports_trailer(text: str) -> Tuple[str, Set[str]]:
+    """Parse an INTERFACE document's ``Exports:`` trailer.
+
+    ``SHARED-INTERFACE.md`` §``exports-trailer-grammar``: the file's *last*
+    paragraph, beginning with the word ``Exports:``, holding nothing but a
+    comma-separated list of backtick-quoted bare identifiers and ending in a
+    period. "Nothing but" governs the whole paragraph, and the list may wrap
+    lines.
+
+    Returns exactly one of three outcomes, and keeping them distinct is the
+    point of the rule:
+
+    * ``(EXPORTS_ABSENT, set())`` -- the last paragraph does not begin
+      ``Exports:``. This is *absence*, not an error: a module exporting
+      nothing omits the trailer entirely, so it is compared symmetrically
+      against the entry's ``exports:``.
+    * ``(EXPORTS_PARSED, tokens)`` -- the paragraph satisfies the grammar.
+    * ``(EXPORTS_UNPARSEABLE, set())`` -- the paragraph begins ``Exports:``
+      but violates the grammar. Never downgraded to absence: a trailer the
+      checker cannot read is indistinguishable from one that disagrees.
+    """
+    paragraphs = [block for block in PARAGRAPH_SPLIT_RE.split(text.strip()) if block.strip()]
+    if not paragraphs:
+        return EXPORTS_ABSENT, set()
+    last = paragraphs[-1].strip()
+    if not last.startswith(EXPORTS_TRAILER_PREFIX):
+        return EXPORTS_ABSENT, set()
+
+    # The list may wrap lines, so normalize every run of whitespace to one
+    # space before splitting on commas.
+    body = " ".join(last[len(EXPORTS_TRAILER_PREFIX):].split())
+    if not body.endswith("."):
+        return EXPORTS_UNPARSEABLE, set()
+    body = body[:-1].strip()
+    if not body:
+        return EXPORTS_UNPARSEABLE, set()
+
+    tokens: Set[str] = set()
+    for piece in body.split(","):
+        match = EXPORTS_TOKEN_RE.match(piece.strip())
+        if match is None:
+            return EXPORTS_UNPARSEABLE, set()
+        tokens.add(match.group(1))
+    return EXPORTS_PARSED, tokens
+
+
+def _catalog_exports(
+    ws: core.Workspace, declared: Sequence[Tuple[str, Dict[str, Any]]]
+) -> List[core.Diagnostic]:
+    """An INTERFACE file's ``Exports:`` trailer disagreeing with ``exports:``.
+
+    The comparison is a **set** comparison in both directions, so ordering
+    never matters and each direction that disagrees is its own finding.
+    Unlike the layer rule this one is not skipped for the shared tree: a
+    shared catalog's INTERFACE entries carry ``exports`` like any other.
+    """
+    findings: List[core.Diagnostic] = []
+    for path, entry in declared:
+        if entry.get("facet") != INTERFACE_FACET:
+            continue
+        file_path, diagnostic = ws.resolve_path(path)
+        if diagnostic is not None or file_path is None or not file_path.is_file():
+            continue  # already reported by the file-set rule
+        listed = entry.get("exports")
+        catalog_tokens = {str(token) for token in listed} if isinstance(listed, list) else set()
+        outcome, document_tokens = _exports_trailer(core.read_text(file_path, path))
+
+        if outcome == EXPORTS_UNPARSEABLE:
+            findings.append(
+                core.error(
+                    E_CATALOG_EXPORTS,
+                    "the last paragraph begins %r but does not parse as an exports trailer"
+                    % (EXPORTS_TRAILER_PREFIX,),
+                    file=path,
+                )
+            )
+            continue
+        if outcome == EXPORTS_ABSENT:
+            if catalog_tokens:
+                findings.append(
+                    core.error(
+                        E_CATALOG_EXPORTS,
+                        "the catalog declares exports %s but the document carries no "
+                        "`Exports:` trailer" % (_exports_list(catalog_tokens),),
+                        file=path,
+                    )
+                )
+            continue
+        if not catalog_tokens:
+            findings.append(
+                core.error(
+                    E_CATALOG_EXPORTS,
+                    "the document's `Exports:` trailer declares %s but the catalog entry "
+                    "has no `exports:` list" % (_exports_list(document_tokens),),
+                    file=path,
+                )
+            )
+            continue
+
+        undeclared = document_tokens - catalog_tokens
+        if undeclared:
+            findings.append(
+                core.error(
+                    E_CATALOG_EXPORTS,
+                    "the `Exports:` trailer declares %s, which the catalog entry omits"
+                    % (_exports_list(undeclared),),
+                    file=path,
+                )
+            )
+        unwritten = catalog_tokens - document_tokens
+        if unwritten:
+            findings.append(
+                core.error(
+                    E_CATALOG_EXPORTS,
+                    "the catalog entry declares %s, which the `Exports:` trailer omits"
+                    % (_exports_list(unwritten),),
+                    file=path,
+                )
+            )
+    return findings
+
+
 def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
     """Compare ``CATALOG.yaml`` against the spec tree it describes.
 
-    Three rules, applied in this fixed order so finding order is stable
-    between runs: file-set agreement, facet, then layer. The layer rule is
-    skipped for ``spec.SHARED_TARGET``, whose catalog has no ``layers:``
-    block.
+    Four rules, applied in this fixed order so finding order is stable
+    between runs: file-set agreement, facet, layer, then exports. The layer
+    rule is skipped for ``spec.SHARED_TARGET``, whose catalog has no
+    ``layers:`` block; the exports rule is not, since a shared catalog's
+    INTERFACE entries carry ``exports`` like any other.
     """
     catalog, relative, exists = _catalog(ws, target)
     if not exists or catalog is None:
@@ -827,6 +987,7 @@ def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
     findings.extend(_catalog_facet(declared))
     if target != SHARED_TARGET:
         findings.extend(_catalog_layer(catalog, relative))
+    findings.extend(_catalog_exports(ws, declared))
     return findings
 
 
