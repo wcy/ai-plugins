@@ -9,6 +9,13 @@ Four things this suite has to establish, per TOOLS-TESTING.md §Unit:
 * **no output ever instructs removal of an orphan** -- asserted over the whole
   rendered output and the whole JSON envelope, not just the ``verdict`` field.
 
+A fifth follows from ``mexecute`` shipping **one slice** per run: a slice-scoped
+run must name and reconcile exactly what a whole-plan run named, since the slice
+is a *scope* narrowing and not a new naming axis -- and the thing a slice-scoped
+run adds, its **Slice Acceptance**, has to reach ``state.yaml``, because merging
+is no longer the completion criterion and no function of story statuses can say
+so.
+
 Everything runs against a synthetic workspace in ``tmp_path`` with no git
 repository anywhere in it, which is also the proof that the group runs nothing:
 reconciliation is driven entirely from a fixture string.
@@ -20,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import core, worktree
+from tools import core, plan as plan_group, state, worktree
 
 PLAN_ID = "003-deterministic-mechanical-steps"
 OTHER_PLAN = "004-something-else"
@@ -68,8 +75,12 @@ def write_plan_graph(workspace, stories, plan_id=PLAN_ID):
     )
 
 
-def write_plan_state(workspace, statuses, plan_id=PLAN_ID):
-    """``state.yaml`` naming ``{story_id: status}``."""
+def write_plan_state(workspace, statuses, plan_id=PLAN_ID, slices=None):
+    """``state.yaml`` naming ``{story_id: status}``.
+
+    ``slices`` -- ``{slice_id: status}`` -- writes the ``slices`` block a
+    slice-scoped run records; omitted, the file is exactly what it always was.
+    """
     lines = [
         "version: 2",
         "plan_id: %s" % plan_id,
@@ -84,6 +95,11 @@ def write_plan_state(workspace, statuses, plan_id=PLAN_ID):
         lines.append("    wave: 3")
         lines.append("    status: %s" % statuses[story_id])
         lines.append("    retries: 0")
+    if slices:
+        lines.append("slices:")
+        for slice_id in sorted(slices):
+            lines.append("  - slice: '%s'" % slice_id)
+            lines.append("    status: %s" % slices[slice_id])
     return workspace.write(
         "context/project/plans/%s/state.yaml" % plan_id, "\n".join(lines) + "\n"
     )
@@ -625,6 +641,238 @@ def test_verdicts_derive_from_state_alone(plan):
     write_plan_state(plan, {GHOST_STORY: "applied"})
     flipped = run_reconcile(plan, porcelain(record("/w/g", branch=story_ref(GHOST_STORY))))
     assert flipped.data[0]["verdict"] == "remove"
+
+
+# ---------------------------------------------------------------------------
+# A slice-scoped run -- the names it uses, and the acceptance that closes it
+# ---------------------------------------------------------------------------
+
+SLICE = "00"
+SECOND_SLICE = "01"
+
+#: Two stories in two waves, split across two slices, so "the slice in scope"
+#: and "the wave in scope" cannot be confused for one another.
+SLICE_ZERO_STORY = "01-01-ai-plugins-ALPHA"
+SLICE_ONE_STORY = "02-01-ai-plugins-BETA"
+
+
+def sliced_draft():
+    """A version-3 draft: every story in exactly one slice, acceptance runnable."""
+    return {
+        "stories": {
+            SLICE_ZERO_STORY: {
+                "repo": REPO,
+                "module": "ALPHA",
+                "wave": 1,
+                "prerequisites": [],
+                "target_paths": ["src/alpha.py"],
+                "validation": {"post_story": [{"kind": "prose", "description": "it holds"}]},
+            },
+            SLICE_ONE_STORY: {
+                "repo": REPO,
+                "module": "BETA",
+                "wave": 2,
+                "prerequisites": [],
+                "target_paths": ["src/beta.py"],
+                "validation": {"post_story": [{"kind": "prose", "description": "it holds"}]},
+            },
+        },
+        "slices": [
+            {
+                "slice": SLICE,
+                "name": "walking skeleton",
+                "behavior": "the shape of it runs end to end",
+                "acceptance": [
+                    {"kind": "exit-code", "command": "true", "description": "it runs"}
+                ],
+                "stories": [SLICE_ZERO_STORY],
+            },
+            {
+                "slice": SECOND_SLICE,
+                "name": "depth",
+                "behavior": "and it still runs",
+                "acceptance": [
+                    {"kind": "exit-code", "command": "true", "description": "it still runs"}
+                ],
+                "stories": [SLICE_ONE_STORY],
+            },
+        ],
+    }
+
+
+def emit_sliced_plan(workspace, plan_id=PLAN_ID):
+    """Seed a sliced plan, its ``state.yaml`` and its ledger entry."""
+    result = plan_group.run(
+        workspace.args(
+            verb="emit", plan_id=plan_id, stdin=io.StringIO(json.dumps(sliced_draft()))
+        ),
+        workspace.ws,
+    )
+    assert result.ok, [item.render() for item in result.diagnostics]
+    workspace.mkdir("repos/%s/main/.git" % REPO)
+    return workspace
+
+
+def set_slice(workspace, slice_id=SLICE, status="applied", plan_id=PLAN_ID, **extra):
+    return state.run(
+        workspace.args(
+            verb="set-slice", plan_id=plan_id, slice_id=slice_id, status=status, **extra
+        ),
+        workspace.ws,
+    )
+
+
+def set_story(workspace, story_id, status="applied", plan_id=PLAN_ID, **extra):
+    return state.run(
+        workspace.args(
+            verb="set-story", plan_id=plan_id, story_id=story_id, status=status, **extra
+        ),
+        workspace.ws,
+    )
+
+
+def loaded(workspace, relative):
+    return core.load_yaml(workspace.path(relative), relative)
+
+
+def plan_state(workspace, plan_id=PLAN_ID):
+    return loaded(workspace, "context/project/plans/%s/state.yaml" % plan_id)
+
+
+def ledger_entry(workspace, plan_id=PLAN_ID):
+    return loaded(workspace, "context/project/state.yaml")["plans"][plan_id]
+
+
+@pytest.fixture
+def sliced(workspace):
+    """A plan whose stories are split across two slices."""
+    return emit_sliced_plan(workspace)
+
+
+def test_a_slice_scoped_run_names_what_the_unsliced_graph_named(workspace):
+    """The same story, the same run, the same attempt -- the same three names.
+
+    Slicing narrows *what a run ships*; it is not a naming axis. If it were, a
+    plan resliced mid-delivery would rename branches out from under the
+    work trees an earlier run deliberately kept.
+    """
+    write_plan_graph(workspace, {SLICE_ONE_STORY: REPO})
+    workspace.mkdir("repos/%s/main/.git" % REPO)
+    unsliced = run_names(workspace, story_id=SLICE_ONE_STORY, run=2, attempt=3)
+
+    emit_sliced_plan(workspace)
+    scoped = run_names(workspace, story_id=SLICE_ONE_STORY, run=2, attempt=3)
+
+    assert core.exit_code(scoped) == 0
+    assert scoped.data == unsliced.data
+    assert plan_state(workspace)["slices"]  # the graph really is sliced
+
+
+def test_no_name_a_slice_scoped_run_uses_carries_its_slice(sliced):
+    """Five branch segments and one path segment -- no room for a sixth fact."""
+    result = run_names(sliced, story_id=SLICE_ONE_STORY, run=1, attempt=1)
+    assert result.data["story"].split("/") == [
+        "mexec",
+        PLAN_ID,
+        SLICE_ONE_STORY,
+        "r1",
+        "1",
+    ]
+    assert result.data["worktree_path"] == "repos/%s/%s-r1-1" % (REPO, SLICE_ONE_STORY)
+    # And the decomposition reports four facts, not five: a branch cut for a
+    # slice-scoped run parses exactly as one cut for a whole-plan run.
+    assert worktree.decompose(result.data["story"]) == (PLAN_ID, SLICE_ONE_STORY, 1, 1)
+
+
+def test_the_integration_branch_is_shared_by_every_slice(sliced):
+    """One integration branch per plan, so slice 01 starts from slice 00's tip."""
+    first = run_names(sliced, story_id=SLICE_ZERO_STORY)
+    second = run_names(sliced, story_id=SLICE_ONE_STORY)
+    assert first.data["integration"] == second.data["integration"]
+    assert first.data["integration"] == worktree.integration_branch(PLAN_ID)
+    assert SLICE not in first.data["integration"].split("/")
+
+
+def test_reconcile_verdicts_do_not_depend_on_which_slice_a_story_is_in(workspace):
+    """A recorded ``slices`` block changes no verdict: status is what decides."""
+    write_plan_graph(workspace, {APPLIED_STORY: REPO, PENDING_STORY: REPO})
+    statuses = {APPLIED_STORY: "applied", PENDING_STORY: "pending"}
+    text = porcelain(
+        record("/w/applied", branch=story_ref(APPLIED_STORY)),
+        record("/w/pending", branch=story_ref(PENDING_STORY)),
+    )
+
+    write_plan_state(workspace, statuses)
+    before = run_reconcile(workspace, text)
+
+    write_plan_state(workspace, statuses, slices={SLICE: "applied", SECOND_SLICE: "in-progress"})
+    after = run_reconcile(workspace, text)
+
+    assert [entry["verdict"] for entry in after.data] == ["remove", "keep"]
+    assert before.data == after.data
+
+
+def test_a_slice_acceptance_result_reaches_state(sliced):
+    """``set-slice --acceptance`` is how the slice's demonstration is recorded."""
+    result = set_slice(sliced, SLICE, "applied", acceptance="pass")
+    assert core.exit_code(result) == 0
+
+    recorded = plan_state(sliced)["slices"]
+    assert recorded[0] == {"slice": SLICE, "status": "applied", "acceptance": "pass"}
+    # ...and the ledger's counters move in the same write, never separately.
+    assert ledger_entry(sliced)["slices_total"] == 2
+    assert ledger_entry(sliced)["slices_applied"] == 1
+
+
+@pytest.mark.parametrize("acceptance", ["pass", "fail", "unconfirmed", "not-run"])
+def test_every_acceptance_result_a_slice_can_carry_reaches_state(sliced, acceptance):
+    set_slice(sliced, SLICE, "in-progress", acceptance=acceptance)
+    assert plan_state(sliced)["slices"][0]["acceptance"] == acceptance
+
+
+def test_a_slice_whose_stories_all_merged_can_still_fail_its_acceptance(sliced):
+    """Merging is not the completion criterion; the acceptance is.
+
+    No function of story statuses produces this outcome, which is why the
+    slice's status is written rather than derived.
+    """
+    for story_id in (SLICE_ZERO_STORY, SLICE_ONE_STORY):
+        assert core.exit_code(set_story(sliced, story_id, "applied")) == 0
+    recorded = plan_state(sliced)
+    assert {entry["status"] for entry in recorded["stories"].values()} == {"applied"}
+
+    set_slice(sliced, SLICE, "failed", acceptance="fail")
+    entry = plan_state(sliced)["slices"][0]
+    assert entry["status"] == "failed"
+    assert entry["acceptance"] == "fail"
+    assert ledger_entry(sliced)["slices_applied"] == 0
+
+
+def test_an_acceptance_nobody_ran_is_never_invented(sliced):
+    """A slice recorded without one carries no acceptance at all.
+
+    A report cannot then present an unlooked-at slice as demonstrated -- the
+    field is absent rather than defaulted to something reassuring.
+    """
+    set_slice(sliced, SLICE, "in-progress")
+    assert "acceptance" not in plan_state(sliced)["slices"][0]
+
+
+def test_one_slice_s_acceptance_survives_the_next_slice_being_recorded(sliced):
+    set_slice(sliced, SLICE, "applied", acceptance="pass")
+    set_slice(sliced, SECOND_SLICE, "in-progress")
+    recorded = plan_state(sliced)["slices"]
+    assert [entry["slice"] for entry in recorded] == [SLICE, SECOND_SLICE]
+    assert recorded[0]["acceptance"] == "pass"
+    assert ledger_entry(sliced)["slices_applied"] == 1
+
+
+def test_recording_a_slice_leaves_every_name_the_run_used_untouched(sliced):
+    """The acceptance write moves state, never the names an in-flight run holds."""
+    before = run_names(sliced, story_id=SLICE_ONE_STORY, run=1, attempt=1)
+    set_slice(sliced, SLICE, "applied", acceptance="pass")
+    after = run_names(sliced, story_id=SLICE_ONE_STORY, run=1, attempt=1)
+    assert before.data == after.data
 
 
 # ---------------------------------------------------------------------------
