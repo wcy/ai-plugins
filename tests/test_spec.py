@@ -97,12 +97,13 @@ def requirements_file(workspace, target, body=REQUIREMENT):
     )
 
 
-def run(workspace, verb, target=None, interface=None):
+def run(workspace, verb, target=None, interface=None, **extra):
     fields = {"verb": verb}
     if target is not None:
         fields["target"] = target
     if interface is not None:
         fields["interface"] = interface
+    fields.update(extra)
     result = spec.run(workspace.args(**fields), workspace.ws)
     return result, core.exit_code(result)
 
@@ -566,6 +567,328 @@ def test_consumers_writes_nothing(workspace):
     before = tree_snapshot(workspace)
     run(workspace, "consumers", interface="EVENT-BUS")
     assert tree_snapshot(workspace) == before
+
+
+# ---------------------------------------------------------------------------
+# `spec depth` -- absence is not a third state, and `full` is checked back
+# ---------------------------------------------------------------------------
+
+
+def _set_depth(workspace, target, module, value):
+    return run(workspace, "depth", target, module=module, set=value)
+
+
+def test_depth_reports_full_for_a_module_with_no_field(demo):
+    """Absence is not a third state: a catalog written before depth existed
+    describes fully-described modules, which is exactly what they were."""
+    result, code = run(demo, "depth", "demo", module="ALPHA", set=None)
+    assert code == 0 and result.ok
+    assert result.data["depth"] == "full"
+    assert result.data["declared"] is None
+
+
+def test_depth_reports_what_the_catalog_declares(demo):
+    _set_depth(demo, "demo", "ALPHA", "contract")
+    result, _code = run(demo, "depth", "demo", module="ALPHA", set=None)
+    assert result.data["depth"] == "contract"
+    assert result.data["declared"] == "contract"
+
+
+def test_reporting_depth_writes_nothing(demo):
+    before = tree_snapshot(demo)
+    digest = demo.path("context/demo/spec/CATALOG.yaml").read_bytes()
+    run(demo, "depth", "demo", module="ALPHA", set=None)
+    assert tree_snapshot(demo) == before
+    assert demo.path("context/demo/spec/CATALOG.yaml").read_bytes() == digest
+
+
+def test_set_contract_is_accepted_whatever_is_on_disk(demo):
+    """Claiming *less* coverage than exists harms nothing, so it is never refused."""
+    result, code = _set_depth(demo, "demo", "ALPHA", "contract")
+    assert code == 0 and result.ok
+    assert result.data["depth"] == "contract"
+    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
+
+
+def test_set_contract_is_accepted_for_a_module_missing_every_deepening_facet(demo):
+    spec_file(demo, "demo", "ZETA", "ZETA-OVERVIEW.md")
+    catalog = core.load_yaml(demo.path("context/demo/spec/CATALOG.yaml"))
+    catalog["layers"]["L1-core"]["modules"].append("ZETA")
+    catalog["modules"]["ZETA"] = {
+        "layer": "L1-core",
+        "files": [{"path": "context/demo/spec/ZETA/ZETA-OVERVIEW.md", "facet": "overview"}],
+    }
+    catalog_file(demo, "demo", core.dump_yaml(catalog))
+
+    result, code = _set_depth(demo, "demo", "ZETA", "contract")
+    assert code == 0 and result.ok
+    assert emitted(demo)["modules"]["ZETA"]["depth"] == "contract"
+
+
+@pytest.mark.parametrize(
+    "absent", ["ALPHA-DEPENDENCIES.md", "ALPHA-IMPLEMENTATION.md", "ALPHA-TESTING.md"]
+)
+def test_set_full_is_refused_while_any_deepening_facet_is_missing(demo, absent):
+    """The one refusal keeping the field from claiming coverage that is not there."""
+    demo.path("context/demo/spec/ALPHA/%s" % absent).unlink()
+    digest = demo.path("context/demo/spec/CATALOG.yaml").read_bytes()
+
+    result, code = _set_depth(demo, "demo", "ALPHA", "full")
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_INVALID_STATE]
+    assert absent in result.diagnostics[0].message
+    assert demo.path("context/demo/spec/CATALOG.yaml").read_bytes() == digest
+
+
+def test_set_full_is_accepted_once_all_three_exist(demo):
+    _set_depth(demo, "demo", "ALPHA", "contract")
+    result, code = _set_depth(demo, "demo", "ALPHA", "full")
+    assert code == 0 and result.ok
+    assert result.data["depth"] == "full"
+    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "full"
+
+
+def test_depth_survives_a_catalog_emission(demo):
+    """`depth` joins the preserved-not-derived set, so re-emitting keeps it."""
+    _set_depth(demo, "demo", "ALPHA", "contract")
+    run(demo, "catalog-emit", "demo")
+    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
+    run(demo, "catalog-emit", "demo")
+    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
+
+
+def test_catalog_emit_never_derives_a_depth_of_its_own(demo):
+    """A module whose IMPLEMENTATION is simply unwritten must not read as a
+    deliberate `contract` declaration -- deriving it would turn an oversight
+    into an assertion."""
+    demo.path("context/demo/spec/ALPHA/ALPHA-IMPLEMENTATION.md").unlink()
+    run(demo, "catalog-emit", "demo")
+    assert "depth" not in emitted(demo)["modules"]["ALPHA"]
+
+
+def test_depth_reports_a_module_the_catalog_does_not_declare(demo):
+    result, code = run(demo, "depth", "demo", module="NOPE", set=None)
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+def test_depth_refuses_a_level_outside_the_two(demo):
+    digest = demo.path("context/demo/spec/CATALOG.yaml").read_bytes()
+    result, code = _set_depth(demo, "demo", "ALPHA", "partial")
+    assert code == 2
+    assert [item.code for item in result.diagnostics] == [core.E_USAGE]
+    assert demo.path("context/demo/spec/CATALOG.yaml").read_bytes() == digest
+
+
+# ---------------------------------------------------------------------------
+# `spec revision` -- never lowered, and never bumped for an absent agreement
+# ---------------------------------------------------------------------------
+
+
+def _shared_interface(workspace, revision=None):
+    """A `context/shared/` tree carrying one interface, with an optional revision."""
+    for filename in (
+        "EVENT-BUS-OVERVIEW.md",
+        "EVENT-BUS-DATAMODEL.md",
+        "EVENT-BUS-INTERFACE.md",
+    ):
+        spec_file(workspace, "shared", "EVENT-BUS", filename)
+    entry = (
+        "  EVENT-BUS:\n"
+        "    files:\n"
+        "      - path: context/shared/spec/EVENT-BUS/EVENT-BUS-INTERFACE.md\n"
+        "        facet: interface\n"
+    )
+    if revision is not None:
+        entry += "    revision: %d\n" % revision
+    catalog_file(workspace, "shared", "version: 1\nscope: shared\ninterfaces:\n" + entry)
+    return workspace
+
+
+def test_revision_reports_one_for_an_interface_with_no_field(workspace):
+    _shared_interface(workspace)
+    result, code = run(workspace, "revision", interface="EVENT-BUS")
+    assert code == 0 and result.ok
+    assert result.data["revision"] == 1
+
+
+def test_revision_reports_what_the_catalog_records(workspace):
+    _shared_interface(workspace, revision=4)
+    result, _code = run(workspace, "revision", interface="EVENT-BUS")
+    assert result.data["revision"] == 4
+
+
+def test_reporting_a_revision_writes_nothing(workspace):
+    _shared_interface(workspace, revision=2)
+    before = tree_snapshot(workspace)
+    digest = workspace.path("context/shared/spec/CATALOG.yaml").read_bytes()
+    run(workspace, "revision", interface="EVENT-BUS")
+    assert tree_snapshot(workspace) == before
+    assert workspace.path("context/shared/spec/CATALOG.yaml").read_bytes() == digest
+
+
+def test_bump_increments_by_one_and_never_by_more(workspace):
+    _shared_interface(workspace)
+    for expected in (2, 3, 4):
+        result, code = run(workspace, "revision", interface="EVENT-BUS", bump=True)
+        assert code == 0 and result.ok
+        assert result.data["revision"] == expected
+        assert emitted(workspace, "shared")["interfaces"]["EVENT-BUS"]["revision"] == expected
+
+
+def test_bump_never_lowers_a_revision(workspace):
+    """A revision is a fact about what consumers were told, not a version
+    anyone may choose -- there is no path here that decreases it."""
+    _shared_interface(workspace, revision=7)
+    run(workspace, "revision", interface="EVENT-BUS", bump=True)
+    assert emitted(workspace, "shared")["interfaces"]["EVENT-BUS"]["revision"] == 8
+
+
+def test_bump_is_refused_for_an_interface_with_no_spec_tree(workspace):
+    """The catalog names it, but nothing was ever written: no agreement to revise."""
+    catalog_file(
+        workspace,
+        "shared",
+        "version: 1\n"
+        "scope: shared\n"
+        "interfaces:\n"
+        "  EVENT-BUS:\n"
+        "    files:\n"
+        "      - path: context/shared/spec/EVENT-BUS/EVENT-BUS-INTERFACE.md\n"
+        "        facet: interface\n",
+    )
+    digest = workspace.path("context/shared/spec/CATALOG.yaml").read_bytes()
+
+    result, code = run(workspace, "revision", interface="EVENT-BUS", bump=True)
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_NOT_FOUND]
+    assert workspace.path("context/shared/spec/CATALOG.yaml").read_bytes() == digest
+
+
+def test_an_interface_that_exists_nowhere_is_reported(workspace):
+    _shared_interface(workspace)
+    result, code = run(workspace, "revision", interface="PAYMENTS")
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+def test_revision_survives_a_catalog_emission(workspace):
+    """`revision` joins the preserved-not-derived set for the same reason
+    `depth` does: no file in the tree records it."""
+    _shared_interface(workspace, revision=3)
+    run(workspace, "catalog-emit", "shared")
+    assert emitted(workspace, "shared")["interfaces"]["EVENT-BUS"]["revision"] == 3
+    run(workspace, "catalog-emit", "shared")
+    assert emitted(workspace, "shared")["interfaces"]["EVENT-BUS"]["revision"] == 3
+
+
+# ---------------------------------------------------------------------------
+# `spec consumers --stale` -- read from plan state, not from the spec tree
+# ---------------------------------------------------------------------------
+
+
+def _delivered(workspace, plan_id, stories):
+    """A plan state file recording what each story was built against.
+
+    Written through ``mc.py state``'s own shape rather than by hand where it
+    matters: this is a *fixture* for the reader, and the writer has its own
+    coverage in test_state.py.
+    """
+    document = {
+        "version": 3,
+        "plan_id": plan_id,
+        "run": 1,
+        "status": "applied",
+        "stories": {},
+    }
+    for story_id, revisions in stories.items():
+        entry = {"repo": "demo", "wave": 1, "status": "applied", "retries": 0}
+        if revisions is not None:
+            entry["contract_revisions"] = revisions
+        document["stories"][story_id] = entry
+    workspace.write(
+        "context/project/plans/%s/state.yaml" % plan_id, core.dump_yaml(document)
+    )
+    assert core.validate_against(core.load_schema("plan-state"), document) == []
+    return workspace
+
+
+def test_stale_returns_stories_built_against_an_older_revision(workspace):
+    _shared_interface(workspace, revision=3)
+    _delivered(
+        workspace,
+        "001-first",
+        {
+            "01-01-demo-ALPHA": {"EVENT-BUS": 1},
+            "01-02-demo-BETA": {"EVENT-BUS": 3},
+        },
+    )
+    result, code = run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert code == 0 and result.ok
+    assert result.data["revision"] == 3
+    assert result.data["stale"] == [
+        {"plan_id": "001-first", "story_id": "01-01-demo-ALPHA", "built_against": 1}
+    ]
+
+
+def test_stale_excludes_a_story_recording_the_current_revision(workspace):
+    _shared_interface(workspace, revision=2)
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": {"EVENT-BUS": 2}})
+    result, _code = run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert result.data["stale"] == []
+
+
+def test_stale_is_empty_rather_than_an_error_when_nothing_was_built_against_it(workspace):
+    """An interface no delivered work names has nothing out of step, which is
+    an answer rather than a failure."""
+    _shared_interface(workspace, revision=5)
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": None})
+    result, code = run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert code == 0 and result.ok
+    assert result.data["stale"] == []
+    assert result.diagnostics == []
+
+
+def test_stale_with_no_plans_at_all_is_empty_and_not_an_error(workspace):
+    _shared_interface(workspace)
+    result, code = run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert code == 0 and result.data["stale"] == []
+
+
+def test_stale_spans_every_plan_in_sorted_order(workspace):
+    _shared_interface(workspace, revision=4)
+    _delivered(workspace, "002-second", {"02-01-demo-GAMMA": {"EVENT-BUS": 2}})
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": {"EVENT-BUS": 1}})
+    result, _code = run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert [item["plan_id"] for item in result.data["stale"]] == ["001-first", "002-second"]
+    assert result.data["scanned"] == ["001-first", "002-second"]
+
+
+def test_stale_reads_plan_state_rather_than_the_spec_tree(workspace):
+    """The tree says what the contract is *now*; only plan state says what a
+    given piece of delivered code was built against."""
+    _shared_interface(workspace, revision=2)
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": {"EVENT-BUS": 1}})
+    assert run(workspace, "consumers", interface="EVENT-BUS", stale=True)[0].data["stale"]
+
+    # Nothing in the spec tree changed; only the recorded revision did.
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": {"EVENT-BUS": 2}})
+    assert run(workspace, "consumers", interface="EVENT-BUS", stale=True)[0].data["stale"] == []
+
+
+def test_stale_writes_nothing(workspace):
+    _shared_interface(workspace, revision=2)
+    _delivered(workspace, "001-first", {"01-01-demo-ALPHA": {"EVENT-BUS": 1}})
+    before = tree_snapshot(workspace)
+    run(workspace, "consumers", interface="EVENT-BUS", stale=True)
+    assert tree_snapshot(workspace) == before
+
+
+def test_stale_does_not_change_what_plain_consumers_answers(workspace):
+    _consumer_workspace(workspace)
+    plain = run(workspace, "consumers", interface="EVENT-BUS")[0]
+    assert plain.data["consumers"] == ["repo-a", "repo-c"]
+    assert "stale" not in plain.data
 
 
 # ---------------------------------------------------------------------------

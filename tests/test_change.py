@@ -21,7 +21,7 @@ import re
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import change, core
+from tools import change, check, core
 
 STANDARD_CHANGE = PLUGIN_ROOT / "shared" / "STANDARD-CHANGE.md"
 
@@ -706,6 +706,141 @@ def test_a_bad_repo_is_rejected_by_emit(workspace):
     result, code = _emit(workspace, "context/demo/changes/CHANGE-006-alpha.md", repo="../x")
     assert code == 2
     assert [d.code for d in result.diagnostics] == [core.E_BAD_IDENT]
+
+
+# ---------------------------------------------------------------------------
+# close -- the layer's terminator, and its three refusals
+# ---------------------------------------------------------------------------
+
+
+def _close(workspace, path, status="applied"):
+    return _run(workspace, verb="close", path=path, status=status)
+
+
+@pytest.mark.parametrize("status", ["applied", "superseded"])
+def test_close_sets_the_terminal_status(workspace, status):
+    relative = _repo_change(workspace, "001", "alpha", "pending")
+    result, code = _close(workspace, relative, status)
+
+    assert code == 0 and result.ok
+    assert result.data["previous"] == "pending"
+    assert result.data["status"] == status
+    matter = core.read_front_matter(workspace.path(relative).read_text(encoding="utf-8"))
+    assert matter["status"] == status
+
+
+def test_close_rewrites_no_other_front_matter_key(workspace):
+    relative = _repo_change(workspace, "004", "alpha", "in-progress")
+    before = core.read_front_matter(workspace.path(relative).read_text(encoding="utf-8"))
+    body_before = core.strip_front_matter(workspace.path(relative).read_text(encoding="utf-8"))
+
+    _close(workspace, relative)
+
+    text = workspace.path(relative).read_text(encoding="utf-8")
+    after = core.read_front_matter(text)
+    assert list(after) == list(before)  # order preserved as well as content
+    assert {key: value for key, value in after.items() if key != "status"} == {
+        key: value for key, value in before.items() if key != "status"
+    }
+    assert core.strip_front_matter(text) == body_before
+
+
+def test_close_moves_a_document_out_of_the_pending_list(workspace):
+    """The whole point of the terminator: the change stage now drains."""
+    relative = _repo_change(workspace, "001", "alpha", "pending")
+    walk = check.walk_stages(workspace.ws)
+    assert [ref["path"] for ref in walk.pending_changes] == [relative]
+
+    result, code = _close(workspace, relative)
+    assert code == 0 and result.ok
+
+    walk = check.walk_stages(workspace.ws)
+    assert [ref["path"] for ref in walk.pending_changes] == []
+
+
+def test_close_makes_the_document_terminal_for_resolution(workspace):
+    relative = _repo_change(workspace, "001", "alpha", "pending")
+    assert _resolve(workspace)[0].data["action"] == "continue"
+    _close(workspace, relative)
+    assert _resolve(workspace)[0].data["action"] == "create"
+
+
+@pytest.mark.parametrize("status", ["applied", "superseded", "complete"])
+def test_close_refuses_a_document_already_terminal(workspace, status):
+    """Closing twice is a caller bug, not an idempotent no-op worth hiding."""
+    relative = _repo_change(workspace, "001", "alpha", status)
+    digest = workspace.path(relative).read_bytes()
+
+    result, code = _close(workspace, relative)
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert workspace.path(relative).read_bytes() == digest
+
+
+def test_close_refuses_a_baseline_record(workspace):
+    relative = _repo_change(workspace, "000", "initial-spec", "complete")
+    digest = workspace.path(relative).read_bytes()
+
+    result, code = _close(workspace, relative)
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "initial-spec" in result.diagnostics[0].message
+    assert workspace.path(relative).read_bytes() == digest
+
+
+@pytest.mark.parametrize("status", ["complete", "pending", "in-progress", "closed", ""])
+def test_close_refuses_any_status_outside_the_two(workspace, status):
+    """`complete` above all: a birth status, never a transition close confers."""
+    relative = _repo_change(workspace, "001", "alpha", "pending")
+    digest = workspace.path(relative).read_bytes()
+
+    result, code = _close(workspace, relative, status)
+    assert code == 2 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_USAGE]
+    assert workspace.path(relative).read_bytes() == digest
+
+
+def test_close_accepts_a_project_index(workspace):
+    relative = _index(workspace, "001", "alpha-retry", status="pending")
+    result, code = _close(workspace, relative, "superseded")
+    assert code == 0 and result.ok
+    matter = core.read_front_matter(workspace.path(relative).read_text(encoding="utf-8"))
+    assert matter["status"] == "superseded"
+
+
+def test_close_validates_the_front_matter_before_it_writes(workspace):
+    """Validated, then written -- never the other way round."""
+    relative = "context/demo/changes/CHANGE-001-alpha.md"
+    workspace.write(
+        relative,
+        _matter(change="001", scope="repo", repo="demo", status="pending")
+        + "\n# CHANGE-001: alpha\n",  # no `date`, which the schema requires
+    )
+    digest = workspace.path(relative).read_bytes()
+
+    result, code = _close(workspace, relative)
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+    assert workspace.path(relative).read_bytes() == digest
+
+
+def test_close_reports_a_document_that_does_not_exist(workspace):
+    result, code = _close(workspace, "context/demo/changes/CHANGE-009-absent.md")
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_NO_SUCH_FILE]
+
+
+def test_close_refuses_a_filename_that_is_not_a_change_document(workspace):
+    workspace.write("context/demo/changes/NOTES.md", "<!-- status: pending -->\n\n# Notes\n")
+    result, code = _close(workspace, "context/demo/changes/NOTES.md")
+    assert code == 2
+    assert [d.code for d in result.diagnostics] == [core.E_USAGE]
+
+
+def test_close_outside_the_workspace_is_refused(workspace):
+    result, code = _close(workspace, "../CHANGE-001-escape.md")
+    assert code == 2
+    assert [d.code for d in result.diagnostics] == [core.E_PATH_ESCAPE]
 
 
 # ---------------------------------------------------------------------------

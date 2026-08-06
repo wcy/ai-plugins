@@ -306,6 +306,21 @@ def draft(project_change="001"):
     }
 
 
+#: The ``SliceDraft[]`` ``plan reslice`` is exercised with: one slice holding
+#: both of the fixture's stories, so every story lands in exactly one.
+SLICE_DRAFTS = [
+    {
+        "slice": "00",
+        "name": "walking skeleton",
+        "behavior": "the plan runs end to end",
+        "acceptance": [
+            {"kind": "exit-code", "command": "true", "description": "it runs"}
+        ],
+        "stories": [FIRST_STORY, LAST_STORY],
+    }
+]
+
+
 def call(workspace, group, verb, **fields):
     """Call one group directly -- never through ``argv`` -- and return its Result."""
     module = mc.load_group(group)
@@ -371,10 +386,18 @@ def arguments():
             "title": "Emitted Here",
             "repo": "demo",
         },
+        "change.close": {
+            "path": "context/demo/changes/CHANGE-001-alpha-retry.md",
+            "status": "applied",
+        },
         "spec.mode": {"target": "demo"},
         "spec.layers": {"target": "demo"},
         "spec.catalog-emit": {"target": "demo"},
         "spec.consumers": {"interface": "EVENT-BUS"},
+        # The reporting form of each: `--set`/`--bump` are what write, and they
+        # have their own coverage in test_spec.py.
+        "spec.depth": {"target": "demo", "module": "ALPHA", "set": None},
+        "spec.revision": {"interface": "EVENT-BUS", "bump": False},
         "req.next": {"tier": "demo"},
         "req.mnemonic": {"title": "Recover a specification from code that never had one"},
         "req.gate": {"tier": "demo"},
@@ -390,6 +413,11 @@ def arguments():
         "plan.resolve": {"plan_id": None},
         "plan.story-id": {"file": "PLAN-%s.md" % LAST_STORY},
         "plan.waves": {"target": "demo"},
+        "plan.slices": {"plan_id": PLAN_ID},
+        "plan.reslice": {
+            "plan_id": PLAN_ID,
+            "stdin": io.StringIO(json.dumps(SLICE_DRAFTS)),
+        },
         "plan.emit": {
             "plan_id": SECOND_PLAN_ID,
             "stdin": io.StringIO(json.dumps(draft(project_change="002"))),
@@ -405,6 +433,13 @@ def arguments():
             "attempt": 1,
             "branch": BRANCH,
             "worktree": WORKTREE,
+        },
+        "state.set-slice": {
+            "plan_id": PLAN_ID,
+            "slice_id": "00",
+            "status": "applied",
+            "acceptance": "pass",
+            "outcome": "continue",
         },
         "state.conformance": {
             "plan_id": PLAN_ID,
@@ -430,11 +465,17 @@ def arguments():
 COVERED = sorted(arguments())
 
 #: The verbs ``TOOLS-INTERFACE.md`` documents as writing files: ``change emit``,
-#: ``spec catalog-emit``, ``plan emit``, ``plan story-emit``, and every ``state``
-#: verb. :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
+#: ``change close``, ``spec catalog-emit``, ``plan emit``, ``plan reslice``,
+#: ``plan story-emit``, and every ``state`` verb.
+#: :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
 #: against what the tool actually writes, so it cannot quietly go stale.
+#:
+#: ``spec depth`` and ``spec revision`` write only under ``--set``/``--bump``;
+#: the case :func:`arguments` gives each is the reporting form, so neither
+#: appears here and neither may write.
 DOCUMENTED_EMITTING = sorted(
-    {"change.emit", "spec.catalog-emit", "plan.emit", "plan.story-emit"}
+    {"change.emit", "change.close", "spec.catalog-emit"}
+    | {"plan.emit", "plan.reslice", "plan.story-emit"}
     | {"req.change-emit", "req.change-close"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )

@@ -3,8 +3,9 @@
     mc.py change resolve <repo> [--slug <slug>]
     mc.py change index-resolve [--slug <slug>]
     mc.py change emit <path> --scope <s> --status <s> --title <t> [--repo <r>]
+    mc.py change close <path> --status applied|superseded
 
-Two jobs live here, both owned by ``STANDARD-CHANGE.md`` and both previously
+Three jobs live here, all owned by ``STANDARD-CHANGE.md`` and all previously
 re-enacted from prose on every run:
 
 **Sequencing.** ``resolve`` partitions a repo's ``CHANGE-<NNN>-*.md`` files on
@@ -35,6 +36,15 @@ anything is persisted; a document that would not validate is refused and
 nothing reaches disk. The date comes from the injected clock, so emission is
 deterministic under a pinned ``--now``.
 
+**Termination.** ``close`` is the layer's terminator, and the reason it finally
+has one: ``emit`` writes ``pending`` and until this verb existed no verb or
+skill ever moved a document off it, so every shipped change read as outstanding
+forever and ``check handoff``'s pending list only ever grew. It rewrites exactly
+one front-matter key and refuses three cases -- a document already terminal, an
+``*-initial-spec.md`` baseline record, and any target status outside ``applied``
+and ``superseded``, ``complete`` most of all: that is a baseline record's birth
+status and never a transition ``close`` may confer.
+
 This module invokes no ``git``, reads no wall clock, and writes nothing outside
 the workspace root.
 """
@@ -56,6 +66,17 @@ CONTINUABLE_STATUSES = frozenset({"pending", "in-progress"})
 
 #: ``CHANGE-<NNN>-initial-spec.md`` -- a baseline record, always terminal.
 BASELINE_SLUG = "initial-spec"
+
+#: The statuses ``close`` may confer. ``complete`` is deliberately absent: it is
+#: a baseline record's birth status, not a transition.
+CLOSE_STATUSES = ("applied", "superseded")
+
+#: Every status a document may already carry that makes closing it a caller bug
+#: rather than an idempotent no-op.
+TERMINAL_STATUSES = frozenset({"applied", "superseded", "complete"})
+
+#: The front-matter key ``close`` rewrites, and the only one it touches.
+STATUS_KEY = "status"
 
 #: The slug a ``create`` target carries when the caller supplied none. The
 #: number is still allocated; the caller substitutes its own slug.
@@ -208,6 +229,29 @@ def register(subparsers) -> None:
         help="mark a change with no code phase to plan or execute (%s)" % (PLAN_NOT_REQUIRED,),
     )
     emit.set_defaults(verb="emit")
+
+    close = verbs.add_parser(
+        "close",
+        help="set a change document's terminal status",
+        description=(
+            "Move a change document to applied or superseded, rewriting that one "
+            "front-matter key. Refuses a baseline record, a document already terminal, "
+            "and any status outside the two -- `complete` above all, which is a "
+            "baseline record's birth status rather than a transition."
+        ),
+    )
+    close.add_argument("path", help="workspace-relative path of the document to close")
+    # Deliberately not an argparse `choices`: a rejected status is reported as
+    # the documented refusal diagnostic whether the verb is reached through
+    # argv or called directly, rather than as an argparse usage message on one
+    # path and a diagnostic on the other.
+    close.add_argument(
+        "--status",
+        required=True,
+        metavar="<s>",
+        help="the terminal status to set: %s" % (" | ".join(CLOSE_STATUSES),),
+    )
+    close.set_defaults(verb="close")
 
 
 def run(args, ws) -> core.Result:
@@ -656,8 +700,105 @@ def _row(cells: Sequence[str]) -> str:
     return "| %s |" % (" | ".join(cells),)
 
 
+# ---------------------------------------------------------------------------
+# close -- the layer's terminator
+# ---------------------------------------------------------------------------
+
+
+def _close(args, ws, diagnostics: List[core.Diagnostic]) -> Dict[str, Any]:
+    """``change close`` -- set the terminal status, and nothing else.
+
+    Three refusals, each persisting nothing:
+
+    * a status outside :data:`CLOSE_STATUSES` -- ``complete`` in particular,
+      which is a baseline record's birth status and never a transition;
+    * an ``*-initial-spec.md`` baseline record, born ``complete``;
+    * a document already terminal -- closing twice is a caller bug, not an
+      idempotent no-op worth hiding.
+    """
+    status = getattr(args, "status", None)
+    if status not in CLOSE_STATUSES:
+        raise core.fail(
+            core.E_USAGE,
+            "change close sets %s; %r is not one of them (`complete` is a baseline "
+            "record's birth status, never a transition close may confer)"
+            % (" or ".join(CLOSE_STATUSES), status),
+        )
+
+    given = getattr(args, "path", None)
+    if not given:
+        raise core.fail(core.E_USAGE, "change close requires a path")
+    target = ws.safe_path(given)
+    relative = ws.rel(target)
+    name = Path(str(given)).name
+
+    index_match = INDEX_CHANGE_RE.match(name)
+    repo_match = None if index_match else REPO_CHANGE_RE.match(name)
+    if index_match is None and repo_match is None:
+        raise core.fail(
+            core.E_USAGE,
+            "filename must be %s<NNN>-<slug>.md or %s<NNN>-<slug>.md" % (REPO_PREFIX, INDEX_PREFIX),
+            file=relative,
+        )
+    slug = (index_match if index_match is not None else repo_match).group(2)
+    core.check_ident(slug, "slug")
+    if _is_baseline(slug):
+        raise core.ToolError(
+            core.error(
+                core.E_INVALID_STATE,
+                "a %s baseline record is born %r; that is a birth status, not a "
+                "transition, so there is nothing for close to move it off"
+                % (BASELINE_SLUG, "complete"),
+                file=relative,
+            )
+        )
+
+    text = core.read_text(target, relative)
+    matter = core.read_front_matter(text)
+    previous = matter.get(STATUS_KEY)
+    if not previous:
+        raise core.ToolError(
+            core.error(
+                core.E_INVALID_STATE,
+                "the document carries no `%s` front-matter key to close" % (STATUS_KEY,),
+                file=relative,
+            )
+        )
+    if previous in TERMINAL_STATUSES:
+        raise core.ToolError(
+            core.error(
+                core.E_INVALID_STATE,
+                "the document is already %r, which is terminal; closing it twice is a "
+                "caller bug rather than a no-op" % (previous,),
+                file=relative,
+            )
+        )
+
+    closed = dict(matter)
+    closed[STATUS_KEY] = status
+    errors = core.validate_against(core.load_schema("change"), closed)
+    if errors:
+        raise core.ToolError(
+            core.error(
+                core.E_SCHEMA_INVALID,
+                "closing to %r would not validate against change-frontmatter: %s"
+                % (status, "; ".join(errors)),
+                file=relative,
+            )
+        )
+
+    core.write_front_matter(target, closed)
+    return {
+        "path": relative,
+        "status": status,
+        "previous": previous,
+        "lines": ["%s: %s -> %s" % (relative, previous, status)],
+    }
+
+
 _HANDLERS = {
     "resolve": _resolve,
     "index-resolve": _index_resolve,
     "emit": _emit,
+    "close": _close,
 }
