@@ -54,6 +54,26 @@
       },
       "required": ["detected", "blast_radius", "detail"]
     },
+    "spec_defect": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "The story's spec, not the story's difficulty, is the problem. Returned to mship, which decides at the slice boundary whether the remaining slices need re-planning — a finding, never a halt.",
+      "required": ["kind", "detail"],
+      "properties": {
+        "kind": {
+          "enum": ["contradicts-contract", "inexpressible"],
+          "description": "contradicts-contract = the story's spec and a contract it must honour cannot both be satisfied; inexpressible = the spec describes something the code cannot be made to do. The enum is closed and narrow by design — a story agent that can declare its own spec wrong has an escape from difficult work, so \"harder than expected\", \"the approach seems poor\" and \"I would have designed this differently\" have no representation here and must be reported as notes on a failed attempt instead."
+        },
+        "detail": { "type": "string", "minLength": 1 },
+        "spec_ref": { "type": "string", "description": "The spec surface the defect was found in (file + section)." }
+      }
+    },
+    "contract_revisions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z0-9-]+$" },
+      "additionalProperties": { "type": "integer", "minimum": 1 },
+      "description": "Shared interface TAG -> the agreement revision this story was built against. The barrier copies it into plan-state's storyState.contract_revisions. Absent means the story consumed no shared interface."
+    },
     "notes": { "type": "string" }
   }
 }

@@ -43,15 +43,25 @@
       "required": ["type", "severity", "detail"],
       "properties": {
         "type": {
-          "enum": ["missing", "extra", "mismatch", "coupling", "cross-repo-drift"],
-          "description": "missing/extra/mismatch = change<->code surface drift; coupling = cross-module IMPLEMENTATION import or cross-repo ref bypassing context/shared/spec/; cross-repo-drift = a producer/consumer that doesn't match the frozen shared contract."
+          "enum": ["missing", "extra", "mismatch", "coupling", "cross-repo-drift", "stale-contract-revision"],
+          "description": "missing/extra/mismatch = change<->code surface drift; coupling = cross-module IMPLEMENTATION import or cross-repo ref bypassing context/shared/spec/; cross-repo-drift = a producer/consumer that doesn't match the frozen shared contract; stale-contract-revision = delivered code that conforms to the agreement revision it was built against and to no other. The last is deliberately its own type rather than a cross-repo-drift, because the remedy differs — drift means somebody diverged from the contract, whereas this means the contract moved underneath conforming work, and only the latter is scheduled as remediation rather than investigated as a mistake."
         },
         "severity": { "enum": ["blocking", "warning", "info"] },
         "spec_ref": { "type": "string", "description": "Spec/contract surface the code was checked against (file + signature/type)." },
         "code_path": { "type": "string", "description": "Source path (relative to repos/<repo>/) where the drift/violation lives." },
         "surface": { "type": "string", "description": "The specific signature/type/endpoint/event affected." },
         "detail": { "type": "string", "minLength": 1 },
-        "repo": { "type": "string" }
+        "repo": { "type": "string" },
+        "built_against": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "On a stale-contract-revision finding: the agreement revision the delivered code was built against."
+        },
+        "current_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "On a stale-contract-revision finding: the revision the agreement now carries. Together with built_against this makes the gap legible without re-deriving it."
+        }
       }
     }
   }

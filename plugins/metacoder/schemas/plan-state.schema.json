@@ -7,7 +7,10 @@
   "additionalProperties": false,
   "required": ["version", "plan_id", "run", "status", "stories"],
   "properties": {
-    "version": { "enum": [1, 2] },
+    "version": {
+      "enum": [1, 2, 3],
+      "description": "New state files are written with 3. A 1 or 2 file carries no slices and still resolves: no field was renamed, and resume_wave still names a wave."
+    },
     "plan_id": { "type": "string", "pattern": "^[0-9]{3}-[a-z0-9-]+$" },
     "run": {
       "type": "integer",
@@ -34,6 +37,11 @@
         }
       }
     },
+    "slices": {
+      "type": "array",
+      "description": "One entry per graph slice, written by mship through mc.py state set-slice. Absent on a pre-slice plan, which is read as one implicit slice covering every wave. Slice-level resumption derives from these statuses; resume_wave is unchanged and still names a wave.",
+      "items": { "$ref": "#/$defs/sliceState" }
+    },
     "stories": {
       "type": "object",
       "propertyNames": { "$ref": "#/$defs/storyId" },
@@ -46,24 +54,50 @@
       "properties": {
         "status": { "enum": ["clean", "drift", "not-run"] },
         "report": { "type": ["string", "null"], "description": "Path to the mverify report under context/project/out/." },
-        "findings": { "type": "integer", "minimum": 0 }
+        "findings": { "type": "integer", "minimum": 0 },
+        "deferred": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Findings mfix deliberately accepted as debt. check handoff subtracts this from findings before deciding whether a plan still has conformance work outstanding, which is what lets a legitimately deferred finding stop pinning the check at error indefinitely. Absent means 0, so every existing conformance block keeps its current meaning."
+        }
       }
     },
     "telemetry": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Rough actuals for the run (never a pre-run estimate).",
-      "properties": {
-        "cost_usd": { "type": ["number", "null"] },
-        "tokens": { "type": ["integer", "null"] },
-        "wall_clock_s": { "type": ["number", "null"] }
-      }
+      "$ref": "#/$defs/telemetry",
+      "description": "Rough actuals for the run (never a pre-run estimate)."
     }
   },
   "$defs": {
     "storyId": {
       "type": "string",
       "pattern": "^[0-9]{2}-[0-9]{2}[a-z]?-[A-Za-z0-9._-]+$"
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": { "type": ["number", "null"] },
+        "tokens": { "type": ["integer", "null"] },
+        "wall_clock_s": { "type": ["number", "null"] }
+      }
+    },
+    "sliceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slice", "status"],
+      "properties": {
+        "slice": { "type": "string", "pattern": "^[0-9]{2}$" },
+        "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
+        "acceptance": {
+          "enum": ["pass", "fail", "unconfirmed", "not-run"],
+          "description": "unconfirmed is the --gate never case: a slice whose acceptance could only be judged by a person, run with nobody to ask. It is deliberately neither pass nor fail, so a report cannot present an unlooked-at slice as demonstrated."
+        },
+        "outcome": {
+          "enum": ["continue", "ask", "replan", "cascade", "stop", null],
+          "description": "mship's decision at this slice boundary; null until the slice is decided."
+        },
+        "telemetry": { "$ref": "#/$defs/telemetry" }
+      }
     },
     "attempt": {
       "type": "object",
@@ -101,6 +135,12 @@
             "post_story": { "enum": ["pass", "fail", "not-run"] },
             "details": { "type": "string" }
           }
+        },
+        "contract_revisions": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Z0-9-]+$" },
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "Shared interface TAG -> the agreement revision this story was built against, recorded at merge. Absent means the story consumed no shared interface. A later cascade that bumps a revision above the one recorded here is what makes the story's code a stale-contract-revision finding."
         },
         "deferred_break": {
           "type": ["object", "null"],

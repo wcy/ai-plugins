@@ -30,7 +30,17 @@
             "description": "The PROJECT-CHANGE <NNN> this plan implements, or null for a full/greenfield plan."
           },
           "plan_dir": { "type": "string", "pattern": "^context/project/plans/[0-9]{3}-[a-z0-9-]+/?$" },
-          "updated": { "type": "string" }
+          "updated": { "type": "string" },
+          "slices_total": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "How many slices this plan delivers. Lets the ledger answer how far through a plan is without opening its own state.yaml, which is what mc.py status renders."
+          },
+          "slices_applied": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many of them have been delivered. Both counters absent is a pre-slice plan and is reported as such rather than as zero progress."
+          }
         }
       }
     }
