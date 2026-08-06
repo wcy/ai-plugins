@@ -146,8 +146,13 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change emit context/<repo>/changes/CHA
 Pass `--plan not-required`: an `mfix` record documents fixes already applied in this same run, so
 it has no further code phase for a plan to reach — see `STANDARD-CHANGE.md` §"No-Plan-Needed
 Records". This also means it never needs a project-level index to avoid `check handoff` stranding
-it; write one anyway if the fix is worth surfacing to a human scanning `context/project/changes/`,
-but it is no longer required for conformance.
+**the record itself**: the stranded-change and unplanned-index rules both exempt a
+`plan: not-required` document. Write one anyway if the fix is worth surfacing to a human scanning
+`context/project/changes/`.
+
+Be clear about what that does **not** settle. `check handoff` raises a *separate* `mverify → mfix`
+finding for a plan whose `conformance` block still records findings, and that rule has no
+`plan: not-required` exemption — writing this record does not clear it. Step 6 does.
 
 `change emit` writes the front-matter and section skeleton; the per-finding prose is yours. Then
 validate what you wrote, and re-run the mechanical checks over any spec you edited:
@@ -163,14 +168,31 @@ Silent reconciliation of a released symbol is how the gap got there.
 
 ## Step 6: Re-verify and Report
 
-Re-run `/mverify` over the same scope and confirm each finding is closed. For findings the
-mechanical checks raised, confirm closure with the checker rather than by re-reading the rules:
+Re-run `/mverify` over the same scope and confirm each finding is closed. **Invoke it in
+`standalone` mode**, passing the plan id — `mverify` takes its mode discriminator explicitly and
+never infers it, and the mode decides whether state is written: `standalone` against an existing
+plan directory rewrites the plan's `conformance` block itself, while `sweep` returns its result to
+an invoker for persistence, and there is no `mexecute` run here to persist it.
+
+That rewrite is what closes the `mverify → mfix` handoff finding — the block returning to zero
+findings, not the change document Step 5 wrote. Confirm it landed before reporting completion.
+
+For findings the mechanical checks raised, confirm closure with the checker rather than by
+re-reading the rules:
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <repo>
 ```
 
 Findings that survive are reported with why; don't edit twice hoping the report changes.
+
+**A deferred finding cannot be closed this way.** Re-verification re-detects it, so the
+`conformance` block stays non-zero and the handoff finding stays raised at `error` severity for as
+long as the deferral stands — there is no machine-readable "accepted debt" state for a conformance
+finding, and the tracked-debt note written into the spec file is prose no checker reads. Name that
+explicitly in the run report, with the owning skill, so a permanently red `check handoff` reads as
+a known deferral rather than an unnoticed defect. A gate nobody can satisfy trains everyone to
+ignore it — the same failure mode Step 3 exists to fix.
 
 The run report lists, per finding: `code` | `spec` | `both` | `deferred` | `not-reproduced`, the
 one-line reason, the files touched, and any release/propagation the fix forced. Deferred items
