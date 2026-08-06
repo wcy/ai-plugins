@@ -133,13 +133,22 @@ modules by layer L1→L5, each module by facet order, `CATALOG.yaml` last.
   The emission walks the spec tree you just wrote and writes the file. Facets come from each file's
   name, so name files per STANDARD-SPEC.md and there is nothing further to do about them.
 
-  Four fields are preserved across emissions rather than re-derived, and those four remain your
+  Six fields are preserved across emissions rather than re-derived, and those six remain your
   judgment: each module's layer assignment, each module's `requirements`, each INTERFACE file's
-  `exports`, and `shared_interfaces`. Record them in `CATALOG.yaml` and re-emit — the emission keeps
-  them. A module with no layer is refused rather than placed, so in CREATE mode seed `repo:` and
-  `layers:` before the first emission. Give `shared_interfaces:` a TAG only if a Phase 2 report
-  found an actual outbound call into an interface already declared in
-  `context/shared/spec/CATALOG.yaml` — never invent a shared interface that doesn't exist yet there.
+  `exports`, `shared_interfaces`, each module's `depth`, and a shared interface's `revision`. Record
+  them in `CATALOG.yaml` and re-emit — the emission keeps them. A module with no layer is refused
+  rather than placed, so in CREATE mode seed `repo:` and `layers:` before the first emission. Give
+  `shared_interfaces:` a TAG only if a Phase 2 report found an actual outbound call into an interface
+  already declared in `context/shared/spec/CATALOG.yaml` — never invent a shared interface that
+  doesn't exist yet there.
+
+  `depth` and `revision` are on that list for the same reason as the other four: neither is readable
+  from code. A module with no IMPLEMENTATION facet might be at `contract` depth deliberately or might
+  simply be undocumented, so deriving the field would convert an omission into a declaration; a
+  `revision` is a fact about what consumers were told, which no source file records. Carry whatever
+  an existing catalog already records for both forward untouched. Write a module you create from code
+  at `full` depth — reverse-engineering describes all six facets from source that already exists, so
+  such a module is fully described by construction rather than by intent.
 
 ### Phase 3b: UPDATE mode — reconcile, don't append
 
