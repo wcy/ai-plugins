@@ -641,8 +641,12 @@ def _set_catalog_exports(text, path, tokens):
             pending = True
             continue
         if pending and line.strip().startswith("facet:"):
-            out.append("        exports:")
-            out.extend("        - %s" % token for token in tokens)
+            if tokens:
+                out.append("        exports:")
+                out.extend("        - %s" % token for token in tokens)
+            else:
+                # An explicit empty list -- distinct from omitting the key.
+                out.append("        exports: []")
             pending = False
     return "\n".join(out) + "\n"
 
@@ -716,6 +720,56 @@ def test_catalog_accepts_neither_a_trailer_nor_catalog_exports(workspace):
     assert code == 0
 
 
+def test_catalog_reports_an_empty_exports_list_as_a_placeholder(workspace):
+    """`exports: []` is the catalog-side placeholder the grammar forbids.
+
+    Distinct from omitting the key, and the message must say which it saw --
+    the two were indistinguishable before, so the diagnostic misstated the file.
+    """
+    _exports_tree(workspace, None, [])
+
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS]
+    assert findings[0]["file"] == _ALPHA_INTERFACE
+    assert "empty `exports:` list" in findings[0]["message"]
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        # Markdown emphasis around the prefix.
+        "**Exports:** `alpha-run`.",
+        # A different case.
+        "EXPORTS: `alpha-run`.",
+        # Blockquoted.
+        "> Exports: `alpha-run`.",
+    ],
+)
+def test_catalog_treats_a_near_miss_prefix_as_absence(workspace, trailer):
+    """The absent/malformed boundary is the *literal* prefix, deliberately.
+
+    ``TOOLS-IMPLEMENTATION.md`` states this as an accepted residual gap: the
+    alternative is a heuristic about what an author meant, and a literal prefix
+    is the one test that stays decidable. With no catalog `exports:` either,
+    such a file passes -- pinned here so the boundary cannot move silently.
+    """
+    _exports_tree(workspace, trailer, None)
+
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_catalog_accepts_the_documented_token_charset(workspace):
+    """Begins and ends alphanumeric; `.`, `-`, `_` permitted between."""
+    tokens = ["mc.py", "change-frontmatter", "alpha_beta", "s3"]
+    _exports_tree(workspace, "Exports: `mc.py`, `change-frontmatter`, `alpha_beta`, `s3`.", tokens)
+
+    result, code = _check(workspace, "catalog", TARGET)
+    assert result.data["findings"] == []
+    assert code == 0
+
+
 @pytest.mark.parametrize(
     "trailer",
     [
@@ -727,6 +781,13 @@ def test_catalog_accepts_neither_a_trailer_nor_catalog_exports(workspace):
         "Exports: `alpha-run`",
         # Prose before the first token.
         "Exports: the commands `alpha-run`, `alpha-stop`.",
+        # A repeated token -- each appears once and matches exactly one entry,
+        # so a repeat is malformed rather than a set of one.
+        "Exports: `alpha-run`, `alpha-run`.",
+        # A token must end alphanumeric: `a.` is not a bare identifier.
+        "Exports: `alpha-run.`.",
+        # ...and must begin alphanumeric.
+        "Exports: `_alpha-run`.",
     ],
 )
 def test_catalog_reports_a_trailer_that_does_not_parse(workspace, trailer):

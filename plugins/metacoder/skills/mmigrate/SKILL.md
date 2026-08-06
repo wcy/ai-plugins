@@ -208,9 +208,9 @@ Two more checks are specific to `REQ-CHANGE` records:
 ## Step 5: Reference Integrity Sweep
 
 Run the full per-target sweep once. It already covers both directions of catalog↔requirements
-linkage, dangling and missing `depends-on`, and the three catalog-shape rules (file-set agreement,
-facet-matches-filename, layer-matches-`layers:`) — none of these rules are re-derived here, only
-consumed:
+linkage, dangling and missing `depends-on`, and the four catalog-shape rules (file-set agreement,
+facet-matches-filename, layer-matches-`layers:`, and an INTERFACE file's `exports` matching its
+`Exports:` trailer) — none of these rules are re-derived here, only consumed:
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check depends-on <target>
@@ -239,6 +239,16 @@ itself, or it does not — there is no third case:
 - **Orphan `REQ-<NNN>`** (exists, referenced by no module) → **do not** delete it or invent a
   module reference for it. Whether the requirement still applies, and to what, is content — record
   it as tracked debt, the same way `mfix` defers missing architecture to `mspec`.
+- **Malformed `Exports:` trailer** (the last paragraph begins `Exports:` but violates
+  `STANDARD-SPEC.md`'s grammar — a parenthetical, an unbackticked token, a missing terminal period,
+  a repeated token) → drop only what the grammar forbids and keep every backticked token exactly as
+  written. Never add a token, never remove one, never reorder. The tokens are already in the file;
+  this is a format repair, not a decision about what the module exports.
+- **`exports` disagreeing with a well-formed trailer** (both sides parse, the sets differ) →
+  **defer to `mfix`**. The grammar declares no authoritative side — the checker reports both
+  directions — so which of the two artifacts is wrong is a content call this sweep never makes, the
+  same rule as a dangling `REQ-CHANGE` back-link. Note the ordering: repairing a malformed trailer
+  above can change the token set, so re-run Step 5 before concluding the sets disagree.
 
 Any of these that edits `context/<repo>/spec/` content (a catalog field, a `depends-on` line) is a
 **spec fix** in `mfix`'s sense, even though a mechanical sweep triggered it rather than a drift
