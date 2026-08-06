@@ -283,13 +283,23 @@ skill:
   ever revised is on its first agreement; `spec revision` reports `1` for it already, and `--bump`
   — an `mspec` cascade's write, never this skill's — only ever raises it from there.
 
-Find the entries that actually need the write. `declared` is `null` exactly when the field is
-absent, which is the difference between a value that is missing and one that merely agrees:
+Find the entries that actually need the write. The two fields are detected differently, because only
+one of the verbs distinguishes an absent value from a present one that happens to agree:
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py --json spec depth <target> <MODULE>
-python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py --json spec revision <IFACE>
 ```
+
+carries **`declared`** alongside `depth`: `declared` is `null` exactly when the entry has no `depth`
+key, while `depth` is the effective value (`full`) either way. A module needs the back-fill when
+`declared` is `null`, and only then.
+
+`spec revision` has no such field — its payload is `interface`, `revision` and `written`, and it
+reports `revision: 1` for an entry with no `revision` key and for one explicitly recording `1`,
+identically. Absence is therefore read from the shared catalog entry itself, in
+`context/shared/spec/CATALOG.yaml` under `interfaces:`: an entry with no `revision` key needs the
+back-fill, one that already has the key does not. Do not try to infer it from `spec revision`
+output — the number is the same in both cases.
 
 Back-fill `depth` with the tool, which performs the write itself:
 
