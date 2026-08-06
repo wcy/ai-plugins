@@ -179,6 +179,64 @@ def check_mnemonic(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mnemonic derivation -- TOOLS-DATAMODEL.md §"Mnemonic derivation"
+# ---------------------------------------------------------------------------
+
+#: A ``<Title>`` yielding no usable slug. An error diagnostic, never a guess:
+#: choosing words the title does not contain is authoring, which belongs to
+#: the caller (``mreq``) rather than to this tool.
+E_NO_MNEMONIC = "E_NO_MNEMONIC"
+
+#: Function words dropped before the first 2-4 words are kept. Deliberately
+#: minimal -- articles, prepositions, conjunctions, auxiliaries, pronouns --
+#: so the candidate stays close to the title's own wording. Interrogatives
+#: (``why``, ``how``, ``what``) are **not** here: they routinely carry a
+#: requirement title's meaning ("Know why a need changed").
+STOPWORDS = frozenset(
+    """
+    a an the and or but of to in on at by for from into with as is are was
+    were be been being it its that this these those their there they them
+    has have had do does did will would should could can may might must
+    not no than then so such own still rather per
+    """.split()
+)
+
+#: Non-alphanumeric runs collapse to a single hyphen, per MMIGRATE-DATAMODEL.md.
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+#: The upper and lower bounds MNEMONIC_GRAMMAR itself encodes.
+MNEMONIC_MIN_WORDS = 2
+MNEMONIC_MAX_WORDS = 4
+
+
+def derive_mnemonic(title: Any) -> Optional[str]:
+    """The candidate mnemonic for ``title``, or ``None`` when it yields none.
+
+    A pure function of ``title``: no clock, no filesystem, no workspace. That
+    is what makes the derivation assertable without running an agent, per
+    REQ-018-agent-drives-workflow's third clause, and it is the property
+    ``tests/test_determinism.py`` pins.
+
+    The candidate is a **proposal, not a decision** -- which words are
+    genuinely significant is judgment the caller may exercise by substituting
+    its own choice, and whatever it chooses still goes through
+    :func:`check_mnemonic` via ``req next --mnemonic``.
+
+    Returns ``None`` rather than a partial slug when fewer than
+    ``MNEMONIC_MIN_WORDS`` words survive, since a one-word slug would not
+    satisfy ``MNEMONIC_RE`` and inventing a second word would be authoring.
+    """
+    if not isinstance(title, str):
+        return None
+    words = [word for word in _NON_ALNUM_RE.split(title.lower()) if word]
+    significant = [word for word in words if word not in STOPWORDS]
+    if len(significant) < MNEMONIC_MIN_WORDS:
+        return None
+    candidate = "-".join(significant[:MNEMONIC_MAX_WORDS])
+    return candidate if MNEMONIC_RE.match(candidate) else None
+
+
+# ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
@@ -536,6 +594,19 @@ def register(subparsers) -> None:
         help="2-4 kebab-case words to append to the allocated id; rejected, never sanitized",
     )
 
+    mnemonic_parser = verbs.add_parser(
+        "mnemonic",
+        help="the candidate mnemonic for a requirement entry's <Title>",
+        description=(
+            "Derive the candidate mnemonic from a <Title>: lowercased, non-alphanumerics "
+            "collapsed to hyphens, the first 2-4 significant words kept. The candidate is a "
+            "proposal the caller may substitute; whatever it uses goes to req next --mnemonic, "
+            "which validates it. A title yielding no usable slug reports E_NO_MNEMONIC rather "
+            "than a guess."
+        ),
+    )
+    mnemonic_parser.add_argument("title", help="the entry's <Title>, verbatim")
+
     gate_parser = verbs.add_parser(
         "gate",
         help="whether the tier holds at least one valid entry",
@@ -621,6 +692,26 @@ def _next(args, ws: core.Workspace) -> core.Result:
             "next": next_value,
         },
         diagnostics=document.diagnostics(),
+    )
+
+
+def _mnemonic(args, ws: core.Workspace) -> core.Result:
+    """``req mnemonic <title>``. Reads no file; ``ws`` is unused by design."""
+    title = getattr(args, "title", None)
+    candidate = derive_mnemonic(title)
+    diagnostics = []
+    if candidate is None:
+        diagnostics.append(
+            core.error(
+                E_NO_MNEMONIC,
+                "title %r yields no usable mnemonic: fewer than %d words survive "
+                "(deferred to the caller, never guessed at)" % (title, MNEMONIC_MIN_WORDS),
+            )
+        )
+    return core.Result(
+        command="%s.mnemonic" % COMMAND,
+        data={"title": title, "candidate": candidate},
+        diagnostics=diagnostics,
     )
 
 
@@ -829,6 +920,7 @@ def _change_list(args, ws: core.Workspace) -> core.Result:
 
 VERBS = {
     "next": _next,
+    "mnemonic": _mnemonic,
     "gate": _gate,
     "change-resolve": _change_resolve,
     "change-emit": _change_emit,

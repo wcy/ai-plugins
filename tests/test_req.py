@@ -205,6 +205,87 @@ def test_gate_ignores_a_valid_entry_in_another_tier(workspace):
 
 
 # ---------------------------------------------------------------------------
+# `req mnemonic` -- the candidate, never a guess
+# ---------------------------------------------------------------------------
+
+
+def mnemonic(workspace, title):
+    args = workspace.args(verb="mnemonic", title=title)
+    result = req.run(args, workspace.ws)
+    return result, core.exit_code(result)
+
+
+@pytest.mark.parametrize(
+    "title,candidate",
+    [
+        # Function words are dropped; the first four survivors are kept.
+        ("Recover a specification from code that never had one", "recover-specification-code-never"),
+        ("Close a conformance finding at its cause", "close-conformance-finding-cause"),
+        ("Recognize a requirement from a reference to it", "recognize-requirement-reference"),
+        # Interrogatives are not function words: a title made mostly of them
+        # still derives from the words it actually contains.
+        ("Capture why before how", "capture-why-before-how"),
+        # Punctuation and case collapse; runs of it never produce empty words.
+        ("Machine-checked  records!!  Rather   than prose", "machine-checked-records-prose"),
+        # The floor is two words, the ceiling four.
+        ("Know why a need changed", "know-why-need-changed"),
+        ("Ship planned work", "ship-planned-work"),
+    ],
+)
+def test_a_title_yields_its_candidate(workspace, title, candidate):
+    result, code = mnemonic(workspace, title)
+    assert code == 0
+    assert result.data == {"title": title, "candidate": candidate}
+    assert result.diagnostics == []
+    # Whatever it returns is a mnemonic `req next --mnemonic` would accept.
+    assert req.check_mnemonic(candidate) == candidate
+
+
+@pytest.mark.parametrize("title", ["", "!!!", "   ", "Foo", "the and or of", "---"])
+def test_a_title_with_no_usable_slug_is_refused_never_guessed(workspace, title):
+    result, code = mnemonic(workspace, title)
+    assert code == 1
+    assert result.data == {"title": title, "candidate": None}
+    assert [item.code for item in result.diagnostics] == [req.E_NO_MNEMONIC]
+
+
+def test_the_candidate_is_a_proposal_the_caller_may_substitute(workspace):
+    """The split step: the tool proposes, `req next --mnemonic` validates."""
+    title = "Turn an agreed design into work that can be handed off"
+    result, code = mnemonic(workspace, title)
+    assert code == 0
+    assert result.data["candidate"] == "turn-agreed-design-work"
+
+    # A caller substituting its own choice is accepted on the same footing --
+    # the verb has no say in it, and `next` validates rather than sanitizing.
+    write_requirements(workspace, "demo", entry(1))
+    args = workspace.args(verb="next", tier="demo", mnemonic="turn-design-work")
+    assert req.run(args, workspace.ws).data["next"] == "REQ-002-turn-design-work"
+
+
+def test_deriving_a_mnemonic_never_sanitizes_a_supplied_one(workspace):
+    """Deriving and sanitizing stay separate: `next` still refuses a bad slug.
+
+    `req mnemonic` takes a <Title>, an input that is never an id. It must not
+    become an implicit repair path for a `--mnemonic` that fails the grammar.
+    """
+    write_requirements(workspace, "demo", entry(1))
+    args = workspace.args(verb="next", tier="demo", mnemonic="Not A Slug")
+    result = req.run(args, workspace.ws)
+    assert core.exit_code(result) == 1
+    assert [item.code for item in result.diagnostics] == [req.E_BAD_REQ_REF]
+    assert result.data is None
+
+
+def test_the_derivation_writes_nothing_and_reads_no_tier(workspace):
+    """It takes a title, not a tier: no workspace path is touched."""
+    result, code = mnemonic(workspace, "Trust that tracked artifacts still match their own rules")
+    assert code == 0
+    assert result.data["candidate"] == "trust-tracked-artifacts-match"
+    assert list(workspace.path("context").glob("*")) == []
+
+
+# ---------------------------------------------------------------------------
 # Identifiers and usage
 # ---------------------------------------------------------------------------
 
