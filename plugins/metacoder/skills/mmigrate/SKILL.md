@@ -199,6 +199,11 @@ Two more checks are specific to `REQ-CHANGE` records:
    `mc.py req change-close`; an open record surfaces here only as an inventoried artifact and in
    Step 5's `check handoff` note, never as something this skill writes.
 
+The same restraint governs a `CHANGE-<NNN>`/`PROJECT-CHANGE-<NNN>`'s own `status`. `mc.py change
+close` now exists, but which status a change document should carry remains content, so it is
+invoked here only for a record whose terminal state the ledger already settled — see Step 6b for
+that one narrow case and for everything it excludes.
+
 ## Step 5: Reference Integrity Sweep
 
 Run the full per-target sweep once. It already covers both directions of catalog↔requirements
@@ -263,6 +268,85 @@ this record is written, so it has no further code phase for a plan to reach (`ST
 Fixes confined to bookkeeping artifacts — a change file's own filename, a `REQ` heading's
 zero-padding, `plan.yaml`/`state.yaml` schema shape, the project ledger — are not spec changes and
 need no change document. Record them in this run's own report instead (Step 7).
+
+## Step 6b: Back-Fill the Slice-Era Fields
+
+Two `CATALOG.yaml` fields postdate most of the catalogs in a tree, and both already have a defined
+meaning when absent. Writing that meaning down is a restatement, not a decision — the field is being
+*recorded*, not *chosen* — which is what puts the back-fill here rather than with a content-judging
+skill:
+
+- **A module entry with no `depth` gets `depth: full`.** An absent `depth` already *means* `full`
+  (`COMMON-OVERVIEW.md`, "Spec depth"); `spec depth` reports `full` for it today, and every catalog
+  written before spec depth existed means exactly that. Nothing about the module changes.
+- **A shared interface entry with no `revision` gets `revision: 1`.** An interface no cascade has
+  ever revised is on its first agreement; `spec revision` reports `1` for it already, and `--bump`
+  — an `mspec` cascade's write, never this skill's — only ever raises it from there.
+
+Find the entries that actually need the write. The two fields are detected differently, because only
+one of the verbs distinguishes an absent value from a present one that happens to agree:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py --json spec depth <target> <MODULE>
+```
+
+carries **`declared`** alongside `depth`: `declared` is `null` exactly when the entry has no `depth`
+key, while `depth` is the effective value (`full`) either way. A module needs the back-fill when
+`declared` is `null`, and only then.
+
+`spec revision` has no such field — its payload is `interface`, `revision` and `written`, and it
+reports `revision: 1` for an entry with no `revision` key and for one explicitly recording `1`,
+identically. Absence is therefore read from the shared catalog entry itself, in
+`context/shared/spec/CATALOG.yaml` under `interfaces:`: an entry with no `revision` key needs the
+back-fill, one that already has the key does not. Do not try to infer it from `spec revision`
+output — the number is the same in both cases.
+
+Back-fill `depth` with the tool, which performs the write itself:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <MODULE> --set full
+```
+
+`revision` has no setter — `spec revision --bump` *raises* the number, which is not what a back-fill
+does — so write `revision: 1` into the shared catalog's interface entry directly, then re-read it
+with `spec revision <IFACE>` to confirm the recorded value is the one the tool was already assuming.
+Both edits touch `context/<target>/spec/` content, so both follow Step 6's change-document
+discipline (`change resolve` → `change emit --plan not-required` → `validate`).
+
+**The refusal that keeps the back-fill mechanical.** A module whose tree does not actually carry all
+six facets is **not** back-filled to `full` — it is reported for **`mspec`**. Choosing between "this
+module is at contract depth" and "these facets are missing and ought to be written" is exactly the
+content call this skill does not make. `spec depth --set full` enforces that mechanically: it
+refuses while any of DEPENDENCIES/IMPLEMENTATION/TESTING is absent from disk, so the field can never
+claim coverage the tree does not have. Treat that refusal as the answer — record the module as
+`deferred` with `mspec` named as owner, and never route around it by editing the YAML by hand.
+
+**Plan graphs and state files are not migrated to `version: 3`.** A version-1/2 graph reads as one
+implicit slice, which is the delivery model it was written for — `plan slices` returns precisely
+that, one synthetic slice `00` spanning every wave, so nothing downstream is broken by the old
+version. A version-2 graph is not a defective version-3 one: rewriting it would invent a slicing
+nobody chose, which is authoring a delivery decision rather than recording one. Leave `version` as
+written, and leave `slices:` unwritten. This is not a finding and not deferred work — an old graph
+is old, not malformed.
+
+**Closing a change record the ledger already settled.** `mc.py change close` exists now, but which
+status a change document should carry is still content, so this skill invokes it in exactly one
+case: a record whose terminal state is unambiguous from `context/project/state.yaml`. Concretely, a
+`PROJECT-CHANGE-<NNN>` named as a ledger plan's `project_change` where that plan's `status` is
+`applied` — the ledger records the plan implementing it as applied, and no reading of the ledger
+says otherwise:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change close \
+    context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md --status applied
+```
+
+Everything else is **reported, never closed**: a change whose plan is `pending`, `in-progress` or
+`failed`; one no ledger plan names at all; a repo-level `CHANGE-<NNN>` the ledger does not tie to an
+applied plan; and `superseded` in every case, which is a judgement about two documents' relationship
+that no ledger records. This write is bookkeeping in the record's own front-matter, so it needs no
+change document of its own — report it as `fixed` in Step 7. The `REQ-CHANGE` lifecycle stays
+untouched regardless (Step 4, item 6): `req change-close` is `mspec`'s write, not a sweep's.
 
 ## Step 7: Re-validate and Report
 
