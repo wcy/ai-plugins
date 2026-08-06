@@ -155,8 +155,11 @@ EXPORTS_TRAILER_PREFIX = "Exports:"
 PARAGRAPH_SPLIT_RE = re.compile(r"\n[ \t]*\n")
 
 #: One backtick-quoted bare identifier -- a command name, a schema kind, a
-#: skill's frontmatter `name`. `mc.py` is why a dot is admitted.
-EXPORTS_TOKEN_RE = re.compile(r"^`([A-Za-z0-9][A-Za-z0-9._-]*)`$")
+#: skill's frontmatter `name`. Begins and ends alphanumeric, with ``.``, ``-``
+#: and ``_`` permitted between: `mc.py` is why a dot is admitted, and the
+#: end-anchor is why `a.` is not a token. The charset is stated in
+#: ``SHARED-INTERFACE.md`` §"exports-trailer-grammar"; this regex implements it.
+EXPORTS_TOKEN_RE = re.compile(r"^`([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)`$")
 
 #: `_exports_trailer`'s three outcomes.
 EXPORTS_ABSENT = "absent"
@@ -885,7 +888,13 @@ def _exports_trailer(text: str) -> Tuple[str, Set[str]]:
         match = EXPORTS_TOKEN_RE.match(piece.strip())
         if match is None:
             return EXPORTS_UNPARSEABLE, set()
-        tokens.add(match.group(1))
+        token = match.group(1)
+        if token in tokens:
+            # `SHARED-INTERFACE.md`: each token appears once and matches
+            # exactly one catalog entry. Accumulating into a set would let a
+            # repeat collapse silently and compare as conforming.
+            return EXPORTS_UNPARSEABLE, set()
+        tokens.add(token)
     return EXPORTS_PARSED, tokens
 
 
@@ -908,7 +917,24 @@ def _catalog_exports(
             continue  # already reported by the file-set rule
         listed = entry.get("exports")
         catalog_tokens = {str(token) for token in listed} if isinstance(listed, list) else set()
+        # An `exports:` present but empty is the catalog-side placeholder
+        # `SHARED-INTERFACE.md` forbids, not the same thing as omitting the key.
+        # Distinguished so the diagnostic never misstates the file.
+        catalog_empty = isinstance(listed, list) and not listed
+        catalog_side = "declares an empty `exports:` list" if catalog_empty else (
+            "has no `exports:` list"
+        )
         outcome, document_tokens = _exports_trailer(core.read_text(file_path, path))
+
+        if catalog_empty:
+            findings.append(
+                core.error(
+                    E_CATALOG_EXPORTS,
+                    "the catalog entry declares an empty `exports:` list; a module that "
+                    "exports nothing omits the key entirely",
+                    file=path,
+                )
+            )
 
         if outcome == EXPORTS_UNPARSEABLE:
             findings.append(
@@ -935,8 +961,8 @@ def _catalog_exports(
             findings.append(
                 core.error(
                     E_CATALOG_EXPORTS,
-                    "the document's `Exports:` trailer declares %s but the catalog entry "
-                    "has no `exports:` list" % (_exports_list(document_tokens),),
+                    "the document's `Exports:` trailer declares %s but the catalog entry %s"
+                    % (_exports_list(document_tokens), catalog_side),
                     file=path,
                 )
             )
