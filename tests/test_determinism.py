@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, SyntheticWorkspace
-from tools import core, mc
+from tools import core, mc, req
 
 #: The clock the *fixture* is built at. Deliberately different from ``NOW``, the
 #: clock every command under test runs at, so a timestamp carried over from the
@@ -376,6 +376,7 @@ def arguments():
         "spec.catalog-emit": {"target": "demo"},
         "spec.consumers": {"interface": "EVENT-BUS"},
         "req.next": {"tier": "demo"},
+        "req.mnemonic": {"title": "Recover a specification from code that never had one"},
         "req.gate": {"tier": "demo"},
         "req.change-resolve": {"tier": "demo", "slug": "narrowed-scope"},
         "req.change-emit": {
@@ -763,6 +764,37 @@ def test_the_injected_clock_is_the_only_thing_that_moves(tmp_path, command):
             continue
         assert other.encode("utf-8") in second[relative], relative
         assert first[relative].replace(NOW.encode(), other.encode()) == second[relative], relative
+
+
+def test_the_mnemonic_candidate_is_a_pure_function_of_the_title():
+    """The property ``MMIGRATE-TESTING.md`` cites: same ``<Title>``, same candidate.
+
+    ``mmigrate`` appends this candidate verbatim, so a derivation that varied
+    between runs would let two sweeps disagree about the same title. Asserted
+    on :func:`req.derive_mnemonic` directly -- it takes no workspace, so there
+    is no fixture to build and nothing but the title to vary.
+    """
+    titles = [
+        "Recover a specification from code that never had one",
+        "Capture why before how",
+        "Trust that tracked artifacts still match their own rules",
+        "!!!",
+        "",
+    ]
+    first = [req.derive_mnemonic(title) for title in titles]
+    second = [req.derive_mnemonic(title) for title in titles]
+    assert first == second
+    # Re-deriving from the candidate's own source, in a different order, is
+    # still the same answer -- nothing accumulates between calls.
+    assert [req.derive_mnemonic(title) for title in reversed(titles)] == list(reversed(first))
+
+
+def test_the_mnemonic_derivation_reads_no_clock_and_no_environment(monkeypatch):
+    """No wall clock, no environment, no filesystem -- only the title."""
+    monkeypatch.setenv("LC_ALL", "tr_TR.UTF-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/nowhere")
+    title = "Mechanical work should not cost model effort"
+    assert req.derive_mnemonic(title) == "mechanical-work-cost-model"
 
 
 def test_no_group_module_reads_a_clock_of_its_own():

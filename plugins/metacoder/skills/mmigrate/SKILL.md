@@ -132,18 +132,30 @@ nothing mechanically checks today — read the file directly for these:
 ### Migrating a Tier onto the Mnemonic Id Format
 
 Beyond the two hand-checks above, apply the identifier-convention change itself: a heading still on
-the bare `### REQ-<NNN>: <Title>` form is migrated to `### REQ-<NNN>-<mnemonic>: <Title>` by deriving
-the mnemonic **mechanically from the entry's own `<Title>`** — lowercase it, collapse every run of
-non-alphanumeric characters to a single hyphen, then truncate to the first 2–4 significant words.
-This is a transform of content the artifact already contains, not an authoring act — the same class
-as zero-padding an id above, deterministic and re-runnable. `<NNN>` is preserved unchanged
+the bare `### REQ-<NNN>: <Title>` form is migrated to `### REQ-<NNN>-<mnemonic>: <Title>`, taking the
+mnemonic from the tool rather than deriving it yourself:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req mnemonic "<Title>"
+```
+
+**Append the returned candidate verbatim.** The tool permits its caller to substitute a different
+word choice; this skill does not exercise that permission. Picking words other than the ones the
+mechanical rule chose is authoring, and a sweep does not author — that judgement belongs to `mreq`.
+What remains here is a transform of content the artifact already contains, the same class as
+zero-padding an id above, and deterministic besides: the candidate is a pure function of the title,
+asserted in `tests/test_determinism.py` rather than promised here. `<NNN>` is preserved unchanged
 throughout: nothing here is a renumber, which is exactly what makes the migration legal under
 `STANDARD-REQ.md`'s stability rule — that rule prohibits reassigning an id to a different
 requirement, not editing a heading's mnemonic.
 
-A `<Title>` that yields no usable slug (absent, or entirely non-alphanumeric) is **deferred to
-`mreq`**, never invented — choosing words the artifact does not itself contain would be authoring
-content, which is outside this skill's fence.
+A `<Title>` the tool reports `E_NO_MNEMONIC` for (absent, or with fewer than two significant words)
+is **deferred to `mreq`** and reported `deferred` in the run report with `mreq` named as owner of the
+next step. Never invent a slug for it — choosing words the artifact does not itself contain would be
+authoring content, which is outside this skill's fence.
+
+Only a **bare** `REQ-<NNN>` heading is a format defect. A heading that already carries a mnemonic is
+never re-derived, which is what makes a second pass over a migrated tier report nothing.
 
 Every reference resolving to a migrated heading is rewritten in the same pass to carry that
 heading's mnemonic.
