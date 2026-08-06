@@ -132,17 +132,28 @@ Confirm the drafted need(s) with the user before proceeding.
 tier locations, front-matter, entry schema, REQ-ID scoping, and the append-only stability rule.
 Follow it rather than re-deriving it here.
 
-Allocate the id of every new entry, one call per entry, composing a mnemonic from the entry's own
-title and passing it to `req next`:
+Allocate the id of every new entry with two calls per entry — derive the mnemonic from the entry's
+own title, then allocate the id under it:
 
 ```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req mnemonic "<Title>"
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req next <tier> --mnemonic <slug>
 ```
 
+`req mnemonic` returns a **candidate**, not a decision. Use it as-is unless the mechanical pick
+misses the words that actually carry the title's meaning — the rule keeps the first 2–4 significant
+words, which sometimes keeps a throwaway one and drops a load-bearing one. Substituting a better
+choice is yours to make; whatever you choose still goes to `req next --mnemonic`, which validates
+the grammar and refuses a bad slug rather than sanitizing it. Do not derive a slug from a title by
+hand — that derivation has one implementation, and two would drift apart.
+
+A title `req mnemonic` reports `E_NO_MNEMONIC` for — absent, or with fewer than two significant
+words — is one to retitle with the user or name a mnemonic for explicitly. Never guess a slug for
+it: choosing words the title does not contain is authoring, and authoring here is done in the open.
+
 Ids are allocated from the highest id present in the tier, never from a count of its entries —
 that is what makes reuse structurally impossible rather than merely discouraged. Never choose,
-guess, or adjust an id or a mnemonic yourself, and never renumber one — the tool validates the
-mnemonic grammar and refuses a bad slug rather than sanitizing it. Never invent a mnemonic for a
+guess, or adjust an id yourself, and never renumber one. Never invent a mnemonic for a
 reference whose heading you have not read; a bare `REQ-<NNN>` reference already resolves without
 one.
 
@@ -197,8 +208,8 @@ Match each drafted requirement against the target's existing
 
 - A matched entry — its `Need` is updated in place; its id and mnemonic never change.
 - An unmatched draft — appends as a new `### REQ-<NNN>-<mnemonic>` entry, under an id allocated
-  exactly as BRAINSTORM's Phase 2 does — `req next <tier> --mnemonic <slug>`, the mnemonic composed
-  from the drafted requirement's own title — tagged `Source: derived: <TAG>[, <TAG>...]`.
+  exactly as BRAINSTORM's Phase 2 does — `req mnemonic "<Title>"` for the drafted requirement's own
+  title, then `req next <tier> --mnemonic <slug>` — tagged `Source: derived: <TAG>[, <TAG>...]`.
 - An existing entry whose matching module disappeared from the target's spec — set `Status: stale`
   and leave it in the file. Never delete it, never renumber it.
 
