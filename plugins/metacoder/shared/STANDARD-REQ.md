@@ -18,13 +18,7 @@ without losing the business rationale that motivated it.
 
 ## Location & Tiers
 
-**Three tiers**, mirroring `STANDARD-CHANGE.md`'s repo/shared/project split exactly:
-
-```
-context/<repo>/requirements/REQUIREMENTS.md
-context/shared/requirements/REQUIREMENTS.md
-context/project/requirements/REQUIREMENTS.md
-```
+**Three tiers**:
 
 - **`context/<repo>/requirements/REQUIREMENTS.md`** — needs and goals scoped to one repo.
 - **`context/shared/requirements/REQUIREMENTS.md`** — needs and goals scoped to a cross-repo
