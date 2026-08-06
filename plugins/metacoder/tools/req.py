@@ -194,7 +194,7 @@ E_NO_MNEMONIC = "E_NO_MNEMONIC"
 #: requirement title's meaning ("Know why a need changed").
 STOPWORDS = frozenset(
     """
-    a an the and or but of to in on at by for from into with as is are was
+    a an the and or but of to in on at by for from into with without as is are was
     were be been being it its that this these those their there they them
     has have had do does did will would should could can may might must
     not no than then so such own still rather per
