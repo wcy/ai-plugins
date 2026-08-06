@@ -71,7 +71,10 @@ never-reused ID order:
 - `<NNN>` — zero-padded, ascending, unique **within this tier's file** (see REQ-ID Scoping below).
   `<NNN>` is the whole of the identity: resolution is on it alone, and it is never reassigned.
 - `<mnemonic>` — 2–4 kebab-case words matching `^[a-z0-9]+(-[a-z0-9]+){1,3}$`, the same grammar
-  `STANDARD-CHANGE.md` gives a change slug, derived from the entry's own `<Title>`. It is
+  `STANDARD-CHANGE.md` gives a change slug, derived from the entry's own `<Title>` by
+  `mc.py req mnemonic`, which is the one implementation of that derivation. What it returns is a
+  *candidate*: a caller may substitute its own word choice, and passes whatever it uses to
+  `req next --mnemonic`, which validates it against the grammar above. It is
   correctable prose, not part of the identity: **required** in an entry heading, **optional**
   wherever the id is *referenced*, and **never consulted** when resolving what an id points at — a
   bare `REQ-<NNN>` written before the mnemonic existed still resolves.
