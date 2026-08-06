@@ -1,14 +1,20 @@
 """The ``state`` command group -- recording where a run got to.
 
     mc.py state run-increment <plan-id>
-    mc.py state set-plan <plan-id> --status <s>
+    mc.py state set-plan <plan-id> --status <s> [--integration-branches <json>]
     mc.py state set-story <plan-id> <story-id> --status <s> [--attempt <n>]
                                                [--branch <b>] [--worktree <w>]
+                                               [--validation <r>] [--worktree-removed]
+                                               [--deferred-break <json>]
+                                               [--contract-revisions <json>]
+    mc.py state set-slice <plan-id> <slice> --status <s> [--acceptance <r>]
+                                            [--outcome <o>]
     mc.py state conformance <plan-id> --status <s> --report <path> --findings <n>
+                                      [--deferred <n>]
     mc.py state telemetry <plan-id> [--cost <usd>] [--tokens <n>]
                                     [--wall-clock <s>]
 
-Five verbs over exactly two files -- ``context/project/plans/<plan-id>/state.yaml``
+Six verbs over exactly two files -- ``context/project/plans/<plan-id>/state.yaml``
 and the ledger ``context/project/state.yaml`` -- and one shared write path
 underneath all of them:
 
@@ -32,6 +38,21 @@ Three consequences worth stating outright:
 * The run counter is only ever read from the file. ``run-increment`` adds one to
   what ``state.yaml`` holds; nothing here generates a counter from a length, a
   timestamp, or an environment value.
+* ``set-slice`` writes the slice's entry **and** the ledger's
+  ``slices_total``/``slices_applied`` in that same call, and is the only writer
+  of those two counters. Unlike ``waves[].status``, a slice's status is *not*
+  derived from its stories: a slice whose stories all merged but whose
+  acceptance failed is ``failed``, and no function of story statuses can say so.
+  Acceptance is the slice's actual completion criterion, so the status is an
+  input.
+
+**State is written only through this group, without exception.**
+``--integration-branches``, ``--validation``, ``--worktree-removed`` and
+``--deferred-break`` close the four schema fields that previously had no verb
+and were hand-written into ``state.yaml`` alongside these calls. Hand-writing
+caught *shape* errors only -- the next verb's validation refuses a malformed
+file but accepts a plausible wrong value -- so the invariant held with four
+standing exceptions. It now holds with none.
 
 No sibling group is imported: this module talks to ``core`` and to the two
 schemas, and to nothing else in the package.
@@ -40,6 +61,7 @@ schemas, and to nothing else in the package.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import tempfile
@@ -83,6 +105,33 @@ CONFORMANCE_STATUSES = ("clean", "drift", "not-run")
 #: deliberately: a story reaches ``applied``, a wave reaches ``complete``.
 WAVE_STATUSES = ("pending", "in-progress", "complete", "failed")
 
+#: ``slices[].status``. A slice shares the story vocabulary, not the wave's:
+#: unlike a wave it is not derived, so nothing forces the two apart.
+SLICE_STATUSES = STATUSES
+SLICE_APPLIED = "applied"
+
+#: ``slices[].acceptance`` and ``slices[].outcome``, per plan-state.schema.json.
+#: ``unconfirmed`` is the ``--gate never`` case -- deliberately neither pass nor
+#: fail, so a report cannot present an unlooked-at slice as demonstrated.
+SLICE_ACCEPTANCE = ("pass", "fail", "unconfirmed", "not-run")
+SLICE_OUTCOMES = ("continue", "ask", "replan", "cascade", "stop")
+
+#: ``slice`` -- ``^[0-9]{2}$``, per plan-state.schema.json.
+SLICE_ID_PATTERN = r"^[0-9]{2}$"
+_SLICE_ID_RE = re.compile(SLICE_ID_PATTERN)
+
+#: The ledger counters ``set-slice`` keeps in step with the slice entries. This
+#: verb is their only writer after ``plan emit`` seeds them.
+SLICES_TOTAL = "slices_total"
+SLICES_APPLIED = "slices_applied"
+
+#: ``attempts[].validation`` and ``storyState.validation.post_story``.
+VALIDATION_RESULTS = ("pass", "fail", "not-run")
+
+#: The one ``blast_radius`` a ``deferred_break`` may carry: a *significant*
+#: break halts the run and is never deferred.
+CONTAINED = "contained"
+
 #: ``--status`` -> ``attempts[].result``. ``pending`` is deliberately absent:
 #: ``result`` has no ``pending`` member, so an attempt recorded against a
 #: ``pending`` story is refused rather than guessed at.
@@ -116,6 +165,18 @@ guarantees:
   derives the containing wave's status from that wave's stories and writes it in
   the same commit, so the two can never disagree; waves[].status is a record,
   nothing reads it back.
+
+  set-slice writes the slice entry and the ledger's slices_total/slices_applied
+  in the same commit, and is the only writer of those two counters. A slice's
+  status is an input, not a derivation: acceptance is its completion criterion,
+  and a slice whose stories all merged but whose acceptance failed is failed.
+
+  --integration-branches, --validation, --worktree-removed and --deferred-break
+  close the four schema fields that previously had no verb and were hand-written
+  into state.yaml alongside these calls, so "state is written only through
+  mc.py state" now holds without exception. --contract-revisions and
+  --integration-branches merge into the map already recorded rather than
+  replacing it.
 
   telemetry's three flags are all optional. An omitted one is written null,
   matching plan-state, which requires none of them and types each nullable.
@@ -160,6 +221,12 @@ def register(subparsers) -> None:
     )
     set_plan.add_argument("plan_id", metavar="<plan-id>")
     set_plan.add_argument("--status", required=True, choices=STATUSES)
+    set_plan.add_argument(
+        "--integration-branches",
+        default=None,
+        metavar="<json>",
+        help="JSON object of repo -> integration branch; merged into the existing map",
+    )
 
     set_story = verbs.add_parser(
         "set-story",
@@ -192,6 +259,59 @@ def register(subparsers) -> None:
         metavar="<w>",
         help="the attempt's worktree path",
     )
+    set_story.add_argument(
+        "--validation",
+        default=None,
+        choices=VALIDATION_RESULTS,
+        metavar="<r>",
+        help="the story's post-story validation result",
+    )
+    set_story.add_argument(
+        "--worktree-removed",
+        action="store_true",
+        help="record that the attempt's merged worktree has been cleaned up",
+    )
+    set_story.add_argument(
+        "--deferred-break",
+        default=None,
+        metavar="<json>",
+        help="JSON object {blast_radius, detail} for a contained breaking change",
+    )
+    set_story.add_argument(
+        "--contract-revisions",
+        default=None,
+        metavar="<json>",
+        help="JSON object of shared TAG -> revision built against; merged, never replaced",
+    )
+
+    set_slice = verbs.add_parser(
+        "set-slice",
+        help="record a slice's status, acceptance and outcome",
+        description=(
+            "Write the slice's entry in state.yaml and, in the same write, "
+            "recompute the ledger's slices_total/slices_applied. A slice's status "
+            "is an input, not a derivation: a slice whose stories all merged but "
+            "whose acceptance failed is failed, which no function of story "
+            "statuses can produce."
+        ),
+    )
+    set_slice.add_argument("plan_id", metavar="<plan-id>")
+    set_slice.add_argument("slice_id", metavar="<slice>")
+    set_slice.add_argument("--status", required=True, choices=SLICE_STATUSES)
+    set_slice.add_argument(
+        "--acceptance",
+        default=None,
+        choices=SLICE_ACCEPTANCE,
+        metavar="<r>",
+        help="the slice's acceptance result",
+    )
+    set_slice.add_argument(
+        "--outcome",
+        default=None,
+        choices=SLICE_OUTCOMES,
+        metavar="<o>",
+        help="mship's decision at this slice boundary",
+    )
 
     conformance = verbs.add_parser(
         "conformance",
@@ -205,6 +325,13 @@ def register(subparsers) -> None:
     )
     conformance.add_argument(
         "--findings", required=True, type=int, metavar="<n>", help="number of findings"
+    )
+    conformance.add_argument(
+        "--deferred",
+        default=None,
+        type=int,
+        metavar="<n>",
+        help="findings mfix accepted as debt; check handoff subtracts these from findings",
     )
 
     telemetry = verbs.add_parser(
@@ -276,6 +403,36 @@ def _check_story_id(value: Any) -> str:
     if diagnostic is not None:
         raise core.ToolError(diagnostic)
     return value
+
+
+def _check_slice_id(value: Any) -> str:
+    """``slice`` as ``Ident`` first, then as the two-digit shape the schema wants."""
+    diagnostic = core.require_ident(value, "slice")
+    if diagnostic is None and _SLICE_ID_RE.match(value) is None:
+        diagnostic = core.error(
+            core.E_BAD_IDENT,
+            "invalid slice %r: must match /%s/ (rejected, never sanitized)"
+            % (value, SLICE_ID_PATTERN.strip("^$")),
+        )
+    if diagnostic is not None:
+        raise core.ToolError(diagnostic)
+    return value
+
+
+def _json_object(raw: Any, option: str) -> Dict[str, Any]:
+    """Parse one of the JSON-valued options into an object, or refuse.
+
+    The four options that closed the hand-written fields take structured values,
+    and a malformed one is a usage error rather than a value written through: a
+    plausible-but-wrong shape reaching disk is exactly what hand-writing allowed.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise core.fail(core.E_PARSE, "%s is not valid JSON: %s" % (option, exc))
+    if not isinstance(parsed, dict):
+        raise core.fail(core.E_USAGE, "%s takes a JSON object" % (option,))
+    return parsed
 
 
 def _plan_dir_rel(plan_id: str) -> str:
@@ -491,7 +648,18 @@ def _set_plan(args, ws, now) -> core.Result:
     entry["updated"] = now
     ledger.data["updated"] = now
 
-    data = {"plan_id": plan_id, "status": status}
+    data: Dict[str, Any] = {"plan_id": plan_id, "status": status}
+    branches = getattr(args, "integration_branches", None)
+    if branches is not None:
+        # Merged rather than replaced: the map is built up one repo at a time as
+        # each repo's integration branch is created.
+        supplied = _json_object(branches, "--integration-branches")
+        existing = state.data.get("integration_branches")
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(supplied)
+        state.data["integration_branches"] = merged
+        data["integration_branches"] = merged
+
     written, diagnostics = _commit([state, ledger])
     if diagnostics:
         return _refused(command, data, diagnostics)
@@ -513,11 +681,20 @@ def _set_story(args, ws, now) -> core.Result:
     number = getattr(args, "attempt", None)
     branch = getattr(args, "branch", None)
     worktree = getattr(args, "worktree", None)
+    validation = getattr(args, "validation", None)
+    worktree_removed = bool(getattr(args, "worktree_removed", False))
+    deferred_break = getattr(args, "deferred_break", None)
+    contract_revisions = getattr(args, "contract_revisions", None)
 
     if number is None and (branch is not None or worktree is not None):
         raise core.fail(
             core.E_USAGE,
             "--branch and --worktree record an attempt; supply --attempt <n> as well",
+        )
+    if number is None and worktree_removed:
+        raise core.fail(
+            core.E_USAGE,
+            "--worktree-removed records an attempt's cleanup; supply --attempt <n> as well",
         )
     if number is not None and status not in ATTEMPT_RESULTS:
         raise core.fail(
@@ -543,10 +720,43 @@ def _set_story(args, ws, now) -> core.Result:
                     file=state.relative,
                 )
             )
-        _record_attempt(state, story, current, number, status, branch, worktree)
+        _record_attempt(
+            state,
+            story,
+            current,
+            number,
+            status,
+            branch,
+            worktree,
+            validation,
+            worktree_removed,
+        )
         data["run"] = current
         data["attempt"] = number
         data["retries"] = story.get("retries")
+
+    if validation is not None:
+        # The story-level record, which the schema keeps beside the attempt's
+        # own: one says how the story ended, the other how each try did.
+        block = story.get("validation")
+        block = dict(block) if isinstance(block, dict) else {}
+        block["post_story"] = validation
+        story["validation"] = block
+        data["validation"] = validation
+    if deferred_break is not None:
+        parsed = _json_object(deferred_break, "--deferred-break")
+        parsed.setdefault("blast_radius", CONTAINED)
+        story["deferred_break"] = parsed
+        data["deferred_break"] = parsed
+    if contract_revisions is not None:
+        # Merged, never replaced: a story records one agreement's revision as
+        # each is resolved, and a later call must not drop an earlier one.
+        supplied = _json_object(contract_revisions, "--contract-revisions")
+        existing = story.get("contract_revisions")
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(supplied)
+        story["contract_revisions"] = merged
+        data["contract_revisions"] = merged
 
     _apply_wave_status(state, story)
     state.data["updated"] = now
@@ -627,6 +837,8 @@ def _record_attempt(
     status: str,
     branch: Optional[str],
     worktree: Optional[str],
+    validation: Optional[str] = None,
+    worktree_removed: bool = False,
 ) -> None:
     """Append or update this run's attempt ``number`` and re-derive ``retries``.
 
@@ -670,6 +882,10 @@ def _record_attempt(
         }
         if worktree is not None:
             entry["worktree"] = worktree
+        if validation is not None:
+            entry["validation"] = validation
+        if worktree_removed:
+            entry["worktree_removed"] = True
         attempts.append(entry)
     else:
         existing["result"] = ATTEMPT_RESULTS[status]
@@ -677,6 +893,10 @@ def _record_attempt(
             existing["branch"] = branch
         if worktree is not None:
             existing["worktree"] = worktree
+        if validation is not None:
+            existing["validation"] = validation
+        if worktree_removed:
+            existing["worktree_removed"] = True
 
     numbers = [
         candidate["attempt"]
@@ -691,20 +911,106 @@ def _record_attempt(
 
 
 # ---------------------------------------------------------------------------
+# state set-slice
+# ---------------------------------------------------------------------------
+
+
+def _set_slice(args, ws, now) -> core.Result:
+    """Record a slice's status, and the ledger's counters, in one write.
+
+    The same one-write rule ``set-plan`` follows, for the same reason: two files
+    that record how far a plan got must not be able to disagree about it.
+    """
+    command = "%s.set-slice" % COMMAND
+    plan_id = _check_plan_id(args.plan_id)
+    slice_id = _check_slice_id(getattr(args, "slice_id", None))
+    status = args.status
+    acceptance = getattr(args, "acceptance", None)
+    outcome = getattr(args, "outcome", None)
+
+    state = _load_state(ws, plan_id)
+    ledger = _load_ledger(ws)
+    entry = _ledger_entry(ledger, plan_id)
+
+    slices = state.data.get("slices")
+    if slices is None:
+        slices = []
+        state.data["slices"] = slices
+    if not isinstance(slices, list):
+        raise core.ToolError(
+            core.error(core.E_INVALID_STATE, "slices is not a list", file=state.relative)
+        )
+
+    recorded = None
+    for candidate in slices:
+        if isinstance(candidate, dict) and candidate.get("slice") == slice_id:
+            recorded = candidate
+            break
+    if recorded is None:
+        recorded = {"slice": slice_id}
+        slices.append(recorded)
+    # Status is an input, never derived from the slice's stories: a slice whose
+    # stories all merged but whose acceptance failed is `failed`.
+    recorded["status"] = status
+    if acceptance is not None:
+        recorded["acceptance"] = acceptance
+    if outcome is not None:
+        recorded["outcome"] = outcome
+
+    total = len(
+        [candidate for candidate in slices if isinstance(candidate, dict) and candidate.get("slice")]
+    )
+    applied = len(
+        [
+            candidate
+            for candidate in slices
+            if isinstance(candidate, dict) and candidate.get("status") == SLICE_APPLIED
+        ]
+    )
+    entry[SLICES_TOTAL] = total
+    entry[SLICES_APPLIED] = applied
+    entry["updated"] = now
+    ledger.data["updated"] = now
+    state.data["updated"] = now
+
+    data: Dict[str, Any] = {
+        "plan_id": plan_id,
+        "slice": slice_id,
+        "status": status,
+        SLICES_TOTAL: total,
+        SLICES_APPLIED: applied,
+    }
+    written, diagnostics = _commit([state, ledger])
+    if diagnostics:
+        return _refused(command, data, diagnostics)
+    data["written"] = written
+    return core.Result(command=command, data=data)
+
+
+# ---------------------------------------------------------------------------
 # state conformance / state telemetry
 # ---------------------------------------------------------------------------
 
 
 def _conformance(args, ws, now) -> core.Result:
-    """Write the ``conformance`` block from a ``/mverify`` sweep's result."""
+    """Write the ``conformance`` block from a ``/mverify`` sweep's result.
+
+    ``--deferred`` is what lets a finding ``mfix`` legitimately accepted as debt
+    stop pinning ``check handoff`` at ``error`` forever. It is a *recorded
+    count*, not a suppression: ``status`` reports findings and deferrals
+    separately, so accepted debt stays visible as debt.
+    """
     command = "%s.conformance" % COMMAND
     plan_id = _check_plan_id(args.plan_id)
     state = _load_state(ws, plan_id)
-    block = {
+    block: Dict[str, Any] = {
         "status": args.status,
         "report": args.report,
         "findings": args.findings,
     }
+    deferred = getattr(args, "deferred", None)
+    if deferred is not None:
+        block["deferred"] = deferred
     state.data["conformance"] = block
     state.data["updated"] = now
 
@@ -747,6 +1053,7 @@ _VERBS = {
     "run-increment": _run_increment,
     "set-plan": _set_plan,
     "set-story": _set_story,
+    "set-slice": _set_slice,
     "conformance": _conformance,
     "telemetry": _telemetry,
 }

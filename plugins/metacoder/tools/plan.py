@@ -4,24 +4,44 @@
     mc.py plan resolve [<plan-id>]
     mc.py plan story-id <file>
     mc.py plan waves <target>
+    mc.py plan slices <plan-id>
+    mc.py plan reslice <plan-id>         # SliceDraft[] as JSON on stdin
     mc.py plan emit <plan-id>            # draft graph as JSON on stdin
     mc.py plan story-emit <plan-id> <story-id>
-    mc.py plan shards <plan-id> [--granularity repo|module]
+    mc.py plan shards <plan-id> [--granularity repo|module] [--slice <NN>]
 
-Seven verbs, each a pure function of the workspace bytes plus the injected clock:
+Nine verbs, each a pure function of the workspace bytes plus the injected clock:
 
 * ``scope`` -- ``incremental`` when ``context/project/changes/`` holds a
   ``pending`` index, naming the highest-numbered one; ``full`` otherwise.
 * ``resolve`` -- the plan to run, its status, its run counter **as read**, the
-  first wave holding an unfinished story, and the unfinished stories.
+  first wave holding an unfinished story, the first slice that is not
+  ``applied``, and the unfinished stories.
 * ``story-id`` -- the story id a ``PLAN-*.md`` filename carries.
 * ``waves`` -- wave assignment from catalog layer order, one wave per layer.
+  Its meaning has narrowed: the order it returns now orders stories **within
+  one slice**, not across a whole plan.
+* ``slices`` -- the plan's slices in order, each with its acceptance, stories
+  and current status. A version-1/2 graph has none, so exactly one is
+  **synthesized** -- ``00``, spanning every wave -- and the synthesis happens on
+  read and is *never persisted*: a legacy graph is not silently upgraded on
+  disk, so a plan half-run under the old model stays what it was.
+* ``reslice`` -- rewrites the **outstanding** slices from a ``SliceDraft[]``.
 * ``emit`` -- ``plan.yaml``, the initial ``state.yaml``, and the ledger entry.
 * ``story-emit`` -- a story file rendered from ``shared/PLAN-STORY-TEMPLATE.md``
   with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``.
 * ``shards`` -- the ``ShardSpec[]`` conformance shard list ``mverify`` fans out
   over: change-conformance by ``(repo, module)``, then cross-repo by shared
-  TAG, then coupling.
+  TAG, then coupling. ``--slice`` restricts it to what that slice shipped.
+
+``reslice`` is the loop's backward edge, and its refusals are the whole of what
+keeps delivered work safe: a draft that alters, drops, reorders or renumbers a
+slice already ``applied`` is rejected, as is one that would leave a story in no
+slice or in two. The graph stays immutable in the sense that matters -- the
+record of what was delivered cannot be rewritten -- while what is merely
+*predicted* remains revisable, and a plan whose predictions cannot be corrected
+is what forces a wrong approach to be finished rather than changed. **A refusal
+persists nothing.**
 
 Two boundaries this module keeps deliberately:
 
@@ -51,7 +71,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from tools import change, core
 
@@ -73,10 +93,38 @@ STATE_FILE = "state.yaml"
 #: The plan directory ``full`` scope always names.
 FULL_PLAN_ID = "000-initial"
 
-#: Schema versions this group writes (the current member of each ``enum``).
+#: Schema versions this group writes. A graph carrying ``slices`` is a version-3
+#: graph; one that does not stays at 2, so nothing pre-existing is migrated.
 PLAN_GRAPH_VERSION = 2
 PLAN_STATE_VERSION = 2
+PLAN_GRAPH_SLICE_VERSION = 3
+PLAN_STATE_SLICE_VERSION = 3
 LEDGER_VERSION = 1
+
+#: ``sliceId`` -- ``^[0-9]{2}$``, per plan-graph.schema.json.
+SLICE_ID_PATTERN = r"^[0-9]{2}$"
+_SLICE_ID_RE = re.compile(SLICE_ID_PATTERN)
+
+#: The slice a version-1/2 graph is read as carrying: one, spanning every wave.
+LEGACY_SLICE_ID = "00"
+LEGACY_SLICE_NAME = "whole plan"
+LEGACY_SLICE_BEHAVIOR = (
+    "Every wave of the plan, delivered as one slice -- the model this graph was "
+    "written for."
+)
+
+#: ``slices[].status`` in ``state.yaml``; a slice with no entry is ``pending``.
+SLICE_STATUSES = ("pending", "in-progress", "applied", "failed")
+SLICE_APPLIED = "applied"
+SLICE_PENDING = "pending"
+
+#: The fields a ``SliceDraft`` carries -- ``SliceEntry`` minus ``status``, which
+#: is written by ``state set-slice`` and never supplied by a draft.
+SLICE_DRAFT_FIELDS = ("slice", "name", "behavior", "acceptance", "stories")
+
+#: The acceptance kind at least one step of every slice must be. JSON Schema
+#: cannot express "at least one item has this value", so it is checked here.
+EXIT_CODE_KIND = "exit-code"
 
 #: ``plan_id`` -- ``<NNN>-<slug>``, per plan-graph.schema.json.
 PLAN_ID_PATTERN = r"^[0-9]{3}-[a-z0-9-]+$"
@@ -151,6 +199,20 @@ input contract:
   entry. Other plans' ledger entries are never overwritten.
 """
 
+_RESLICE_EPILOG = """\
+input contract:
+  The slice drafts are read as a JSON array on stdin:
+
+      mc.py plan reslice 003-my-change < slices.json
+
+  Each entry is a SliceDraft -- slice, name, behavior, acceptance, stories --
+  and carries no status: a slice's status is written by `state set-slice` and
+  is never supplied by a draft. Two obligations JSON Schema cannot state are
+  checked here: every story of the graph appears in exactly one slice, and at
+  least one acceptance step of every slice is kind: exit-code. A slice already
+  applied must survive the draft unaltered, in place and under the same id.
+"""
+
 _STORY_EMIT_EPILOG = """\
 notes:
   Renders shared/PLAN-STORY-TEMPLATE.md into <plan-dir>/PLAN-<story-id>.md.
@@ -213,6 +275,32 @@ def register(subparsers) -> None:
     )
     waves.add_argument("target", metavar="<target>")
 
+    slices = verbs.add_parser(
+        "slices",
+        help="the plan's slices in order, with acceptance, stories and status",
+        description=(
+            "Read the graph's slices. A version-1/2 graph has none, so exactly "
+            "one is synthesized -- 00, spanning every wave, its acceptance the "
+            "graph's validation.final. The synthesis happens on read and is "
+            "never written back, so a legacy plan is not silently upgraded."
+        ),
+    )
+    slices.add_argument("plan_id", metavar="<plan-id>")
+
+    reslice = verbs.add_parser(
+        "reslice",
+        help="rewrite the outstanding slices from a SliceDraft[] on stdin",
+        description=(
+            "Replace the plan's slices with the SliceDraft[] supplied as JSON on "
+            "stdin. Refuses a draft that alters, drops, reorders or renumbers an "
+            "applied slice, and one that leaves a story in no slice or in two. A "
+            "refusal persists nothing."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_RESLICE_EPILOG,
+    )
+    reslice.add_argument("plan_id", metavar="<plan-id>")
+
     emit = verbs.add_parser(
         "emit",
         help="write plan.yaml, the initial state.yaml, and the ledger entry",
@@ -248,6 +336,13 @@ def register(subparsers) -> None:
         choices=("repo", "module"),
         default="repo",
         help="coupling shard granularity (default: repo)",
+    )
+    shards.add_argument(
+        "--slice",
+        dest="slice",
+        default=None,
+        metavar="<NN>",
+        help="restrict the list to what that slice shipped",
     )
 
 
@@ -515,12 +610,17 @@ def _resolve(args, ws, now) -> core.Result:
 
     statuses = _story_statuses(state)
     resume_wave, pending_stories = _resume(graph, statuses)
+    entries, _synthesized = slice_entries(graph, state)
     data = {
         "plan_id": plan_id,
         "plan_dir": plan_dir_rel,
         "status": _plan_status(state, ledger, plan_id),
         "run": _run_counter(state),
         "resume_wave": resume_wave,
+        # `resume_wave` is deliberately **not** renamed: every existing
+        # state.yaml carries it, and renaming it would break resume for every
+        # in-flight plan. `resume_slice` is added alongside.
+        "resume_slice": _resume_slice(entries),
         "pending_stories": pending_stories,
     }
     return core.Result(command=command, data=data, diagnostics=diagnostics)
@@ -601,6 +701,126 @@ def _resume(graph: Dict[str, Any], statuses: Dict[str, str]) -> Tuple[Optional[i
     return resume, pending
 
 
+# ---------------------------------------------------------------------------
+# Slices -- read from the graph, or synthesized for a graph written before they
+# existed. Synthesis happens on read and is never persisted.
+# ---------------------------------------------------------------------------
+
+
+def graph_story_order(graph: Dict[str, Any]) -> List[str]:
+    """Every story the graph declares, in wave order then declared order."""
+    ordered: List[str] = []
+    for wave in _graph_waves(graph):
+        stories = wave.get("stories")
+        if not isinstance(stories, list):
+            continue
+        for story_id in stories:
+            if isinstance(story_id, str) and story_id not in ordered:
+                ordered.append(story_id)
+    declared = graph.get("stories")
+    if isinstance(declared, dict):
+        for story_id in sorted(declared):
+            if story_id not in ordered:
+                ordered.append(story_id)
+    return ordered
+
+
+def _final_validation(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The graph's ``validation.final`` steps, in story order, deduplicated.
+
+    ``final`` is carried by the last-wave stories, so the plan's final
+    validation is their union -- and that union is what a legacy plan's one
+    implicit slice was accepted on.
+    """
+    steps: List[Dict[str, Any]] = []
+    stories = graph.get("stories")
+    if not isinstance(stories, dict):
+        return steps
+    for story_id in graph_story_order(graph):
+        story = stories.get(story_id)
+        validation = story.get("validation") if isinstance(story, dict) else None
+        final = validation.get("final") if isinstance(validation, dict) else None
+        if not isinstance(final, list):
+            continue
+        for step in final:
+            if isinstance(step, dict) and step not in steps:
+                steps.append(step)
+    return steps
+
+
+def synthesized_slice(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """The single slice a version-1/2 graph is read as carrying.
+
+    One slice containing everything is precisely the delivery model such a plan
+    was written for, which is why synthesizing beats erroring: it lets a
+    pre-existing plan run unchanged.
+    """
+    return {
+        "slice": LEGACY_SLICE_ID,
+        "name": LEGACY_SLICE_NAME,
+        "behavior": LEGACY_SLICE_BEHAVIOR,
+        "acceptance": _final_validation(graph),
+        "stories": graph_story_order(graph),
+    }
+
+
+def graph_slices(graph: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool]:
+    """``(slices, synthesized)`` for a graph, in declared order.
+
+    The **version** is the discriminator, not the presence of the key: sniffing
+    for ``slices`` would let a malformed version-3 graph silently degrade to
+    whole-job delivery.
+    """
+    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION:
+        declared = graph.get("slices")
+        entries = [entry for entry in declared if isinstance(entry, dict)] if isinstance(declared, list) else []
+        return entries, False
+    return [synthesized_slice(graph)], True
+
+
+def _slice_statuses(state: Dict[str, Any]) -> Dict[str, str]:
+    """``slice id -> status`` as ``state.yaml`` records it."""
+    entries = state.get("slices")
+    statuses: Dict[str, str] = {}
+    if not isinstance(entries, list):
+        return statuses
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        slice_id, status = entry.get("slice"), entry.get("status")
+        if isinstance(slice_id, str) and isinstance(status, str):
+            statuses[slice_id] = status
+    return statuses
+
+
+def slice_entries(
+    graph: Dict[str, Any], state: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """``(SliceEntry[], synthesized)`` -- the graph's slices plus their status.
+
+    A slice's status is **read**, never derived from its stories: a slice whose
+    stories all merged but whose acceptance failed is ``failed``, and no
+    function of story statuses can express that.
+    """
+    declared, synthesized = graph_slices(graph)
+    statuses = _slice_statuses(state)
+    entries: List[Dict[str, Any]] = []
+    for item in declared:
+        entry = {field: item.get(field) for field in SLICE_DRAFT_FIELDS}
+        entry["status"] = statuses.get(str(entry.get("slice")), SLICE_PENDING)
+        entries.append(entry)
+    return entries, synthesized
+
+
+def _resume_slice(entries: Sequence[Dict[str, Any]]) -> Optional[str]:
+    """The first slice that is not ``applied``; ``None`` when every one is."""
+    for entry in entries:
+        if entry.get("status") != SLICE_APPLIED:
+            slice_id = entry.get("slice")
+            return slice_id if isinstance(slice_id, str) else None
+    return None
+
+
 def _graph_waves(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
     waves = graph.get("waves")
     if not isinstance(waves, list):
@@ -625,6 +845,66 @@ def _run_counter(state: Dict[str, Any]) -> int:
     if isinstance(run, bool) or not isinstance(run, int) or run < 0:
         return 0
     return run
+
+
+def _load_graph(ws, plan_id: str) -> Tuple[Dict[str, Any], str]:
+    """A plan's graph and its workspace-relative path, or a named failure."""
+    graph_rel = "%s/%s" % (_plan_dir_rel(plan_id), PLAN_FILE)
+    graph_path = ws.safe_path(*(PLANS_DIR + (plan_id, PLAN_FILE)))
+    if not graph_path.is_file():
+        raise core.ToolError(core.error(core.E_NOT_FOUND, "no such file", file=graph_rel))
+    graph = core.load_yaml(graph_path, graph_rel)
+    if not isinstance(graph, dict):
+        raise core.ToolError(
+            core.error(core.E_PARSE, "plan graph is not a mapping", file=graph_rel)
+        )
+    return graph, graph_rel
+
+
+def _load_state(ws, plan_id: str, required: bool = False) -> Tuple[Dict[str, Any], str]:
+    """A plan's state file, or an empty mapping when it does not exist."""
+    state_rel = "%s/%s" % (_plan_dir_rel(plan_id), STATE_FILE)
+    state_path = ws.safe_path(*(PLANS_DIR + (plan_id, STATE_FILE)))
+    if not state_path.is_file():
+        if required:
+            raise core.ToolError(
+                core.error(core.E_NOT_FOUND, "no such file", file=state_rel)
+            )
+        return {}, state_rel
+    loaded = core.load_yaml(state_path, state_rel)
+    if not isinstance(loaded, dict):
+        raise core.ToolError(
+            core.error(core.E_PARSE, "plan state is not a mapping", file=state_rel)
+        )
+    return loaded, state_rel
+
+
+# ---------------------------------------------------------------------------
+# plan slices -- read only; the synthesis is never written back
+# ---------------------------------------------------------------------------
+
+
+def _slices(args, ws, now) -> core.Result:
+    """The plan's slices in order, each with its status.
+
+    Nothing is written. On a version-1/2 graph the single synthetic slice is
+    composed in memory and returned; the file on disk is left byte-identical, so
+    a legacy plan is never silently upgraded by being looked at.
+    """
+    command = "%s.slices" % COMMAND
+    plan_id = _check_plan_id(args.plan_id)
+    graph, _graph_rel = _load_graph(ws, plan_id)
+    state, _state_rel = _load_state(ws, plan_id)
+    entries, synthesized = slice_entries(graph, state)
+    return core.Result(
+        command=command,
+        data={
+            "plan_id": plan_id,
+            "plan_dir": _plan_dir_rel(plan_id),
+            "synthesized": synthesized,
+            "slices": entries,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +1066,7 @@ def _emit(args, ws, now) -> core.Result:
             ],
         )
 
-    graph, refusals = _normalize_graph(draft, plan_id, now)
+    graph, refusals = _normalize_graph(draft, plan_id, now, ws)
     if refusals:
         return core.Result(
             command=command,
@@ -840,22 +1120,22 @@ def _emit(args, ws, now) -> core.Result:
     )
 
 
-def _read_draft(args) -> Any:
-    """Parse the draft plan graph from stdin (or ``args.stdin``)."""
+def _read_draft(args, what: str = "the draft plan graph") -> Any:
+    """Parse a JSON draft from stdin (or ``args.stdin``)."""
     stream = getattr(args, "stdin", None)
     if stream is None:
         stream = sys.stdin
         if hasattr(stream, "isatty") and stream.isatty():
             raise core.fail(
                 core.E_USAGE,
-                "plan emit reads the draft plan graph as JSON on stdin; none was supplied",
+                "this verb reads %s as JSON on stdin; none was supplied" % (what,),
             )
     try:
         text = stream.read()
     except OSError as exc:  # pragma: no cover - unreadable stdin
         raise core.fail(core.E_READ, "cannot read stdin: %s" % (exc,))
     if not text.strip():
-        raise core.fail(core.E_PARSE, "the draft plan graph on stdin is empty", file="<stdin>")
+        raise core.fail(core.E_PARSE, "%s on stdin is empty" % (what,), file="<stdin>")
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
@@ -863,17 +1143,22 @@ def _read_draft(args) -> Any:
 
 
 def _normalize_graph(
-    draft: Dict[str, Any], plan_id: str, now: str
+    draft: Dict[str, Any], plan_id: str, now: str, ws=None
 ) -> Tuple[Dict[str, Any], List[core.Diagnostic]]:
     """Normalise an untrusted draft into ``plan-graph`` shape.
 
     Everything mechanical is derived here -- waves from each story's ``wave``,
     parallel groups from the wave's siblings, ``repos`` from the stories, the
-    story filename from its id -- and everything else is carried through for the
-    schema to accept or refuse.
+    story filename from its id, and each story's ``slice`` from the slice that
+    lists it -- and everything else is carried through for the schema to accept
+    or refuse.
     """
     graph: Dict[str, Any] = dict(draft)
-    graph["version"] = draft.get("version", PLAN_GRAPH_VERSION)
+    raw_slices = draft.get("slices")
+    sliced = isinstance(raw_slices, list) and bool(raw_slices)
+    graph["version"] = draft.get(
+        "version", PLAN_GRAPH_SLICE_VERSION if sliced else PLAN_GRAPH_VERSION
+    )
     graph["plan_id"] = plan_id
     graph["generated"] = now
     graph["project_change"] = _normalize_change_number(draft.get("project_change"))
@@ -911,7 +1196,194 @@ def _normalize_graph(
                 if isinstance(story, dict) and isinstance(story.get("repo"), str)
             }
         )
+
+    if not sliced:
+        graph.pop("slices", None)
+        for story in normalized.values():
+            if isinstance(story, dict):
+                story.pop("slice", None)
+        return graph, []
+
+    slices, refusals = _normalize_slices(raw_slices, normalized)
+    if refusals:
+        return graph, refusals
+    refusals = _slice_zero_spans_every_layer(slices, normalized, ws)
+    if refusals:
+        return graph, refusals
+    graph["slices"] = slices
+    _apply_story_slices(slices, normalized)
     return graph, []
+
+
+def _normalize_slices(
+    raw: Sequence[Any], stories: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], List[core.Diagnostic]]:
+    """Slices in draft order, with the two obligations JSON Schema cannot state.
+
+    Both are mechanical consequences of the draft rather than judgment, which is
+    why they are refused here and not left to ``mplan``'s prose: an acceptance
+    that is prose alone forces a human stop under every gate policy but
+    ``never``, and a story in no slice or in two makes the delivery axis
+    ambiguous.
+    """
+    slices: List[Dict[str, Any]] = []
+    seen: List[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return [], [
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %d of the draft is not an object" % (index,),
+                    file="<stdin>",
+                )
+            ]
+        entry = {field: item[field] for field in SLICE_DRAFT_FIELDS if field in item}
+        for field, value in item.items():
+            if field not in entry:
+                entry[field] = value
+        slice_id = entry.get("slice")
+        if not isinstance(slice_id, str) or _SLICE_ID_RE.match(slice_id) is None:
+            return [], [
+                core.error(
+                    core.E_BAD_IDENT,
+                    "slice id %r must match /%s/" % (slice_id, SLICE_ID_PATTERN.strip("^$")),
+                    file="<stdin>",
+                )
+            ]
+        if slice_id in seen:
+            return [], [
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %r is declared more than once" % (slice_id,),
+                    file="<stdin>",
+                )
+            ]
+        seen.append(slice_id)
+        acceptance = entry.get("acceptance")
+        if not isinstance(acceptance, list) or not any(
+            isinstance(step, dict) and step.get("kind") == EXIT_CODE_KIND
+            for step in acceptance
+        ):
+            return [], [
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %r has no `kind: %s` acceptance step; a slice whose "
+                    "acceptance is prose alone cannot be demonstrated to run"
+                    % (slice_id, EXIT_CODE_KIND),
+                    file="<stdin>",
+                )
+            ]
+        slices.append(entry)
+
+    membership: Dict[str, List[str]] = {}
+    for entry in slices:
+        listed = entry.get("stories")
+        for story_id in listed if isinstance(listed, list) else []:
+            if isinstance(story_id, str):
+                membership.setdefault(story_id, []).append(str(entry.get("slice")))
+    diagnostics: List[core.Diagnostic] = []
+    for story_id in sorted(stories):
+        owners = membership.get(story_id, [])
+        if not owners:
+            diagnostics.append(
+                core.error(
+                    core.E_INVALID_STATE,
+                    "story %r belongs to no slice" % (story_id,),
+                    file="<stdin>",
+                )
+            )
+        elif len(owners) > 1:
+            diagnostics.append(
+                core.error(
+                    core.E_INVALID_STATE,
+                    "story %r belongs to more than one slice (%s)"
+                    % (story_id, ", ".join(owners)),
+                    file="<stdin>",
+                )
+            )
+    for story_id in sorted(membership):
+        if story_id not in stories:
+            diagnostics.append(
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %s lists story %r, which the graph does not declare"
+                    % (membership[story_id][0], story_id),
+                    file="<stdin>",
+                )
+            )
+    if diagnostics:
+        return [], diagnostics
+    return slices, []
+
+
+def _apply_story_slices(slices: Sequence[Dict[str, Any]], stories: Dict[str, Any]) -> None:
+    """Write each story's ``slice`` back-reference from the slice listing it."""
+    for entry in slices:
+        listed = entry.get("stories")
+        for story_id in listed if isinstance(listed, list) else []:
+            story = stories.get(story_id)
+            if isinstance(story, dict):
+                story["slice"] = entry.get("slice")
+
+
+def _story_layers(stories: Dict[str, Any], ws) -> Dict[str, Optional[str]]:
+    """``story id -> layer``, read from each story's repo catalog.
+
+    A repo with no catalog yields ``None`` for its stories, which drops out of
+    the spanning comparison rather than inventing a layer to compare against.
+    """
+    catalogs: Dict[str, Dict[str, Any]] = {}
+    layers: Dict[str, Optional[str]] = {}
+    for story_id, story in stories.items():
+        if not isinstance(story, dict):
+            layers[story_id] = None
+            continue
+        repo, module = story.get("repo"), story.get("module")
+        if ws is None or not isinstance(repo, str) or core.require_ident(repo, "repo") is not None:
+            layers[story_id] = None
+            continue
+        if repo not in catalogs:
+            path, escape = ws.resolve_path("context", repo, "spec", "CATALOG.yaml")
+            catalog: Dict[str, Any] = {}
+            if escape is None and path is not None and path.is_file():
+                loaded = core.load_yaml(path, "context/%s/spec/CATALOG.yaml" % repo)
+                catalog = loaded if isinstance(loaded, dict) else {}
+            catalogs[repo] = catalog
+        layers[story_id] = _module_layer(catalogs[repo], module)
+    return layers
+
+
+def _slice_zero_spans_every_layer(
+    slices: Sequence[Dict[str, Any]], stories: Dict[str, Any], ws
+) -> List[core.Diagnostic]:
+    """The walking-skeleton rule: the first slice touches every layer the plan does.
+
+    This is what makes slice ``00`` a walking skeleton rather than merely the
+    first slice somebody listed -- its acceptance proves the shape of the system
+    runs before any depth is built on it.
+    """
+    if not slices:
+        return []
+    layers = _story_layers(stories, ws)
+    reached = {layer for layer in layers.values() if layer}
+    listed = slices[0].get("stories")
+    first = {
+        layers.get(story_id)
+        for story_id in (listed if isinstance(listed, list) else [])
+        if layers.get(story_id)
+    }
+    missing = sorted(reached - first)
+    if not missing:
+        return []
+    return [
+        core.error(
+            core.E_INVALID_STATE,
+            "slice %r is the walking skeleton and must touch every layer the plan "
+            "touches, but reaches none of: %s"
+            % (slices[0].get("slice"), ", ".join(missing)),
+            file="<stdin>",
+        )
+    ]
 
 
 def _normalize_change_number(value: Any) -> Optional[str]:
@@ -1011,8 +1483,10 @@ def _derive_plan_state(graph: Dict[str, Any], now: str) -> Dict[str, Any]:
         entry["status"] = "pending"
         entry["retries"] = 0
         stories[story_id] = entry
-    return {
-        "version": PLAN_STATE_VERSION,
+    declared = graph.get("slices")
+    sliced = graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list)
+    state: Dict[str, Any] = {
+        "version": PLAN_STATE_SLICE_VERSION if sliced else PLAN_STATE_VERSION,
         "plan_id": graph.get("plan_id"),
         "run": 0,
         "updated": now,
@@ -1023,6 +1497,13 @@ def _derive_plan_state(graph: Dict[str, Any], now: str) -> Dict[str, Any]:
         ],
         "stories": stories,
     }
+    if sliced:
+        state["slices"] = [
+            {"slice": entry.get("slice"), "status": SLICE_PENDING}
+            for entry in declared
+            if isinstance(entry, dict)
+        ]
+    return state
 
 
 def _derive_ledger(ledger: Dict[str, Any], graph: Dict[str, Any], now: str) -> Dict[str, Any]:
@@ -1038,13 +1519,167 @@ def _derive_ledger(ledger: Dict[str, Any], graph: Dict[str, Any], now: str) -> D
     for existing_id, entry in _ledger_plans(ledger).items():
         if existing_id != plan_id:
             plans[existing_id] = entry
-    plans[plan_id] = {
+    entry: Dict[str, Any] = {
         "status": "pending",
         "project_change": graph.get("project_change"),
         "plan_dir": _plan_dir_rel(plan_id),
         "updated": now,
     }
+    declared = graph.get("slices")
+    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list):
+        # Seeded here and thereafter maintained only by `state set-slice`, which
+        # is the single writer of these two counters. A pre-slice plan carries
+        # neither, and is read as pre-slice rather than as zero progress.
+        entry["slices_total"] = len(declared)
+        entry["slices_applied"] = 0
+    plans[plan_id] = entry
     return {"version": LEDGER_VERSION, "updated": now, "plans": plans}
+
+
+# ---------------------------------------------------------------------------
+# plan reslice -- the loop's backward edge
+# ---------------------------------------------------------------------------
+
+
+def _reslice(args, ws, now) -> core.Result:
+    """Rewrite the outstanding slices from a ``SliceDraft[]`` on stdin.
+
+    The applied-slice refusal is the load-bearing one: what has been delivered
+    is fixed, what is merely planned is not. Both the graph and ``state.yaml``
+    are re-validated before either is written, so a refusal -- of any kind --
+    leaves both files byte-identical.
+    """
+    command = "%s.reslice" % COMMAND
+    plan_id = _check_plan_id(args.plan_id)
+    plan_dir_rel = _plan_dir_rel(plan_id)
+    graph, graph_rel = _load_graph(ws, plan_id)
+    state, state_rel = _load_state(ws, plan_id, required=True)
+    nothing = {"plan_id": plan_id, "plan_dir": plan_dir_rel, "written": []}
+
+    draft = _read_draft(args, "the slice drafts")
+    if not isinstance(draft, list):
+        return core.Result(
+            command=command,
+            data=nothing,
+            diagnostics=[
+                core.error(
+                    core.E_PARSE, "the slice drafts must be a JSON array", file="<stdin>"
+                )
+            ],
+        )
+
+    stories = graph.get("stories")
+    stories = stories if isinstance(stories, dict) else {}
+    slices, refusals = _normalize_slices(draft, stories)
+    if refusals:
+        return core.Result(command=command, data=nothing, diagnostics=refusals)
+
+    current, _synthesized = slice_entries(graph, state)
+    refusals = _applied_slices_survive(current, slices)
+    if refusals:
+        return core.Result(command=command, data=nothing, diagnostics=refusals)
+
+    rewritten = dict(graph)
+    rewritten["version"] = PLAN_GRAPH_SLICE_VERSION
+    rewritten["slices"] = slices
+    rewritten["stories"] = {story_id: dict(story) if isinstance(story, dict) else story
+                            for story_id, story in stories.items()}
+    _apply_story_slices(slices, rewritten["stories"])
+
+    recorded = _slice_statuses(state)
+    rewritten_state = dict(state)
+    rewritten_state["version"] = PLAN_STATE_SLICE_VERSION
+    rewritten_state["slices"] = [
+        _slice_state_entry(state, entry.get("slice"), recorded)
+        for entry in slices
+    ]
+    rewritten_state["updated"] = now
+
+    documents = (
+        (rewritten, "plan-graph", graph_rel, PLANS_DIR + (plan_id, PLAN_FILE)),
+        (rewritten_state, "plan-state", state_rel, PLANS_DIR + (plan_id, STATE_FILE)),
+    )
+    pending: List[Tuple[Any, str, str]] = []
+    diagnostics: List[core.Diagnostic] = []
+    for data, kind, relative, parts in documents:
+        schema = core.load_schema(kind)
+        text = core.dump_yaml(data, schema)
+        for message in core.validate_against(schema, core.parse_yaml(text, relative)):
+            diagnostics.append(
+                core.error(
+                    core.E_SCHEMA_INVALID,
+                    "refused: does not validate against %s: %s" % (kind, message),
+                    file=relative,
+                )
+            )
+        pending.append((ws.safe_path(*parts), text, relative))
+    if diagnostics:
+        return core.Result(command=command, data=nothing, diagnostics=diagnostics)
+
+    written: List[str] = []
+    for path, text, relative in pending:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        written.append(relative)
+    return core.Result(
+        command=command,
+        data={
+            "plan_id": plan_id,
+            "plan_dir": plan_dir_rel,
+            "slices": [entry.get("slice") for entry in slices],
+            "written": written,
+        },
+    )
+
+
+def _slice_state_entry(
+    state: Dict[str, Any], slice_id: Any, recorded: Dict[str, str]
+) -> Dict[str, Any]:
+    """A slice's state entry, preserving what the file already recorded for it."""
+    entries = state.get("slices")
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("slice") == slice_id:
+                return dict(entry)
+    return {"slice": slice_id, "status": recorded.get(str(slice_id), SLICE_PENDING)}
+
+
+def _applied_slices_survive(
+    current: Sequence[Dict[str, Any]], draft: Sequence[Dict[str, Any]]
+) -> List[core.Diagnostic]:
+    """Refuse a draft that alters, drops, reorders or renumbers an applied slice.
+
+    Position and content are both compared, which is what makes the one check
+    cover all four: a dropped slice shifts the ones after it, a reorder moves
+    it, a renumber changes its id, and an edit changes its body.
+    """
+    diagnostics: List[core.Diagnostic] = []
+    for index, entry in enumerate(current):
+        if entry.get("status") != SLICE_APPLIED:
+            continue
+        frozen = {field: entry.get(field) for field in SLICE_DRAFT_FIELDS}
+        if index >= len(draft):
+            diagnostics.append(
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %r is applied and the draft drops it; what has been "
+                    "delivered cannot be rewritten" % (entry.get("slice"),),
+                    file="<stdin>",
+                )
+            )
+            continue
+        proposed = {field: draft[index].get(field) for field in SLICE_DRAFT_FIELDS}
+        if proposed != frozen:
+            diagnostics.append(
+                core.error(
+                    core.E_INVALID_STATE,
+                    "slice %r is applied but the draft alters, reorders or renumbers "
+                    "it (position %d now reads %r); what has been delivered cannot be "
+                    "rewritten" % (entry.get("slice"), index, proposed.get("slice")),
+                    file="<stdin>",
+                )
+            )
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -1430,6 +2065,7 @@ def _shards(args, ws, now) -> core.Result:
     command = "%s.shards" % COMMAND
     plan_id = _check_plan_id(args.plan_id)
     granularity = getattr(args, "granularity", None) or "repo"
+    wanted = getattr(args, "slice", None)
 
     plan_dir_rel = _plan_dir_rel(plan_id)
     graph_rel = "%s/%s" % (plan_dir_rel, PLAN_FILE)
@@ -1446,7 +2082,25 @@ def _shards(args, ws, now) -> core.Result:
             diagnostics=[core.error(core.E_PARSE, "plan graph is not a mapping", file=graph_rel)],
         )
 
-    pairs = _story_repo_modules(graph)
+    members: Optional[List[str]] = None
+    if wanted is not None:
+        declared, _synthesized = graph_slices(graph)
+        found = [entry for entry in declared if entry.get("slice") == wanted]
+        if not found:
+            return core.Result(
+                command=command,
+                diagnostics=[
+                    core.error(
+                        core.E_NOT_FOUND,
+                        "the plan graph declares no slice %r" % (wanted,),
+                        file=graph_rel,
+                    )
+                ],
+            )
+        listed = found[0].get("stories")
+        members = [story_id for story_id in listed if isinstance(story_id, str)] if isinstance(listed, list) else []
+
+    pairs = _story_repo_modules(graph, members)
     shards: List[Dict[str, Any]] = []
 
     for repo, module in pairs:
@@ -1462,7 +2116,7 @@ def _shards(args, ws, now) -> core.Result:
             }
         )
 
-    for tag in _cross_repo_tags(ws, graph):
+    for tag in _cross_repo_tags(ws, graph, members):
         core.check_ident(tag, "interface")
         shards.append(
             {
@@ -1499,17 +2153,25 @@ def _shards(args, ws, now) -> core.Result:
                 }
             )
 
-    data = {"plan_id": plan_id, "granularity": granularity, "shards": shards}
+    data = {"plan_id": plan_id, "granularity": granularity, "slice": wanted, "shards": shards}
     return core.Result(command=command, data=data)
 
 
-def _story_repo_modules(graph: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """Every story's ``(repo, module)``, deduped and sorted."""
+def _story_repo_modules(
+    graph: Dict[str, Any], members: Optional[Sequence[str]] = None
+) -> List[Tuple[str, str]]:
+    """Every story's ``(repo, module)``, deduped and sorted.
+
+    ``members`` restricts the walk to one slice's stories, which is what
+    ``--slice`` narrows the shard list to: what that slice shipped.
+    """
     stories = graph.get("stories")
     if not isinstance(stories, dict):
         return []
     pairs = set()
-    for story in stories.values():
+    for story_id, story in stories.items():
+        if members is not None and story_id not in members:
+            continue
         if not isinstance(story, dict):
             continue
         repo, module = story.get("repo"), story.get("module")
@@ -1518,13 +2180,15 @@ def _story_repo_modules(graph: Dict[str, Any]) -> List[Tuple[str, str]]:
     return sorted(pairs)
 
 
-def _cross_repo_tags(ws, graph: Dict[str, Any]) -> List[str]:
+def _cross_repo_tags(
+    ws, graph: Dict[str, Any], members: Optional[Sequence[str]] = None
+) -> List[str]:
     """The shared-interface TAGs named by this graph's ``scope: shared``
     change documents -- read via ``core.load_front_matter``, never through
     ``tools/change.py``. No ``context/shared/`` tree yields no entries and no
     diagnostic: a single-repo workspace is conforming, not defective."""
     tags = set()
-    for path in _change_document_paths(ws, graph):
+    for path in _change_document_paths(ws, graph, members):
         if not path.is_file():
             continue
         display = ws.rel(path)
@@ -1537,15 +2201,22 @@ def _cross_repo_tags(ws, graph: Dict[str, Any]) -> List[str]:
     return sorted(tags)
 
 
-def _change_document_paths(ws, graph: Dict[str, Any]) -> List[Path]:
+def _change_document_paths(
+    ws, graph: Dict[str, Any], members: Optional[Sequence[str]] = None
+) -> List[Path]:
     """Every change document the graph references: each story's
-    ``change_file`` plus the project index its ``project_change`` names."""
+    ``change_file`` plus the project index its ``project_change`` names.
+
+    The index is plan-wide and stays in scope even under ``--slice``; only the
+    per-story change files narrow, because those are what a slice shipped."""
     paths: List[Path] = []
     seen = set()
     stories = graph.get("stories")
     if isinstance(stories, dict):
         for story_id in sorted(stories):
             story = stories[story_id]
+            if members is not None and story_id not in members:
+                continue
             if not isinstance(story, dict):
                 continue
             change_file = story.get("change_file")
@@ -1579,6 +2250,8 @@ _VERBS = {
     "resolve": _resolve,
     "story-id": _story_id,
     "waves": _waves,
+    "slices": _slices,
+    "reslice": _reslice,
     "emit": _emit,
     "story-emit": _story_emit,
     "shards": _shards,

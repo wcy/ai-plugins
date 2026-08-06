@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import check, core, req, spec, status
+from tools import change, check, core, req, spec, status
 
 TARGET = "demo"
 
@@ -84,7 +84,12 @@ def _layout(target=TARGET):
     }
 
 
-def _catalog_text(target=TARGET, modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",))), shared=None):
+def _catalog_text(
+    target=TARGET,
+    modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",))),
+    shared=None,
+    depths=None,
+):
     """A catalog declaring every file ``_layout`` writes for the given modules.
 
     ``COMMON`` is always included -- in both the ``layers:`` block and
@@ -108,6 +113,8 @@ def _catalog_text(target=TARGET, modules=(("ALPHA", ("REQ-001",)), ("BETA", ("RE
         lines.append("    layer: L1-core")
         if requirements:
             lines.append("    requirements: [%s]" % ", ".join(requirements))
+        if (depths or {}).get(name) is not None:
+            lines.append("    depth: %s" % depths[name])
         lines.append("    files:")
         for filename in _LAYOUT_FILES.get(name, ("%s-OVERVIEW.md" % name,)):
             lines.append("      - path: %s" % _spec(name, filename, target))
@@ -224,7 +231,11 @@ def _plan_state_text(plan_id, run=1, statusname="applied", stories=(("01-01-demo
             ]
         )
     if conformance is not None:
-        conformance_status, findings = conformance
+        # ``(status, findings)`` or ``(status, findings, deferred)`` -- the
+        # third element is omitted from the document when it is not supplied,
+        # because an absent ``deferred`` means 0 and that is a distinct fixture
+        # from one recording a deferral of zero.
+        conformance_status, findings = conformance[0], conformance[1]
         lines.extend(
             [
                 "conformance:",
@@ -232,6 +243,8 @@ def _plan_state_text(plan_id, run=1, statusname="applied", stories=(("01-01-demo
                 "  findings: %d" % findings,
             ]
         )
+        if len(conformance) > 2:
+            lines.append("  deferred: %d" % conformance[2])
     return "\n".join(lines) + "\n"
 
 
@@ -1262,13 +1275,26 @@ def test_status_reports_the_documented_shape(workspace):
     report = result.data
     assert sorted(report) == ["generated", "handoff", "stages"]
     assert report["generated"] == NOW
-    assert sorted(report["stages"]) == ["changes", "conformance", "plans", "requirements"]
+    assert sorted(report["stages"]) == [
+        "changes",
+        "conformance",
+        "plans",
+        "requirements",
+        "slices",
+    ]
     assert sorted(report["stages"]["requirements"]) == ["dangling", "open_req_changes", "uncovered"]
     assert report["stages"]["requirements"]["open_req_changes"] == []
     assert sorted(report["stages"]["changes"]) == ["pending", "unindexed"]
     assert sorted(report["stages"]["plans"]) == ["unfinished", "unplanned_indexes"]
+    # findings and deferred side by side, never pre-subtracted: four findings of
+    # which three are accepted debt is a fact a net figure of one would hide.
     assert report["stages"]["conformance"] == [
-        {"plan_id": "001-demo", "status": "clean", "findings": 0}
+        {"plan_id": "001-demo", "status": "clean", "findings": 0, "deferred": 0}
+    ]
+    # A pre-slice plan reports null counters, not zero: no progress and no
+    # slices to progress through are different facts.
+    assert report["stages"]["slices"] == [
+        {"plan_id": "001-demo", "applied": None, "total": None, "current": None}
     ]
     assert report["handoff"] == []
 
@@ -1315,6 +1341,9 @@ def test_status_reports_an_unfinished_plan_as_a_resolution(workspace):
             "status": "in-progress",
             "run": 2,
             "resume_wave": 1,
+            # `resume_wave` keeps its name and its meaning; `resume_slice` sits
+            # alongside it, and reads "00" on a graph written before slices.
+            "resume_slice": "00",
             "pending_stories": ["01-01-demo-ALPHA"],
         }
     ]
@@ -1381,3 +1410,213 @@ def test_no_fixture_file_is_committed_under_the_plugin_tree(workspace):
     _chain(workspace)
     assert workspace.root.exists()
     assert not (PLUGIN_ROOT / "tests").exists()
+
+
+# ---------------------------------------------------------------------------
+# The conformance stage scores `findings - deferred`
+# ---------------------------------------------------------------------------
+
+
+def _with_conformance(workspace, conformance):
+    workspace.write(
+        "context/project/plans/001-demo/state.yaml",
+        _plan_state_text("001-demo", conformance=conformance),
+    )
+    return workspace
+
+
+def test_four_findings_with_three_deferred_still_fires(workspace):
+    _chain(workspace)
+    _with_conformance(workspace, ("drift", 4, 3))
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["from_stage"] == "mverify"
+    assert findings[0]["to_stage"] == "mfix"
+    # The message names what is outstanding, which is one, not four.
+    assert "1 finding" in findings[0]["message"]
+
+
+def test_four_findings_with_four_deferred_clears_the_stage(workspace):
+    """A gate nobody can satisfy is one everybody learns to route around."""
+    _chain(workspace)
+    _with_conformance(workspace, ("drift", 4, 4))
+    result, code = _check(workspace, "handoff")
+    assert code == 0 and result.ok
+    assert result.data["findings"] == []
+
+
+def test_an_absent_deferred_count_scores_as_zero(workspace):
+    """Every conformance block written before the field keeps its meaning."""
+    _chain(workspace)
+    _with_conformance(workspace, ("drift", 4))
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert "4 finding" in findings[0]["message"]
+
+
+def test_deferred_exceeding_findings_is_itself_a_finding(workspace):
+    """Not scored to a negative outstanding count -- that would read as cleaner
+    than clean, and the block is one nobody can act on."""
+    _chain(workspace)
+    _with_conformance(workspace, ("drift", 2, 5))
+    findings = _findings(workspace, "handoff")
+    assert _codes(findings) == [check.E_CONFORMANCE_DEFERRED]
+    assert findings[0]["state"] == "incomplete"
+    assert _check(workspace, "handoff")[1] == 1
+
+
+def test_status_reports_findings_and_deferrals_separately(workspace):
+    """A recorded acceptance, not a suppression: both numbers stay visible."""
+    _chain(workspace)
+    _with_conformance(workspace, ("drift", 4, 3))
+    report = _status(workspace)[0].data
+    assert report["stages"]["conformance"] == [
+        {"plan_id": "001-demo", "status": "drift", "findings": 4, "deferred": 3}
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The change stage drains -- `change close` is what moves a document off pending
+# ---------------------------------------------------------------------------
+
+
+def test_a_pending_change_leaves_the_pending_list_once_it_is_closed(workspace):
+    """Until `change close` existed nothing ever moved a document off `pending`,
+    so the list grew monotonically and every shipped change read as outstanding."""
+    _chain(workspace)
+    path = "context/%s/changes/CHANGE-002-later.md" % TARGET
+    workspace.write(path, _change_text("002", "later", "pending"))
+    workspace.write(
+        "context/project/changes/PROJECT-CHANGE-002-later.md",
+        _index_text("002", "later", "pending", [path]),
+    )
+    workspace.mkdir("context/project/plans/002-later")
+    workspace.write("context/project/plans/002-later/plan.yaml", _graph_text("002-later", project_change="002"))
+    workspace.write("context/project/plans/002-later/state.yaml", _plan_state_text("002-later"))
+
+    walk = check.walk_stages(workspace.ws)
+    assert path in [ref["path"] for ref in walk.pending_changes]
+
+    result = change.run(
+        workspace.args(verb="close", path=path, status="applied"), workspace.ws
+    )
+    assert result.ok, [item.render() for item in result.diagnostics]
+
+    walk = check.walk_stages(workspace.ws)
+    assert path not in [ref["path"] for ref in walk.pending_changes]
+
+
+def test_closing_the_index_drains_it_from_the_pending_list_too(workspace):
+    _chain(workspace)
+    index = "context/project/changes/PROJECT-CHANGE-002-later.md"
+    path = "context/%s/changes/CHANGE-002-later.md" % TARGET
+    workspace.write(path, _change_text("002", "later", "applied"))
+    workspace.write(index, _index_text("002", "later", "pending", [path]))
+    workspace.mkdir("context/project/plans/002-later")
+    workspace.write("context/project/plans/002-later/plan.yaml", _graph_text("002-later", project_change="002"))
+    workspace.write("context/project/plans/002-later/state.yaml", _plan_state_text("002-later"))
+
+    assert index in [ref["path"] for ref in check.walk_stages(workspace.ws).pending_changes]
+    change.run(workspace.args(verb="close", path=index, status="applied"), workspace.ws)
+    assert index not in [ref["path"] for ref in check.walk_stages(workspace.ws).pending_changes]
+
+
+# ---------------------------------------------------------------------------
+# check catalog -- the depth rules
+# ---------------------------------------------------------------------------
+
+
+def _depth_tree(workspace, module, files, depth):
+    """A tree whose one interesting module holds exactly ``files``."""
+    layout = {}
+    for filename in files:
+        layout[_spec(module, filename)] = (
+            [] if filename.endswith("-OVERVIEW.md") else [_spec(module, "%s-OVERVIEW.md" % module)]
+        )
+    layout[_spec("COMMON", "COMMON-OVERVIEW.md")] = None
+    for path, depends in layout.items():
+        workspace.write(path, _document(depends, Path(path).stem))
+
+    lines = [
+        "version: 1",
+        "repo: %s" % TARGET,
+        "layers:",
+        "  L1-core:",
+        "    modules: [COMMON, %s]" % module,
+        "modules:",
+        "  COMMON:",
+        "    layer: L1-core",
+        "    files:",
+        "      - path: %s" % _spec("COMMON", "COMMON-OVERVIEW.md"),
+        "        facet: overview",
+        "  %s:" % module,
+        "    layer: L1-core",
+    ]
+    if depth is not None:
+        lines.append("    depth: %s" % depth)
+    lines.append("    files:")
+    for filename in files:
+        lines.append("      - path: %s" % _spec(module, filename))
+        lines.append("        facet: %s" % _facet_of(module, filename))
+    workspace.write("context/%s/spec/CATALOG.yaml" % TARGET, "\n".join(lines) + "\n")
+    return workspace
+
+
+CONTRACT_FILES = ("ALPHA-OVERVIEW.md", "ALPHA-DATAMODEL.md", "ALPHA-INTERFACE.md")
+FULL_FILES = CONTRACT_FILES + (
+    "ALPHA-DEPENDENCIES.md",
+    "ALPHA-IMPLEMENTATION.md",
+    "ALPHA-TESTING.md",
+)
+
+
+def test_a_contract_module_missing_a_contract_facet_is_reported(workspace):
+    _depth_tree(workspace, "ALPHA", ("ALPHA-OVERVIEW.md", "ALPHA-INTERFACE.md"), "contract")
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_DEPTH]
+    assert "datamodel" in findings[0]["message"]
+
+
+def test_a_contract_module_whose_implementation_is_absent_is_not_reported(workspace):
+    """`contract` asserts the remaining facets are *deliberately* unwritten, so
+    their absence is expected rather than a missing file."""
+    _depth_tree(workspace, "ALPHA", CONTRACT_FILES, "contract")
+    assert _findings(workspace, "catalog", TARGET) == []
+
+
+def test_a_full_module_missing_any_facet_is_reported(workspace):
+    _depth_tree(workspace, "ALPHA", CONTRACT_FILES, "full")
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_DEPTH]
+    for facet in ("deps", "impl", "test"):
+        assert facet in findings[0]["message"]
+
+
+def test_a_full_module_carrying_every_facet_is_clean(workspace):
+    _depth_tree(workspace, "ALPHA", FULL_FILES, "full")
+    assert _findings(workspace, "catalog", TARGET) == []
+
+
+def test_a_module_declaring_no_depth_is_never_reported_by_the_rule(workspace):
+    """Absence resolves to `full` everywhere else, but it is not an assertion:
+    reading it as one would fire on every catalog written before depth existed."""
+    _depth_tree(workspace, "ALPHA", ("ALPHA-OVERVIEW.md",), None)
+    assert _findings(workspace, "catalog", TARGET) == []
+
+
+def test_the_depth_rule_runs_after_the_exports_rule(workspace):
+    """Finding order is fixed: file-set, facet, layer, exports, then depth."""
+    _depth_tree(workspace, "ALPHA", CONTRACT_FILES, "full")
+    text = workspace.path("context/%s/spec/CATALOG.yaml" % TARGET).read_text(encoding="utf-8")
+    workspace.write(
+        "context/%s/spec/CATALOG.yaml" % TARGET,
+        _set_catalog_exports(text, _spec("ALPHA", "ALPHA-INTERFACE.md"), ["ghost"]),
+    )
+    findings = _findings(workspace, "catalog", TARGET)
+    assert _codes(findings) == [check.E_CATALOG_EXPORTS, check.E_CATALOG_DEPTH]
+
+
+def test_the_live_catalog_still_passes_the_depth_rule(workspace):
+    """The whole tree this repo ships declares no depth, and must stay clean."""
+    _tree(workspace)
+    assert _findings(workspace, "catalog", TARGET) == []

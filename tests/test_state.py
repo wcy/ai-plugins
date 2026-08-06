@@ -16,10 +16,12 @@ comparisons that matter are on **bytes**, because "nothing was persisted" is a
 claim about the file, not about the parse of it.
 """
 
+import argparse
 import hashlib
 import inspect
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -918,3 +920,445 @@ def test_re_applying_the_same_change_leaves_the_files_byte_identical(started):
     _run(started, verb="set-plan", plan_id=PLAN_ID, status="applied")
     assert _state_path(started).read_bytes() == state_bytes
     assert _ledger_path(started).read_bytes() == ledger_bytes
+
+
+# ---------------------------------------------------------------------------
+# set-slice -- one commit over two files, and a status that is an input
+# ---------------------------------------------------------------------------
+
+SLICE = "00"
+SECOND_SLICE = "01"
+
+
+def _set_slice(workspace, slice_id=SLICE, status="applied", **extra):
+    return _run(
+        workspace, verb="set-slice", plan_id=PLAN_ID, slice_id=slice_id, status=status, **extra
+    )
+
+
+def test_set_slice_writes_the_entry_and_the_ledger_counters_in_one_commit(emitted):
+    result, code = _set_slice(emitted)
+    assert code == 0 and result.ok
+    assert result.data["written"] == [
+        "context/project/plans/%s/state.yaml" % PLAN_ID,
+        "context/project/state.yaml",
+    ]
+
+    state = _load(_state_path(emitted))
+    ledger = _load(_ledger_path(emitted))
+    assert state["slices"] == [{"slice": SLICE, "status": "applied"}]
+    assert ledger["plans"][PLAN_ID]["slices_total"] == 1
+    assert ledger["plans"][PLAN_ID]["slices_applied"] == 1
+    assert core.validate_against(core.load_schema("plan-state"), state) == []
+    assert core.validate_against(core.load_schema("project-state"), ledger) == []
+
+
+def test_set_slice_records_acceptance_and_outcome(emitted):
+    _set_slice(emitted, status="failed", acceptance="fail", outcome="stop")
+    entry = _load(_state_path(emitted))["slices"][0]
+    assert entry == {
+        "slice": SLICE,
+        "status": "failed",
+        "acceptance": "fail",
+        "outcome": "stop",
+    }
+
+
+def test_a_slice_status_is_not_derived_from_its_stories(emitted):
+    """Every story applied, acceptance failed: the slice is `failed`.
+
+    No function of story statuses can produce that, which is exactly why the
+    status is an input here and derived for a wave.
+    """
+    _run(emitted, verb="run-increment", plan_id=PLAN_ID)
+    _run(
+        emitted,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        attempt=1,
+        branch=BRANCH,
+    )
+    _set_slice(emitted, status="failed", acceptance="fail")
+
+    state = _load(_state_path(emitted))
+    assert state["stories"][STORY]["status"] == "applied"
+    assert state["waves"][0]["status"] == "complete"
+    assert state["slices"][0]["status"] == "failed"
+
+
+def test_set_slice_counts_only_the_applied_slices(emitted):
+    _set_slice(emitted, SLICE, "applied")
+    _set_slice(emitted, SECOND_SLICE, "in-progress")
+
+    state = _load(_state_path(emitted))
+    ledger = _load(_ledger_path(emitted))
+    assert [entry["slice"] for entry in state["slices"]] == [SLICE, SECOND_SLICE]
+    assert ledger["plans"][PLAN_ID]["slices_total"] == 2
+    assert ledger["plans"][PLAN_ID]["slices_applied"] == 1
+
+
+def test_set_slice_updates_an_existing_entry_in_place(emitted):
+    _set_slice(emitted, SLICE, "in-progress")
+    _set_slice(emitted, SLICE, "applied", acceptance="pass")
+
+    state = _load(_state_path(emitted))
+    assert len(state["slices"]) == 1
+    assert state["slices"][0]["status"] == "applied"
+    assert _load(_ledger_path(emitted))["plans"][PLAN_ID]["slices_applied"] == 1
+
+
+def test_set_slice_leaves_the_two_files_agreeing_after_any_sequence(emitted):
+    for slice_id, status in ((SLICE, "in-progress"), (SECOND_SLICE, "applied"), (SLICE, "applied")):
+        _set_slice(emitted, slice_id, status)
+        state = _load(_state_path(emitted))
+        ledger = _load(_ledger_path(emitted))["plans"][PLAN_ID]
+        applied = len([item for item in state["slices"] if item["status"] == "applied"])
+        assert ledger["slices_applied"] == applied
+        assert ledger["slices_total"] == len(state["slices"])
+
+
+def test_a_refused_set_slice_writes_neither_file(emitted):
+    ledger = _load(_ledger_path(emitted))
+    del ledger["plans"][PLAN_ID]
+    ledger["plans"][OTHER_PLAN_ID] = {
+        "status": "pending",
+        "plan_dir": "context/project/plans/%s" % OTHER_PLAN_ID,
+    }
+    emitted.write("context/project/state.yaml", core.dump_yaml(ledger))
+    state_digest = _digest(_state_path(emitted))
+    ledger_digest = _digest(_ledger_path(emitted))
+
+    result, code = _set_slice(emitted)
+    assert code == 1 and not result.ok
+    assert _digest(_state_path(emitted)) == state_digest
+    assert _digest(_ledger_path(emitted)) == ledger_digest
+
+
+@pytest.mark.parametrize("slice_id", ["../escape", "0", "000", "zz", ""])
+def test_a_bad_slice_id_is_rejected_never_sanitized(emitted, slice_id):
+    digest = _digest(_state_path(emitted))
+    result, code = _set_slice(emitted, slice_id)
+    assert code == 2 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_BAD_IDENT]
+    assert _digest(_state_path(emitted)) == digest
+
+
+# ---------------------------------------------------------------------------
+# The four fields that used to be hand-written into state.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_integration_branches_round_trip_through_set_plan(emitted):
+    result, code = _run(
+        emitted,
+        verb="set-plan",
+        plan_id=PLAN_ID,
+        status="in-progress",
+        integration_branches=json.dumps({"demo": "mexec/%s/integration" % PLAN_ID}),
+    )
+    assert code == 0 and result.ok
+    state = _load(_state_path(emitted))
+    assert state["integration_branches"] == {"demo": "mexec/%s/integration" % PLAN_ID}
+    assert core.validate_against(core.load_schema("plan-state"), state) == []
+
+
+def test_integration_branches_merge_rather_than_replace(emitted):
+    _run(
+        emitted,
+        verb="set-plan",
+        plan_id=PLAN_ID,
+        status="in-progress",
+        integration_branches=json.dumps({"demo": "mexec/x/integration"}),
+    )
+    _run(
+        emitted,
+        verb="set-plan",
+        plan_id=PLAN_ID,
+        status="in-progress",
+        integration_branches=json.dumps({"other": "mexec/y/integration"}),
+    )
+    assert _load(_state_path(emitted))["integration_branches"] == {
+        "demo": "mexec/x/integration",
+        "other": "mexec/y/integration",
+    }
+
+
+def test_set_plan_without_the_option_leaves_the_map_alone(emitted):
+    _run(
+        emitted,
+        verb="set-plan",
+        plan_id=PLAN_ID,
+        status="in-progress",
+        integration_branches=json.dumps({"demo": "mexec/x/integration"}),
+    )
+    before = _load(_state_path(emitted))
+    _run(emitted, verb="set-plan", plan_id=PLAN_ID, status="applied")
+    after = _load(_state_path(emitted))
+    # Both calls ran at NOW, so `updated` is unchanged and `status` is the whole
+    # delta: the branch map is not rewritten by a call that did not name it.
+    assert _changed(before, after) == {"status"}
+
+
+def test_validation_round_trips_through_set_story(started):
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        attempt=1,
+        branch=BRANCH,
+        validation="pass",
+    )
+    assert code == 0 and result.ok
+    story = _load(_state_path(started))["stories"][STORY]
+    assert story["validation"] == {"post_story": "pass"}
+    assert story["attempts"][0]["validation"] == "pass"
+
+
+def test_worktree_removed_round_trips_through_set_story(started):
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        attempt=1,
+        branch=BRANCH,
+        worktree=WORKTREE,
+        worktree_removed=True,
+    )
+    assert code == 0 and result.ok
+    attempt = _load(_state_path(started))["stories"][STORY]["attempts"][0]
+    assert attempt["worktree_removed"] is True
+
+
+def test_worktree_removed_needs_an_attempt_to_record_against(started):
+    digest = _digest(_state_path(started))
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        worktree_removed=True,
+    )
+    assert code == 2 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_USAGE]
+    assert _digest(_state_path(started)) == digest
+
+
+def test_deferred_break_round_trips_through_set_story(started):
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        deferred_break=json.dumps(
+            {"blast_radius": "contained", "detail": "one out-of-tree importer"}
+        ),
+    )
+    assert code == 0 and result.ok
+    story = _load(_state_path(started))["stories"][STORY]
+    assert story["deferred_break"] == {
+        "blast_radius": "contained",
+        "detail": "one out-of-tree importer",
+    }
+    assert core.validate_against(core.load_schema("plan-state"), _load(_state_path(started))) == []
+
+
+def test_a_significant_blast_radius_is_refused_rather_than_recorded(started):
+    """Only a *contained* break is deferred; a significant one halts the run."""
+    digest = _digest(_state_path(started))
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        deferred_break=json.dumps({"blast_radius": "significant", "detail": "cascades"}),
+    )
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_SCHEMA_INVALID]
+    assert _digest(_state_path(started)) == digest
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("integration_branches", "not json"),
+        ("integration_branches", "[1, 2]"),
+    ],
+)
+def test_a_malformed_json_option_is_refused_before_anything_is_written(emitted, option, value):
+    digest = _digest(_state_path(emitted))
+    result, code = _run(
+        emitted, verb="set-plan", plan_id=PLAN_ID, status="applied", **{option: value}
+    )
+    assert code == 2 and not result.ok
+    assert _digest(_state_path(emitted)) == digest
+
+
+def _verb_parsers():
+    """The parser each ``state`` verb declares, read off ``register`` itself."""
+    parser = argparse.ArgumentParser(prog="mc.py")
+    subparsers = parser.add_subparsers(dest="group")
+    state.register(subparsers)
+    for action in subparsers.choices[state.COMMAND]._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices
+    raise AssertionError("the state group declares no verbs")
+
+
+def _options(verb):
+    return {
+        option
+        for action in _verb_parsers()[verb]._actions
+        for option in action.option_strings
+    }
+
+
+def test_the_four_previously_verb_less_fields_each_have_a_verb_now():
+    """The invariant "state is written only through ``mc.py state``" held with
+    four standing exceptions until these options existed. It now holds with
+    none, which is why no test in this file hand-writes ``state.yaml``."""
+    assert "--integration-branches" in _options("set-plan")
+    assert {"--validation", "--worktree-removed", "--deferred-break"} <= _options("set-story")
+
+
+#: Field names that exist only in ``state.yaml``. ``validation`` is deliberately
+#: absent: the plan *graph* carries a block of the same name, so the name alone
+#: cannot distinguish a hand-written state value from a legitimate draft field.
+#: Its round trip is asserted directly instead, above.
+STATE_ONLY_FIELDS = ("integration_branches", "worktree_removed", "deferred_break",
+                     "contract_revisions")
+
+
+@pytest.mark.parametrize("name", STATE_ONLY_FIELDS)
+def test_no_test_in_this_file_writes_one_of_those_fields_by_hand(name):
+    """The claim above, checked against this file rather than asserted about it.
+
+    Each of these reaches ``state.yaml`` through its verb; a test constructing
+    one as a document key would be exercising a hand-written value, which is the
+    practice the options exist to end. Reading one back (``story[name]``) is
+    fine and is what the round-trip cases do -- it is the ``"<name>":`` key form
+    that would mean a document was being built here.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert '"%s":' % name not in source
+    assert "'%s':" % name not in source
+
+
+# ---------------------------------------------------------------------------
+# contract_revisions -- merged, never replaced
+# ---------------------------------------------------------------------------
+
+
+def test_contract_revisions_round_trip_through_set_story(started):
+    result, code = _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        contract_revisions=json.dumps({"EVENT-BUS": 2}),
+    )
+    assert code == 0 and result.ok
+    assert _load(_state_path(started))["stories"][STORY]["contract_revisions"] == {"EVENT-BUS": 2}
+
+
+def test_contract_revisions_merge_rather_than_replace(started):
+    _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="in-progress",
+        contract_revisions=json.dumps({"EVENT-BUS": 2}),
+    )
+    _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        contract_revisions=json.dumps({"USER-API": 1}),
+    )
+    assert _load(_state_path(started))["stories"][STORY]["contract_revisions"] == {
+        "EVENT-BUS": 2,
+        "USER-API": 1,
+    }
+
+
+def test_a_later_revision_for_the_same_tag_overwrites_that_one_only(started):
+    _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="in-progress",
+        contract_revisions=json.dumps({"EVENT-BUS": 1, "USER-API": 1}),
+    )
+    _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        contract_revisions=json.dumps({"EVENT-BUS": 3}),
+    )
+    assert _load(_state_path(started))["stories"][STORY]["contract_revisions"] == {
+        "EVENT-BUS": 3,
+        "USER-API": 1,
+    }
+
+
+def test_set_story_without_the_option_leaves_the_map_alone(started):
+    _run(
+        started,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="in-progress",
+        contract_revisions=json.dumps({"EVENT-BUS": 2}),
+    )
+    before = _load(_state_path(started))
+    _run(started, verb="set-story", plan_id=PLAN_ID, story_id=STORY, status="applied")
+    after = _load(_state_path(started))
+    assert "contract_revisions" not in _changed(before, after)
+
+
+# ---------------------------------------------------------------------------
+# conformance --deferred
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_records_the_deferred_count(emitted):
+    result, code = _run(
+        emitted,
+        verb="conformance",
+        plan_id=PLAN_ID,
+        status="drift",
+        report=REPORT,
+        findings=4,
+        deferred=3,
+    )
+    assert code == 0 and result.ok
+    block = _load(_state_path(emitted))["conformance"]
+    assert block == {"status": "drift", "report": REPORT, "findings": 4, "deferred": 3}
+
+
+def test_an_omitted_deferred_count_leaves_the_key_absent(emitted):
+    """Absent means 0, so every conformance block written before keeps its meaning."""
+    _run(
+        emitted,
+        verb="conformance",
+        plan_id=PLAN_ID,
+        status="drift",
+        report=REPORT,
+        findings=4,
+    )
+    assert "deferred" not in _load(_state_path(emitted))["conformance"]
