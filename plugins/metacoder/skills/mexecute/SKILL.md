@@ -5,17 +5,17 @@ description: Use when you need to actually ship a plan — turn its stories into
 
 # Execute: Ship a Plan as Worktree-Isolated Waves
 
-`mexecute` is the **only** skill in this workflow that writes application code. (`mfix` also edits code, but strictly as remediation bounded by a conformance finding — it never adds features.) It takes a finished plan (from `mplan`) and ships it: each wave's stories run **concurrently, each in its own git worktree**, are validated and merged at a barrier, failures are retried, and the run ends with a post-ship `/mverify` conformance sweep. It is realized as a **dynamic Workflow** (the `Workflow` tool) so the parallelism, barrier, retry, and merge are deterministic control flow — not model-improvised.
+`mexecute` is the **only** skill in this workflow that writes application code. It ships a finished plan (from `mplan`): each wave's stories run **concurrently, each in its own git worktree**, are validated and merged at a barrier, failures are retried, and the run ends with a post-ship `/mverify` conformance sweep. It is realized as a **dynamic Workflow** (the `Workflow` tool) so the parallelism, barrier, retry, and merge are deterministic control flow — not model-improvised.
 
-**Invariants it never breaks:** doc-only skills vs. this one code-writer · **one story → one repo → one worktree** · greens merge into a per-repo integration branch, never the live working branch · state is the source of truth for resume/retry (not prose).
+**Invariants it never breaks:** **one story → one repo → one worktree** · greens merge into a per-repo integration branch, never the live working branch · state is the source of truth for resume/retry (not prose).
 
 ## The Tool Computes, `mexecute` Runs Git
 
-Every mechanical step of this run — which plan and where to resume it, the run counter, branch and worktree names, worktree reconciliation verdicts, and every two-level state write — is computed by `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. **Invoke it; never restate it.** The split is fixed and runs both ways: `mc.py` invokes no git command, and this skill composes no name and derives no verdict of its own. Every `git` command below is run by `mexecute` (or by a story agent it dispatches), on the names and verdicts the tool returned.
+Every mechanical step of this run — which plan and where to resume it, the run counter, branch and worktree names, worktree reconciliation verdicts, and every two-level state write — is computed by `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. **Invoke it; never restate it.** The split runs both ways: `mc.py` invokes no git command, and this skill composes no name and derives no verdict of its own. Every `git` command below is run by `mexecute` (or by a story agent it dispatches), on the names and verdicts the tool returned.
 
-**A failed `mc.py` invocation — any non-zero exit — is a hard error: report it and halt the phase. There is no prose fallback, in any step.** A fallback would be a second implementation of the step, which is exactly what the tool exists to prevent.
+**A failed `mc.py` invocation — any non-zero exit — is a hard error: report it and halt the phase. No prose fallback, ever.** A fallback would be a second implementation of the step — exactly what the tool exists to prevent.
 
-What stays yours, entirely: merge and salvage discretion at the barrier, whether a retry is worth spending, and whether a halt condition has fired. The tool computes facts; those are judgments, and nothing below delegates them.
+Yours alone: merge and salvage discretion at the barrier, whether a retry is worth spending, whether a halt condition has fired. The tool computes facts; those are judgments, and nothing below delegates them.
 
 ## Step 0: Resolve the Plan + Resume Point
 
@@ -31,11 +31,11 @@ One call answers all of it — pass an explicit plan id only if the user named o
 - `resume_wave` — the first wave holding an unfinished story; the run starts there.
 - `pending_stories` — the stories to actually dispatch. Anything already `applied` is not in the list and is skipped.
 
-Do not re-derive any of those by reading the ledger or the plans directory. A story still `failed` after prior retry exhaustion is simply pending again: it is retried **afresh** on this run, the **per-run** retry budget resets, and its prior attempts stay recorded in history under their own `run` number.
+Do not re-derive any of these by reading the ledger or the plans directory. A story still `failed` after prior retry exhaustion is simply pending again: it is retried **afresh** on this run, the **per-run** retry budget resets, and its prior attempts stay recorded in history under their own `run` number.
 
 ## Step 1: Pre-flight
 
-Do this before starting the Workflow — it is cheap, sequential, and sets up the ground the wave agents stand on. The Workflow script itself has no filesystem or git access.
+Do this before starting the Workflow: cheap, sequential, and sets up the ground the wave agents stand on. The Workflow script itself has no filesystem or git access.
 
 1. **Validate the graph and the plan state** (fail fast on a corrupt plan):
 
@@ -124,7 +124,7 @@ const sweep = await agent(mverifySweepPrompt(SWEEP_DISCRIMINATOR), { label: 'mve
 return { done: true, sweep }   // the session persists `sweep` into state.yaml's conformance block after this returns
 ```
 
-In the skeleton, `STORY_REPORT_SCHEMA` is the parsed `${CLAUDE_PLUGIN_ROOT}/schemas/story-report.schema.json`; `BARRIER_SCHEMA` is a small inline shape you define for the barrier agent's return (`{ halt: bool, reason, merged: [...], deferred_breaks: [...] }`); `SWEEP_DISCRIMINATOR` is the explicit sweep-mode value `/mverify` is invoked with; and `storyPrompt`/`barrierPrompt`/`storyOf`/`mergeAttempts` are illustrative helpers you build from `plan.yaml` + Step 0's resolution. Adapt freely — the **contract** is: waves in order, one agent per story at full concurrency (each creating its own worktree), a barrier that validates/merges/persists, bounded retry 3 per run, then the sweep. Note that `return { done: true, sweep }` ends the `Workflow`; the sweep result is persisted **after** that return, by the `mexecute` session, not by the script (see Step 3).
+In the skeleton, `STORY_REPORT_SCHEMA` is the parsed `${CLAUDE_PLUGIN_ROOT}/schemas/story-report.schema.json`; `BARRIER_SCHEMA` is a small inline shape you define for the barrier agent's return (`{ halt: bool, reason, merged: [...], deferred_breaks: [...] }`); `SWEEP_DISCRIMINATOR` is the explicit sweep-mode value `/mverify` is invoked with; and `storyPrompt`/`barrierPrompt`/`storyOf`/`mergeAttempts` are illustrative helpers you build from `plan.yaml` + Step 0's resolution. Adapt freely — the **contract** is: waves in order, one agent per story at full concurrency (each creating its own worktree), a barrier that validates/merges/persists, bounded retry 3 per run, then the sweep. `return { done: true, sweep }` ends the `Workflow`; the sweep result is persisted **after** that return, by the `mexecute` session, not by the script (see Step 3).
 
 **Names for every dispatch.** Before building a story prompt, ask the tool for that (story, run, attempt)'s names:
 
@@ -141,7 +141,7 @@ The compute-heavy parts are **agents** because a Workflow script itself has no f
 - **Final-validation agent** (last wave only): runs the last wave's **Final Validation** steps from `plan.yaml`.
 - **mverify sweep agent** (Step 3): invokes `/mverify` across every repo the plan touched, with the explicit sweep discriminator.
 
-**If the `Workflow` tool is unavailable** in the environment, emulate the same structure by hand: for each wave in order, dispatch the story agents concurrently (`Agent` calls, one message — each story agent creates its own worktree with `git worktree add`), then run the **retry loop to exhaustion**, then the barrier/merge + state persistence yourself, then advance. The model (waves in order, worktree-per-story, barrier discretion, retry 3 per run, sweep) is what matters — the `Workflow` tool is just the cleanest way to express it. The `mc.py` calls are identical either way.
+**If the `Workflow` tool is unavailable** in the environment, emulate the same structure by hand: for each wave in order, dispatch the story agents concurrently (`Agent` calls, one message — each story agent creates its own worktree with `git worktree add`), then run the **retry loop to exhaustion**, then the barrier/merge + state persistence yourself, then advance. What matters is the model — waves in order, worktree-per-story, barrier discretion, retry 3 per run, sweep — not the tool. The `mc.py` calls are identical either way.
 
 ## The Barrier: Merge / Salvage Discretion
 
@@ -168,7 +168,7 @@ These are the **only** reasons a run stops early, and calling one is your judgme
 
 A breaking contract change whose blast radius is **contained** — it would only break code in the affected story — is **not** a halt: that story fails Post-Story Validation (so its worktree never merges), the failure is recorded as a `deferred_break` in `state.yaml`, and the **run continues**, folding it into the final report.
 
-**No human review between waves.** `mexecute` always runs every wave through; gatekeeping (§ modes) lives at the skill hand-offs *around* `mexecute`, not inside it.
+**No human review between waves.** `mexecute` always runs every wave through; gatekeeping lives at the hand-offs around `mexecute`, not inside it.
 
 ## Worktree Lifecycle
 
@@ -183,11 +183,11 @@ A breaking contract change whose blast radius is **contained** — it would only
 A story is single-repo, so a cross-repo change is *separate per-repo stories* joined by the frozen shared contract — never one story spanning repos:
 
 1. `mspec` cascade freezes the shared-interface contract in `context/shared/spec/` and updates each consumer's spec to reference it.
-2. `mplan` decomposes it into a producer story + one consumer story per repo. Because every repo codes against the *frozen spec* (not the producer's code), consumer stories needn't wait on the producer's implementation — same-altitude modules across repos may share a wave.
+2. `mplan` decomposes it into a producer story + one consumer story per repo. Every repo codes against the *frozen spec*, not the producer's code, so consumer stories needn't wait on the producer's implementation — same-altitude modules across repos may share a wave.
 3. `mexecute` runs each story in its own single-repo worktree — no cross-repo worktree juggling.
 4. `mverify` (the sweep) confirms every producer/consumer repo matches the frozen contract and flags any that bypassed the shared spec.
 
-The **contract**, not any worktree, is the cross-repo sync point; code-level atomicity across repos is neither needed nor attempted.
+The **contract**, not any worktree, is the cross-repo sync point — code-level atomicity across repos is neither needed nor attempted.
 
 ## Step 3: Post-Ship Conformance Sweep
 
@@ -199,7 +199,7 @@ The **`mexecute` session** persists that returned result **once the `Workflow` r
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state conformance <plan-id> --status <status> --report <report-path> --findings <n>
 ```
 
-**The sweep is explicitly non-blocking — drift never halts the run.** A gatekept manual run leaves the drift for the human to act on next (`mspec`/`mreverse`); an autonomous `/mquick` run folds it into its escalation report.
+**The sweep is explicitly non-blocking — drift never halts the run.**
 
 ## Step 4: State, Telemetry & Report
 

@@ -10,19 +10,19 @@ needs and business goals (the *what*) — for one target: a repo, the shared con
 (`shared`), or the workspace-global `project` tier for cross-cutting goals tied to no single repo
 or contract.
 
-It is a documentation-only skill — it never produces application code.
-Its deliverables are `context/<tier>/requirements/REQUIREMENTS.md` and, for every amending run,
-that tier's `context/<tier>/requirements/changes/REQ-CHANGE-<NNN>-<slug>.md` record.
-It never touches `context/<target>/spec/`, `CATALOG.yaml`, or a spec-layer change document —
-`CHANGE-<NNN>-*.md` or `PROJECT-CHANGE-<NNN>-*.md` — that whole tree belongs to `mspec`. The
-`REQ-CHANGE-<NNN>-<slug>.md` records this skill authors carry a deliberately different prefix and
-are not part of that exclusion.
+Documentation-only: it never produces application code. Its deliverables are
+`context/<tier>/requirements/REQUIREMENTS.md` and, for every amending run, that tier's
+`context/<tier>/requirements/changes/REQ-CHANGE-<NNN>-<slug>.md` record. It never touches
+`context/<target>/spec/`, `CATALOG.yaml`, or a spec-layer change document —
+`CHANGE-<NNN>-*.md` or `PROJECT-CHANGE-<NNN>-*.md` — that tree belongs to `mspec`. The
+`REQ-CHANGE-<NNN>-<slug>.md` records this skill authors carry a different prefix and are not part
+of that exclusion.
 
-**Where the standard lives.** The file format ships with the plugin, not the project. Reference it
-at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-REQ.md` — `${CLAUDE_PLUGIN_ROOT}` resolves at runtime to
-the plugin's marketplace-cache location. Load it lazily, at Phase 2 of whichever mode you're
-running, and follow it rather than restating its schema here. It covers both `REQUIREMENTS.md`'s
-own schema and the `REQ-CHANGE` record's.
+**Where the standard lives.** The file format ships with the plugin, not the project, at
+`${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-REQ.md` (`${CLAUDE_PLUGIN_ROOT}` resolves at runtime to the
+plugin's marketplace-cache location). Load it lazily, at Phase 2 of whichever mode is running, and
+follow it rather than restating its schema here — it covers `REQUIREMENTS.md`'s schema and the
+`REQ-CHANGE` record's.
 
 **Every mechanical step is a tool call.** Id allocation, the tier gate, requirements-change
 sequencing and emission, the drift check, and the closing validation each have exactly one
@@ -30,17 +30,15 @@ implementation, in `${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Run it at the call sites
 answer it returns; never re-derive one in prose, and never assume one.
 
 **A failed invocation is a hard error.** If a command below does not run — a usage error, a missing
-runtime prerequisite, a path it cannot resolve — report its diagnostics to the user and stop the
-phase. Do not perform the step by hand instead: a prose fallback is a second implementation of the
-step, which is precisely what this design forbids. A command that runs and *reports findings* has
-not failed; each call site says what its findings mean there.
+runtime prerequisite, an unresolvable path — report its diagnostics and stop the phase. Do not
+perform the step by hand instead: a prose fallback is a second implementation of the step. A command
+that runs and *reports findings* has not failed — each call site says what its findings mean there.
 
 What a requirement *says* is not mechanical and stays entirely your work.
 
 ## Step 0: Determine the Tier
 
-Resolve which of three tiers the request maps to, in this order — the same resolution mspec's
-Step 0 uses for its own target, generalized to three destinations:
+Resolve which of three tiers the request maps to, in this order:
 
 1. An explicit argument or target name in the user's message (e.g. "/mreq repo-a …", "/mreq
    shared …", "/mreq project …").
@@ -52,9 +50,9 @@ Step 0 uses for its own target, generalized to three destinations:
 If the request plausibly spans multiple targets, or you cannot tell which one, list the candidate
 tiers (subdirectories of `context/`, plus `shared` and `project`) and ask before proceeding.
 
-The tier resolved here is the `<tier>` argument every invocation below takes; `STANDARD-REQ.md`
-§"Location & Tiers" owns where that name puts the file, which is the path written throughout this
-skill as `context/<tier>/requirements/REQUIREMENTS.md`.
+The tier resolved here is the `<tier>` argument every invocation below takes. `STANDARD-REQ.md`
+§"Location & Tiers" owns where that name puts the file — written throughout this skill as
+`context/<tier>/requirements/REQUIREMENTS.md`.
 
 The literal token `audit` is never resolved as a target name by this step, whether it stands alone
 or follows a tier that was resolved here — Step 1's AUDIT branch is what reads it, and it does its
@@ -66,11 +64,9 @@ the branch keyword, the second as the tier name.
 
 **AUDIT branch — checked first, before any mode is selected.** If the argument position holds the
 literal token `audit` — alone (`/mreq audit`) or after the tier resolved in Step 0 (`/mreq <tier>
-audit`) — take the AUDIT branch below instead of selecting a mode. `audit` here is read as the
-branch keyword, never as a target name; a target genuinely named `audit` is addressed as `/mreq
-audit audit`. AUDIT is a branch, not a third mode: it captures nothing and derives nothing. If this
-branch is taken, skip the rest of this step and go straight to [AUDIT Branch](#audit-branch) below
-— neither BRAINSTORM's nor DERIVE's Phase 1/Phase 2 applies.
+audit`) — take the AUDIT branch below instead of selecting a mode. AUDIT is a branch, not a third
+mode: it captures nothing and derives nothing. Skip the rest of this step and go straight to [AUDIT
+Branch](#audit-branch) — neither BRAINSTORM's nor DERIVE's Phase 1/Phase 2 applies.
 
 **Mode selection**, only when the AUDIT branch above is not taken: **DERIVE** only when the user
 explicitly asks to create or update requirements *from* the spec (e.g. "derive requirements from
@@ -86,8 +82,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req gate <tier>
 It answers whether the tier already holds at least one valid `REQ-<NNN>[-<mnemonic>]` entry, and
 lists the ids present. Both modes key their Phase 2 off that answer rather than off file existence:
 **gate does not pass** → this run seeds the tier from scratch; **gate passes** → this run amends or
-appends to what is already there. Within BRAINSTORM that is mspec's own CREATE/UPDATE split,
-mirrored rather than renamed as a further mode.
+appends to what is already there.
 
 ---
 
@@ -105,8 +100,8 @@ decomposition. Those belong to `mspec`.
 - Why now — why does this matter at this point in time?
 - Success — what observable outcome would tell you the need is met?
 
-Never ask about technology, storage, API style, or any other spec-level decision — if a question
-would only make sense to answer with a technical choice, it belongs to `mspec`, not here.
+Never ask about technology, storage, API style, or any other spec-level decision — that belongs to
+`mspec`.
 
 If Step 1's gate reported entries present, read
 `context/<tier>/requirements/REQUIREMENTS.md` first so you can tell whether the new description is
@@ -116,12 +111,10 @@ superseded and add a replacement — a human decision, never automatic).
 **Inline contradiction check.** Compare the need(s) just drafted against the tier's own existing
 entries (already read above, if any were present) and against
 `context/project/requirements/REQUIREMENTS.md` as cross-cutting context — scoped only to the
-entries in hand, never the whole tier's set. This is narrower than the [AUDIT
-branch](#audit-branch)'s full pairwise sweep of everything already in the tier, and it is not a
-risk scan: it compares needs against needs, not a technical decision against a risk category. Raise
-anything found for the user to resolve before Phase 2 writes anything. When this Phase 1 runs
-unattended inside `mquick`, where there is no one to ask, do not halt and do not resolve it silently
-— flag it into the run's `REQ-CHANGE` record instead (see [Recording the
+entries in hand, never the whole tier's set (narrower than the [AUDIT branch](#audit-branch)'s full
+pairwise sweep). Raise anything found for the user to resolve before Phase 2 writes anything. When
+this Phase 1 runs unattended inside `mquick`, where there is no one to ask, do not halt and do not
+resolve it silently — flag it into the run's `REQ-CHANGE` record instead (see [Recording the
 Run](#recording-the-run)).
 
 Confirm the drafted need(s) with the user before proceeding.
@@ -141,21 +134,20 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req next <tier> --mnemonic <slug>
 ```
 
 `req mnemonic` returns a **candidate**, not a decision. Use it as-is unless the mechanical pick
-misses the words that actually carry the title's meaning — the rule keeps the first 2–4 significant
+misses words that carry the title's actual meaning — the rule keeps the first 2–4 significant
 words, which sometimes keeps a throwaway one and drops a load-bearing one. Substituting a better
 choice is yours to make; whatever you choose still goes to `req next --mnemonic`, which validates
-the grammar and refuses a bad slug rather than sanitizing it. Do not derive a slug from a title by
-hand — that derivation has one implementation, and two would drift apart.
+the grammar and refuses a bad slug rather than sanitizing it. Never derive a slug from a title by
+hand.
 
-A title `req mnemonic` reports `E_NO_MNEMONIC` for — absent, or with fewer than two significant
-words — is one to retitle with the user or name a mnemonic for explicitly. Never guess a slug for
-it: choosing words the title does not contain is authoring, and authoring here is done in the open.
+A title `req mnemonic` reports `E_NO_MNEMONIC` for — absent, or fewer than two significant words —
+needs retitling with the user, or an explicit mnemonic. Never guess a slug for it: choosing words
+the title doesn't contain is authoring, done in the open.
 
-Ids are allocated from the highest id present in the tier, never from a count of its entries —
-that is what makes reuse structurally impossible rather than merely discouraged. Never choose,
-guess, or adjust an id yourself, and never renumber one. Never invent a mnemonic for a
-reference whose heading you have not read; a bare `REQ-<NNN>` reference already resolves without
-one.
+Ids are allocated from the highest id present in the tier, never from a count of entries — this
+makes reuse structurally impossible, not merely discouraged. Never choose, guess, or adjust an id,
+and never renumber one. Never invent a mnemonic for a reference whose heading you haven't read; a
+bare `REQ-<NNN>` reference resolves without one.
 
 - Gate did not pass → create `context/<tier>/requirements/REQUIREMENTS.md` if it isn't there, with
   its two-line front-matter, then write the confirmed entries as `### REQ-<NNN>-<mnemonic>: <Title>`
@@ -174,8 +166,7 @@ Then record the run — see [Recording the Run](#recording-the-run) — and clos
 ## DERIVE Mode
 
 A one-way, non-interactive sync from an existing `context/<target>/spec/` into the requirements
-file. DERIVE never diffs requirements against spec for drift — that's mspec's job, run in the
-opposite direction, at its own Phase 1.
+file. DERIVE never diffs requirements against spec for drift — that's mspec's job.
 
 ### Phase 1: Read
 
@@ -187,9 +178,9 @@ capability found, draft one candidate requirement:
 - **Rationale** — the fixed placeholder `derived from spec — business rationale not yet captured`,
   never fabricated. A spec states *how*, never *why*.
 
-Do not ask a clarifying question about business rationale here — a spec doesn't encode it, so
-there's nothing to ask. Show the full draft and confirm, adjust, or reject specific entries with
-the user before anything is written.
+Do not ask a clarifying question about business rationale here — a spec doesn't encode it. Show the
+full draft and confirm, adjust, or reject specific entries with the user before anything is
+written.
 
 **Contradiction check — cannot ask.** As part of this same read-only pass, compare the drafted
 requirements against the tier's existing entries and against
@@ -225,8 +216,8 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check requirements <target>
 It reports every `CATALOG.yaml` reference to a `REQ-<NNN>` the tier no longer declares, and every
 entry no module references. A dangling reference means this run violated the stability rule —
 restore the id and re-run before reporting completion. An entry no module references yet is the
-expected state for a need `mspec` has not covered; report it to the user and leave it alone, since
-`CATALOG.yaml` is `mspec`'s file, never this skill's to edit.
+expected state for a need `mspec` hasn't covered; report it and leave it alone — `CATALOG.yaml` is
+`mspec`'s file, not this skill's to edit.
 
 Then record the run — see [Recording the Run](#recording-the-run) — and close with
 [Validation](#validation-every-branch).
@@ -244,17 +235,15 @@ Read the target tier's `context/<tier>/requirements/REQUIREMENTS.md` in full —
 bare `/mreq audit` — plus `context/project/requirements/REQUIREMENTS.md` as cross-cutting context,
 and compare entries pairwise for contradiction: two needs that cannot both be satisfied, or one
 that supersedes another without saying so. Read no spec file in this phase. This is the one path
-whose cost grows with the size of the existing set rather than with the size of a request, which is
-why it is an explicit branch rather than something every run performs.
+whose cost scales with the size of the existing set rather than the request, which is why it's a
+separate branch rather than something every run performs.
 
 ### Phase 2: Resolve In-Run
 
-Present each contradiction found and resolve it with the user there and then, rather than reporting
-it for a later pass. This does not follow the read-only-report-then-fix split `mverify`/`mfix` use
-for conformance findings: unlike a conformance finding, a contradiction between two requirements
-exists only in the comparison just made — there is no artifact a later run could re-derive it from,
-so there is nothing for a report-then-fix pass to act on. Apply each resolution as an in-place
-amendment — an entry reworded, or marked `Status: superseded`.
+Present each contradiction found and resolve it with the user immediately, not in a later pass — a
+contradiction between two requirements exists only in the comparison just made, so there's no
+artifact a later pass could act on. Apply each resolution as an in-place amendment — an entry
+reworded, or marked `Status: superseded`.
 
 Then record the run — see [Recording the Run](#recording-the-run) — naming every contradiction
 found and how each was resolved, and close with [Validation](#validation-every-branch).
@@ -280,7 +269,7 @@ with `spec-change: CHANGE-<NNN>` — is performed only by `mc.py req change-clos
 `mspec` once the spec change covering this record is written; it is the one write under
 `context/<tier>/requirements/` that this skill never makes. Pass `--spec-change not-required` only
 when the revision produced no spec delta — a rationale reworded, a mnemonic corrected — so the
-record reads as complete rather than as outstanding work forever, without ever being closed.
+record reads complete rather than as permanently outstanding.
 
 In the record's body, name every entry touched, why, and what it replaced. In a BRAINSTORM run
 inside `mquick` and in DERIVE, additionally name any contradiction flagged rather than resolved. In
@@ -300,8 +289,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate req-change context/<tier>/req
 Run the first for `context/<tier>/requirements/REQUIREMENTS.md` whenever this run wrote to it, and
 the second for every `REQ-CHANGE` record this run wrote via [Recording the
 Run](#recording-the-run) — including an AUDIT run's, even though AUDIT never touches
-`REQUIREMENTS.md` itself through this call. A failure blocks completion — fix the file and re-run,
-exactly as mspec gates its own `catalog`/`change` checks.
+`REQUIREMENTS.md` itself through this call. A failure blocks completion — fix the file and re-run.
 
 ---
 
@@ -319,16 +307,8 @@ exactly as mspec gates its own `catalog`/`change` checks.
   what this skill produces.
 - **Left alone, always:** `context/<target>/spec/**` and `CATALOG.yaml` — `mspec`'s exclusive
   domain — and a spec-layer change document, `CHANGE-<NNN>-*.md` or `PROJECT-CHANGE-<NNN>-*.md`.
-  The `REQ-CHANGE-<NNN>-<slug>.md` records this skill authors carry a deliberately different
-  prefix and are not part of that exclusion. Symmetrically, `mspec` never *authors* content under
-  `requirements/` either — the one mutation it causes there is the closing transition `mc.py req
-  change-close` performs on an open `REQ-CHANGE`, a tool-owned write charged to neither skill.
-  `mreq` itself never invokes that verb.
-
-`mreq` and `mspec` never call each other directly. `mspec` reads
-`context/<tier>/requirements/REQUIREMENTS.md` as data — its own Prerequisites/Risk-Scan step —
-and `context/<tier>/requirements/changes/` for open `REQ-CHANGE` records, never as a call into this
-skill. The only skill that runs both, conditionally, at its own single gate, is `mquick`.
+  The `REQ-CHANGE-<NNN>-<slug>.md` records this skill authors carry a different prefix and are not
+  part of that exclusion.
 
 ---
 

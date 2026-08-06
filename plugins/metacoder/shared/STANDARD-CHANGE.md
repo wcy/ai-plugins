@@ -42,9 +42,9 @@ context/project/changes/PROJECT-CHANGE-<NNN>-<SHORT-SLUG>.md
 
 Example: `context/project/changes/PROJECT-CHANGE-005-retry-policy.md`
 
-The project-level index references the repo-level change files produced in that mspec run. It is the entry point `mplan` reads to scope an incremental plan — `mplan` follows the repo-file references to get per-repo detail.
+The project-level index references the repo-level change files produced in that mspec run.
 
-**Key rule:** `mplan` reads `context/project/changes/` to determine what to plan. Repo-level change files in `context/<repo>/changes/` contain the implementation detail agents need.
+**Key rule:** `mplan` reads `context/project/changes/` to scope an incremental plan, then follows the repo-file references to `context/<repo>/changes/` for per-repo implementation detail.
 
 ### Sequence resolution and create-vs-continue
 
@@ -67,7 +67,7 @@ A failed invocation is a hard error that halts the phase. There is no prose fall
 
 ## Initial-Spec Baseline Records
 
-The first change document written when a spec is first created is a **baseline record**, not a normal change. It documents the starting state of a spec rather than a modification to one, so it uses a distinct naming, status, and layout.
+The first change document written when a spec is first created is a **baseline record**: it documents the starting state of a spec, not a modification, so it uses distinct naming, status, and layout.
 
 Baseline records live at the **repo level** (in `context/<repo>/changes/`) only — they are not represented in the project-level change index because they have no code to implement.
 
@@ -85,7 +85,7 @@ Front-matter for a baseline record:
 <!-- date: YYYY-MM-DD -->
 ```
 
-Tooling that scans `context/<repo>/changes/` treats `CHANGE-*-initial-spec.md` records as baseline state and skips them when looking for the latest actionable change. `mplan` reads `context/project/changes/` and only sees project-level indexes, so baseline records never interfere with plan scoping.
+Tooling scanning `context/<repo>/changes/` treats `CHANGE-*-initial-spec.md` records as baseline state and skips them when looking for the latest actionable change. `mplan` only sees project-level indexes, so baseline records never interfere with plan scoping.
 
 ---
 
@@ -115,7 +115,7 @@ Front-matter for a shared-interface cascade project-level index:
 <!-- consumers: repo-a, repo-b -->
 ```
 
-A shared-interface cascade is not complete until every consuming repo has either a change file or a documented "unaffected" note, and the project-level index references all of them.
+A cascade is complete only once every consuming repo has a change file or an "unaffected" note, and the project-level index references all of them.
 
 ---
 
@@ -279,15 +279,14 @@ is no code phase to pass through `in-progress` for.
 Some change documents have no code phase at all: a documentation-only spec formalization, or a
 retroactive record of a fix `mfix`/`mmigrate` already made outside the plan process. `check handoff`
 (REQ-019) treats every `pending`/`applied` change as reachable by a future plan by default — a repo-level
-change needs a project index referencing it, and a project-level index needs a plan directory — and
-reports one that isn't as `stranded`. A record with nothing for a plan to do would strand permanently
-under that rule, not because anything was missed but because there's genuinely nothing to plan.
+change needs a project index referencing it, a project-level index needs a plan directory — and reports
+one that isn't as `stranded`. A record with nothing for a plan to do would strand permanently under that
+rule, even though there's genuinely nothing to plan.
 
 Set `<!-- plan: not-required -->` in such a record's front-matter (repo-level, project-level, or
-both) to mark it exempt. `check handoff`'s `mspec`→`mplan` stage does not flag a marked record for
-lacking an index reference or a plan directory. This is not a substitute for filling in "Affected
-Code Paths" honestly — write "None" there and say why, per the Rules below — the marker only stops
-the record from being reported as an oversight when there truly is none.
+both) to mark it exempt. `check handoff`'s `mspec`→`mplan` stage then skips it for a missing index
+reference or plan directory. The marker doesn't excuse filling in "Affected Code Paths" honestly —
+write "None" there and say why, per the Rules below.
 
 `mc.py change emit --plan not-required` sets the field at emission time. `mfix` and `mmigrate` set it
 on every retroactive record they write, since none of their fixes have a further code phase to plan.
@@ -306,7 +305,7 @@ on every retroactive record they write, since none of their fixes have a further
 
 5. **Reference spec sections, not just files.** Point to the specific section header or describe the location within the file (e.g., "the `## Execution Flow` section" or "the `SpawnOptions` type definition").
 
-6. **Don't duplicate the spec.** The change document describes *what changed and what code to update* — it does not restate the full spec. The implementing agent will read the actual spec files for complete details.
+6. **Don't duplicate the spec.** The change document describes *what changed and what code to update* — it does not restate the full spec. The implementing agent reads the spec files for full details.
 
 7. **Include rollback notes for breaking changes.** If a change breaks an existing contract, note what the old contract was so an agent can revert if needed.
 
@@ -330,10 +329,10 @@ Use this guide to determine which source files are affected by changes to each f
 ## Example
 
 The "Change Document Schemas" section above already shows every section filled with concrete
-rows (the `RetryPolicy` example). A minimal single-repo change is just that schema with each
-table holding one or two rows — e.g. a `CHANGE-004` adding an optional `timeoutMs` to
-`SpawnOptions` would carry `scope: repo`, `repo: repo-a`, `status: pending`, "Breaking
-Changes: None.", one **Spec Files Modified** row per touched facet (DATAMODEL/INTERFACE/
-IMPLEMENTATION), one **Affected Code Paths** row (`src/subprocess/spawn.ts`), one **Affected
-Tests** row, and a short **Implementation Order**. Don't pad empty sections — one honest row
-beats a fabricated table.
+rows (the `RetryPolicy` example). A minimal single-repo change is that schema with each table
+holding one or two rows — e.g. a `CHANGE-004` adding an optional `timeoutMs` to `SpawnOptions`
+would carry `scope: repo`, `repo: repo-a`, `status: pending`, "Breaking Changes: None.", one
+**Spec Files Modified** row per touched facet (DATAMODEL/INTERFACE/IMPLEMENTATION), one
+**Affected Code Paths** row (`src/subprocess/spawn.ts`), one **Affected Tests** row, and a
+short **Implementation Order**. Don't pad empty sections — one honest row beats a fabricated
+table.

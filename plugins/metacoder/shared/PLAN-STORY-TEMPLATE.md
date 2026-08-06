@@ -1,16 +1,15 @@
 <!--
   Story-file template. Owned by `shared/`, not by any skill.
 
-  This file is DATA, not prose for a reader to re-enact. It is rendered by
-  `mc.py plan story-emit <plan-id> <story-id>`, which emits the block between the
-  BEGIN/END markers as PLAN-{WW}-{SS}-{REPO}-{MODULE}.md with the {placeholders}
-  substituted. No skill loads this file and no agent copies from it by hand.
+  DATA, not prose to re-enact. Rendered by `mc.py plan story-emit <plan-id> <story-id>`,
+  which emits the block between the BEGIN/END markers as PLAN-{WW}-{SS}-{REPO}-{MODULE}.md
+  with {placeholders} substituted. No skill loads this file; no agent copies from it by hand.
 
-  Sections gated by a comment (INCREMENTAL PLANS ONLY, last wave only, update sub-mode
-  only) are conditional — the renderer includes them only when the comment's condition
-  holds and drops them otherwise. Lines carrying an INJECT: marker are replaced whole,
-  with content generated from the owning section the marker names. Each story file must
-  stay self-contained and focused — as small as the work allows, with no hard line limit.
+  Comment-gated sections (INCREMENTAL PLANS ONLY, last wave only, update sub-mode only) are
+  conditional — the renderer includes them only when the condition holds, dropping them
+  otherwise. Lines with an INJECT: marker are replaced whole with content from the named
+  section. Each story file must stay self-contained and focused — as small as the work
+  allows, with no hard line limit.
 -->
 
 <!-- ===== BEGIN STORY TEMPLATE ===== -->
@@ -18,7 +17,7 @@
 
 # Story: {Module Name} ({Layer}) — {repo}
 
-**Repo:** {repo} <!-- the repository directory under repos/ that this story modifies -->
+**Repo:** {repo} <!-- repo dir under repos/ this story modifies -->
 **Wave:** {wave number} of {total waves}
 **Prerequisites:** {list all story files from earlier waves that must complete first, or "None"}
 **Parallel group:** {list other PLAN-{WW}-*-*.md files that run concurrently with this one, or "solo"}
@@ -26,11 +25,11 @@
 
 ## Execution Model
 
-All code changes for this story happen inside `repos/{repo}/` (the dir named in **Repo:** above). Do not modify any other repo.
+All code changes happen inside `repos/{repo}/` (the dir named in **Repo:** above). Do not modify any other repo.
 
-Run this story after all prerequisite stories are complete. If parallel group is not "solo",
-spawn one agent per story in the group concurrently and wait for all to finish before
-advancing to wave {WW+1}.
+Run after all prerequisite stories complete. If parallel group is not "solo", spawn one
+agent per story in the group concurrently and wait for all to finish before advancing to
+wave {WW+1}.
 
 Each agent loads **only**:
 1. This story file
@@ -56,8 +55,8 @@ Only update the following — do not touch anything else in this module:
 
 ### What Changed
 
-<!-- One subsection per logical change that affects this module, drawn from the change doc's
-     "## Detailed Changes" section. Only include subsections relevant to this module. -->
+<!-- One subsection per logical change affecting this module, drawn from the change doc's
+     "## Detailed Changes" section. Include only subsections relevant to this module. -->
 
 #### {Change Title}
 
@@ -103,8 +102,8 @@ Implement in this order:
 3. **Internal Logic** — Wire up internals per the module's IMPLEMENTATION spec (if it exists)
 4. **Unit Tests** — Write tests per the module's TESTING spec (if it exists)
 
-<!-- Adapt task list to the actual facets present in this module's CATALOG.yaml entry.
-     Not all modules have every facet — only include tasks for facets that exist. -->
+<!-- Adapt the task list to this module's actual CATALOG.yaml facets — include tasks
+     only for facets that exist. -->
 
 ---
 
@@ -129,7 +128,7 @@ Run before marking this story complete:
 - [ ] Full existing test suite passes with no regressions (update sub-mode only)
 - [ ] E2E scenarios for this module pass (if E2E module exists in catalog)
 
-<!-- INJECT:E2E-HARD-RULES — replace this entire line with the four rules owned by STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim from that section, only when the checkbox immediately above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit`; never hand-copied. -->
+<!-- INJECT:E2E-HARD-RULES — replace this line with the four rules from STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim, when the checkbox above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit` — never hand-copied. -->
 
 <!-- Include the section below only in stories belonging to the final wave ({WW} = last wave). -->
 ## Final Validation (last wave only)
@@ -138,7 +137,7 @@ Run after all waves are complete:
 
 - [ ] E2E test scenarios pass (if E2E module exists in catalog)
 
-<!-- INJECT:E2E-HARD-RULES — replace this entire line with the four rules owned by STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim from that section, only when the checkbox immediately above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit`; never hand-copied. -->
+<!-- INJECT:E2E-HARD-RULES — replace this line with the four rules from STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim, when the checkbox above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit` — never hand-copied. -->
 
 - [ ] No coupling violations across the entire codebase (including no cross-repo coupling outside `context/shared/spec/`)
 - [ ] All acceptance criteria in every story file are checked off

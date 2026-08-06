@@ -5,36 +5,27 @@ description: Use when you need to confirm that shipped code actually conforms to
 
 # Verify: Conformance From Change + Plan + Spec
 
-`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (the change docs, the plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only** — it produces a change-shaped conformance report and records results in state; it **never** rewrites code or spec (findings feed a follow-up `/mfix` run, or `mspec`/`mreverse` when the gap is a missing contract or a missing spec tree).
+`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (change docs, plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only**: it produces a change-shaped conformance report and records results in state, and **never** rewrites code or spec. Findings feed a follow-up `/mfix` run, or `mspec`/`mreverse` when the gap is a missing contract or spec tree.
 
-This is `mexecute`'s **post-ship sweep** (its Step 3), and it can be re-run standalone against any prior change/plan.
+Runs as `mexecute`'s **post-ship sweep** (its Step 3), or standalone against any prior change/plan.
 
-Every invocation carries an explicit **mode discriminator** — `sweep` (invoked by `mexecute`) or `standalone` — passed in, never inferred. The mode selects Step 4's behaviour: the sweep **returns** its result to the invoker, which persists it; standalone **writes** the plan's `conformance` block itself.
+Every invocation carries an explicit **mode discriminator** — `sweep` (invoked by `mexecute`) or `standalone` — passed in, never inferred. The mode selects Step 4's behaviour: sweep **returns** its result to the invoker, which persists it; standalone **writes** the plan's `conformance` block itself.
 
 ## What it detects
 
 Three kinds of drift, all **detection only** (reported, never gated or rewritten):
 
 1. **Change conformance** (`missing` / `extra` / `mismatch`) — for every module the change/plan touched, does the code implement the INTERFACE signatures and DATAMODEL types the change specifies? Flag surface that is missing, extra (present in code but not the contract), or mismatched (wrong signature/type/shape).
-2. **Cross-repo conformance** (`cross-repo-drift`) — for a shared-interface change, do **all** producer/consumer repos the cascade covers actually match the frozen contract in `context/shared/spec/`? This is the "consistent across codebases" guarantee.
-3. **Coupling detection** (`coupling`) — coupling violations that a contract comparison can't catch. `mc.py check coupling` and `mc.py check depends-on` detect them; **STANDARD-SPEC.md §"Dependency Rules" is the definition**, and this file does not restate it or describe how the detection works.
+2. **Cross-repo conformance** (`cross-repo-drift`) — for a shared-interface change, do **all** producer/consumer repos the cascade covers actually match the frozen contract in `context/shared/spec/`?
+3. **Coupling detection** (`coupling`) — coupling violations that a contract comparison can't catch. `mc.py check coupling` and `mc.py check depends-on` detect them; **STANDARD-SPEC.md §"Dependency Rules" is the definition**, and this file does not restate it.
 
 Detection is delegated. **Findings and their severity are not.** Whether a reported violation belongs in the report, what `type` it carries, and whether it is `blocking`, `warning`, or `info` is this skill's judgment on every one of the three kinds — the tool supplies the shard list and the mechanical checks, never the verdict.
-
-## mverify vs mreverse
-
-Both are read-only detectors; they differ by **starting point** (see also the plugin README):
-
-- **`mverify` starts from the change + plan + spec files.** Given a unit of *executed work*, it confirms the code implements it. Runs as `mexecute`'s post-ship sweep; re-runnable against any prior change/plan.
-- **`mreverse` starts from the code + spec.** It takes code as ground truth, reconciles the spec to match, and documents inconsistencies within and between repos. No change/plan is involved.
-
-If the user wants "make the spec match the code," that's `mreverse`. If they want "confirm the code matches what we planned," that's `mverify`.
 
 ## Invoking the tool
 
 Every mechanical step below runs `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Add `--json` when you need the `Result` envelope rather than the human-readable form.
 
-**A failed invocation is a hard error: halt the phase and report it. There is no prose fallback** — re-deriving a step the tool owns would be a second implementation of it. Read the exit code:
+**A failed invocation is a hard error: halt the phase and report it. No prose fallback** — re-deriving a step the tool owns would duplicate it. Read the exit code:
 
 - **`0`** — succeeded, no diagnostics.
 - **`1`** — the command ran and reported diagnostics: a schema violation, a check finding, or an unresolvable resource. This is a **result**, not a failure. Read the diagnostics and continue at the step that asked for them.
@@ -42,7 +33,7 @@ Every mechanical step below runs `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Ad
 
 ## Step 0: Determine the Verification Target
 
-The mode discriminator (`sweep` or `standalone`) is **passed in** and is never inferred from the plan id's provenance — a standalone run against the same plan id passes the same id, so provenance alone can't distinguish the two; only the explicit discriminator can.
+The mode discriminator (`sweep` or `standalone`) is **passed in**, never inferred from the plan id — a standalone run can pass the same plan id as a sweep, so only the explicit discriminator distinguishes them.
 
 Resolve the plan with:
 
@@ -71,9 +62,9 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 
    Returns one `ShardSpec` per shard — `shard` (`change-conformance|cross-repo|coupling`), `id`, `repo`, `module`, `interface` — in a stable order (change-conformance by `(repo, module)`, then cross-repo by TAG, then coupling); `--json` puts the list at `data.shards`. This list **is** the fan-out set for Step 2 — do not add to it or drop from it by reading.
 
-   **Known limitation:** that rule has one sanctioned exception, and only one. When Step 0 resolves an ad-hoc change — no plan directory, `mc.py plan resolve` exiting `E_NOT_FOUND` — there is no plan graph for `mc.py plan shards` to read, so the tool offers no support there and the shard list is derived by reading instead. This is the sole exception to REQ-018's single-implementation rule and it does not extend to any path where a plan directory exists; everywhere else, the tool's list stands as given above.
+   **Known limitation — one sanctioned exception:** when Step 0 resolves an ad-hoc change (no plan directory, `mc.py plan resolve` exits `E_NOT_FOUND`), there is no plan graph for `mc.py plan shards` to read, so the shard list is derived by reading instead. This is the sole exception to REQ-018's single-implementation rule; it does not extend to any path where a plan directory exists.
 
-   Granularity is this skill's judgement, expressed as the flag: the tool defaults to per-repo coupling shards and applies no numeric threshold for "small repo"; pass `--granularity module` when per-module coupling shards are wanted instead.
+   Granularity is this skill's judgement, expressed as the flag: the tool defaults to per-repo coupling shards with no numeric threshold for "small repo"; pass `--granularity module` for per-module coupling shards instead.
 
    A workspace with no `context/shared/` tree yields no cross-repo entries and no diagnostic — that is a conforming single-repo workspace, not a failure to investigate.
 
@@ -85,7 +76,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate plan-graph context/project/pl
 
 ## Step 2: Fan Out Conformance Shards (subagents)
 
-Dispatch the shards **in parallel** (single message, multiple Agent tool calls). Each shard is **blind to the others** — name its exact scope (the repo, the module's source dir, the spec/contract files, the change-doc rows) in the prompt, and load only those. This keeps each agent's context minimal and lets conformance scale across a large plan.
+Dispatch the shards **in parallel** (single message, multiple Agent tool calls). Each shard is **blind to the others** — name its exact scope (repo, module's source dir, spec/contract files, change-doc rows) in the prompt, and load only those. This keeps each agent's context minimal and lets conformance scale across a large plan.
 
 Each shard reads code as it exists in `repos/<repo>/` and compares it to its contract:
 
@@ -98,7 +89,7 @@ Each shard reads code as it exists in `repos/<repo>/` and compares it to its con
   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check depends-on <repo>
   ```
 
-  Each returns a `CheckReport`; exit `1` means it found something. **STANDARD-SPEC.md §"Dependency Rules" is the definition of a violation** — the checkers implement it, this shard does not re-derive it and this file does not restate it. What the shard does is the judgment the checkers cannot make: decide which reported violations are real findings for *this* change, give each a `type` and a `severity`, and write the `detail` that explains it.
+  Each returns a `CheckReport`; exit `1` means it found something. **STANDARD-SPEC.md §"Dependency Rules" is the definition of a violation** — the checkers implement it; this file does not restate it. What the shard does is the judgment the checkers cannot make: decide which reported violations are real findings for *this* change, give each a `type` and a `severity`, and write the `detail` that explains it.
 
 **Each shard must return the `conformance-report.schema.json` shape**, carrying **both**:
 
@@ -109,7 +100,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
 ## Step 3: Aggregate + Write the Change-Shaped Report
 
-1. **Write the shard files.** The **orchestrator** — not the shard — writes each returned JSON object to `context/project/out/<plan-id>/shards/<shard-id>.json`. Shards themselves write nothing; they only return the object (Step 2). `<shard-id>` is the `id` field of that shard's `ShardSpec` entry from `plan shards` (Step 1) — the tool forms it per shard kind, because no single template fits all three: a cross-repo shard spans every repo of one interface and has neither a single repo nor a module, and a coupling shard's per-repo variant has no module:
+1. **Write the shard files.** The **orchestrator** — not the shard — writes each returned JSON object to `context/project/out/<plan-id>/shards/<shard-id>.json` (Step 2: shards write nothing, only return the object). `<shard-id>` is the `id` field of that shard's `ShardSpec` entry from `plan shards` (Step 1) — the tool forms it per shard kind, because no single template fits all three: a cross-repo shard spans every repo of one interface and has neither a single repo nor a module, and a coupling shard's per-repo variant has no module:
 
    | Shard kind | `<shard-id>` |
    |---|---|
@@ -170,7 +161,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
 2. **Report to the user** the counts by type (change / cross-repo / coupling) and severity, and point at the report file.
 
-3. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report (an autonomous `/mquick` run escalates it; a gatekept run leaves it for the human to act on next via `mspec`/`mreverse`).
+3. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report.
 
 ## Output File Path Patterns
 
@@ -188,7 +179,7 @@ Worked example: `context/project/changes/CHANGE-003-retry.md` → basename `CHAN
 
 - **No code changes.** `repos/<repo>/` is read-only input.
 - **No spec/change/plan rewrites.** It reports drift; closing it is a separate `mspec` (respec) or `mreverse` (reconcile) run, or a code fix.
-- **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced (the only spec-level gate is `mspec`'s authoring-time coupling check).
+- **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced.
 - **No delegated verdict.** `mc.py` supplies the shard list and the mechanical checks; which findings the report carries and how severe each one is stays here.
 
 ## Asking Questions

@@ -5,7 +5,7 @@ description: Use when you need to generate modular implementation plans from com
 
 # Create Modular Implementation Plan from Spec
 
-Take completed specifications and produce a set of modular, context-efficient implementation plan files that can be executed by a team of Claude Code agents.
+Take completed specifications and produce modular, context-efficient implementation plan files a team of Claude Code agents can execute.
 
 **This is a documentation project. Do not write application code. The deliverables are plan files under `context/project/plans/` and the project ledger `context/project/state.yaml`.**
 
@@ -17,13 +17,13 @@ Every mechanical step of this skill — scope, wave assignment, story ids, and t
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py <group> <verb> [arguments]
 ```
 
-**A failed invocation is a hard error.** Any `mc.py` call that exits non-zero halts the phase: report its diagnostics and stop. Never re-derive the step by hand — a prose fallback is a second implementation of the step, and two implementations diverge. This rule holds for every invocation in every phase below; it is stated once here and never repeated.
+**A failed invocation is a hard error.** Any `mc.py` call that exits non-zero halts the phase: report its diagnostics and stop. Never re-derive the step by hand. This rule holds for every invocation below; stated once here, not repeated.
 
 What remains yours is **judgment**: how the work decomposes into stories, which context files each one loads, what its acceptance criteria and validation steps are, and where a consumer must sit relative to its producer.
 
 ## Step 0: Understand the Layout & Scope
 
-A workspace splits the **spec per repository** (`context/<repo>/spec/`, plus a contract-only `context/shared/spec/`). Changes are tracked at two levels: **repo-level** files in `context/<repo>/changes/` and a **project-level index** in `context/project/changes/` that references them. Plans live in `context/project/plans/`. A single plan may contain stories for **more than one repo** — each story is tagged with the repo it implements. The `shared` layer is contract-only and is never planned directly; its contracts are implemented by the repos that consume them.
+A workspace splits the **spec per repository** (`context/<repo>/spec/`, plus a contract-only `context/shared/spec/`). Changes are tracked at two levels: **repo-level** files in `context/<repo>/changes/` and a **project-level index** in `context/project/changes/` that references them. Plans live in `context/project/plans/`. A single plan may contain stories for **more than one repo**, each tagged with the repo it implements. The `shared` layer is contract-only and never planned directly; its contracts are implemented by the repos that consume them.
 
 Determine scope:
 
@@ -55,7 +55,7 @@ It returns `type` (`full` or `incremental`), the `plan_id` and `plan_dir` this r
 
 ### Step 2: Load Context
 
-**Full plan:** For each in-scope repo, read `context/<repo>/spec/CATALOG.yaml` to get its layer/module structure and `shared_interfaces` list, then read all spec files referenced in that catalog. For every shared interface a repo consumes, also read its `*-INTERFACE.md` (and `*-DATAMODEL.md`) from `context/shared/spec/<IFACE>/` — these are part of the context any module that depends on them needs.
+**Full plan:** For each in-scope repo, read `context/<repo>/spec/CATALOG.yaml` to get its layer/module structure and `shared_interfaces` list, then read all spec files referenced in that catalog. For every shared interface a repo consumes, also read its `*-INTERFACE.md` (and `*-DATAMODEL.md`) from `context/shared/spec/<IFACE>/` — this is context for any module that depends on them.
 
 **Incremental plan:** Read the driving `PROJECT-CHANGE-<NNN>-*.md` in full, then for each repo-level change file `scope` named:
 1. Extract each spec file listed in **Spec Files Modified** (noting which repo each belongs to)
@@ -66,16 +66,16 @@ It returns `type` (`full` or `incremental`), the `plan_id` and `plan_dir` this r
 
 ## Role
 
-You are a technical project manager creating modular, context-efficient implementation plans for Claude Code agent teams.
+You are a technical project manager creating implementation plans for Claude Code agent teams.
 
 ## Output File Structure
 
 Each plan directory contains one **story file per module** (human-readable, self-contained) plus two machine-readable files that make the plan executable and resumable by `mexecute`:
 
-- **`plan.yaml`** — the immutable **plan graph**: waves, stories, dependencies, and per-story validation. `mexecute` reads this instead of re-deriving structure from the story prose. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json`.
+- **`plan.yaml`** — the immutable **plan graph**: waves, stories, dependencies, and per-story validation. `mexecute` reads this instead of re-deriving structure from story prose. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json`.
 - **`state.yaml`** — the initial **plan-level state**: every story `pending`, no attempts yet. `mexecute` mutates this as it runs. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-state.schema.json`.
 
-The plan is also recorded in the **project-level ledger** `context/project/state.yaml` — the entry point that resume/orchestration reads to find the unfinished plan. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/project-state.schema.json`.
+The plan is also recorded in the **project-level ledger** `context/project/state.yaml`, the entry point resume/orchestration reads to find the unfinished plan. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/project-state.schema.json`.
 
 All three files, and every story file, are written by `mc.py` (see *Emit the Plan Graph, Stories, State & Ledger*) — never assembled by hand.
 
@@ -115,15 +115,15 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan waves <target>
 
 returns the layer-ordered assignment for one target repo: one wave per layer, in layer order, with that layer's modules as its parallel siblings. Run it once per in-scope repo and merge the results by altitude — same-index layers across repos share a wave, so modules in different repos run in parallel. The `shared` layer is contract-only: it is pure context and gets no stories.
 
-**The judgment that stays yours:** where a story depends, via a shared interface, on another repo's module being implemented first, move the **consumer into a later wave than its producer**, even though the layer assignment placed them in the same one. `plan waves` assigns; it never reorders a consumer past its producer, and that call is `mplan`'s alone. Each story's **Prerequisites** and **Parallel group** then make the resulting order explicit.
+**The judgment that stays yours:** where a story depends, via a shared interface, on another repo's module being implemented first, move the **consumer into a later wave than its producer**, even though the layer assignment placed them in the same one. `plan waves` assigns; it never reorders a consumer past its producer. Each story's **Prerequisites** and **Parallel group** then make the resulting order explicit.
 
 ## Story File Template
 
-Story files are **rendered, not written**: `mc.py plan story-emit` produces each one from `${CLAUDE_PLUGIN_ROOT}/shared/PLAN-STORY-TEMPLATE.md`, which belongs to `shared/`. This skill never loads that file and nothing is ever copied out of it by hand.
+Story files are **rendered, not written**: `mc.py plan story-emit` produces each one from `${CLAUDE_PLUGIN_ROOT}/shared/PLAN-STORY-TEMPLATE.md`. This skill never loads that file, and nothing is ever copied out of it by hand.
 
 The renderer substitutes everything the plan graph answers — repo, module, layer, wave numbers, prerequisites, parallel group, change file, target-path rows — and gates the conditional sections (`## Change Scope` for incremental plans only, `**Compliance Status:**` for update sub-mode, `## Final Validation` for last-wave stories only). It leaves in place only the placeholders judgment must fill: the Context Files lists, the change-scope narrative, and the module's implementation tasks and acceptance criteria.
 
-**E2E Hard Rules.** `STANDARD-SPEC.md` §"E2E Testing Hard Rules" **owns** the four rules. They are **injected at render time**, generated from that owning section on every emit and never hand-copied, into **both** placements in the story file — `## Post-Story Validation` **and** `## Final Validation (last wave only)` — each block gated on the repo's `CATALOG.yaml` naming a module whose TESTING facet covers E2E, and each annotated with `STANDARD-SPEC.md` as their owner. Both placements are required: the owning rule covers module-level and project-level E2E, while Final Validation reaches last-wave stories only. This is the sanctioned exception to the no-duplication rule, and only because the copy is generated — a story agent's context is its own story, its Context Files, and the repo `CATALOG.yaml`, so the rules must physically reach the story file, yet there is still exactly one authored source.
+**E2E Hard Rules.** `STANDARD-SPEC.md` §"E2E Testing Hard Rules" **owns** the four rules. They are **injected at render time**, generated from that owning section on every emit and never hand-copied, into **both** placements in the story file — `## Post-Story Validation` **and** `## Final Validation (last wave only)` — each block gated on the repo's `CATALOG.yaml` naming a module whose TESTING facet covers E2E, and each annotated with `STANDARD-SPEC.md` as their owner. Both placements are required: the owning rule covers module-level and project-level E2E, while Final Validation reaches last-wave stories only. This is the sanctioned exception to the no-duplication rule, and only because the copy is generated: a story agent's context is its own story, its Context Files, and the repo `CATALOG.yaml`, so the rules must physically reach the story file even though there is exactly one authored source.
 
 Each story file must stay **small and focused** — as small as the work allows, with no hard line limit (see *Context Size Budget*).
 
@@ -246,9 +246,9 @@ One invocation per story, once the graph is on disk:
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit <plan-id> <story-id>
 ```
 
-It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects `STANDARD-SPEC.md`'s four E2E Hard Rules — generated at render time from that owning section, annotated with it as owner — into both `## Post-Story Validation` and `## Final Validation (last wave only)`.
+It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects the E2E Hard Rules into both `## Post-Story Validation` and `## Final Validation (last wave only)` (see *E2E Hard Rules* above).
 
-Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands; in particular never edit, reformat, or re-copy the injected E2E rules.
+Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands — never edit, reformat, or re-copy the injected E2E rules.
 
 ## Context Size Budget
 
@@ -259,7 +259,7 @@ Keep each story file **small and focused** — as small as the work allows, with
 
 ## Post-Generation Story Validation (subagents)
 
-After the stories and machine-readable artifacts are written, **fan out validators** to catch problems a single author misses — the story files are independent, so validation parallelizes cleanly. Dispatch one validator subagent **per story** (batch small plans, one per wave, to keep the fan-out reasonable), in parallel (single message, multiple Agent tool calls). Each validator is scoped to one story and its declared context, blind to the others, and checks:
+After the stories and machine-readable artifacts are written, **fan out validators**: one subagent **per story** (batch small plans, one per wave, to keep the fan-out reasonable), dispatched in parallel (single message, multiple Agent tool calls). Each validator is scoped to one story and its declared context, blind to the others, and checks:
 
 - **Self-containment** — could an agent implement this story loading **only** the files in its Context Files list? Flag anything the tasks require that isn't listed.
 - **Context minimality & correctness** — every Context File traces to a `depends_on` in the owning repo's `CATALOG.yaml`; no wildcards; no unrelated files.
