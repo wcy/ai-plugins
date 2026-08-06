@@ -174,8 +174,9 @@ never infers it, and the mode decides whether state is written: `standalone` aga
 plan directory rewrites the plan's `conformance` block itself, while `sweep` returns its result to
 an invoker for persistence, and there is no `mexecute` run here to persist it.
 
-That rewrite is what closes the `mverify → mfix` handoff finding — the block returning to zero
-findings, not the change document Step 5 wrote. Confirm it landed before reporting completion.
+That rewrite is what closes the `mverify → mfix` handoff finding — the block's *undeferred*
+findings reaching zero, not the change document Step 5 wrote. Confirm it landed before reporting
+completion.
 
 For findings the mechanical checks raised, confirm closure with the checker rather than by
 re-reading the rules:
@@ -186,13 +187,33 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <repo>
 
 Findings that survive are reported with why; don't edit twice hoping the report changes.
 
-**A deferred finding cannot be closed this way.** Re-verification re-detects it, so the
-`conformance` block stays non-zero and the handoff finding stays raised at `error` severity for as
-long as the deferral stands — there is no machine-readable "accepted debt" state for a conformance
-finding, and the tracked-debt note written into the spec file is prose no checker reads. Name that
-explicitly in the run report, with the owning skill, so a permanently red `check handoff` reads as
-a known deferral rather than an unnoticed defect. A gate nobody can satisfy trains everyone to
-ignore it — the same failure mode Step 3 exists to fix.
+**A deferred finding is closed by recording it, not by fixing it.** Re-verification re-detects a
+deferral — the finding is still true — so the `conformance` block never returns to zero on its own.
+Record how many findings this run **deliberately deferred**, and `check handoff` scores
+`findings - deferred` instead of `findings`:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state conformance <plan-id> \
+    --status <clean|drift> --report <report-path> --findings <n> --deferred <n>
+```
+
+Run this **after** the standalone re-verify, and pass `--status`, `--report` and `--findings` the
+values that run just recorded — the verb writes the `conformance` block whole, so omitting them
+drops them. A run that deferred nothing skips the call and leaves the block as `mverify` wrote it.
+
+Recording the count is what makes a deferral terminable. Before `--deferred` existed the handoff
+finding stayed raised at `error` severity for as long as the deferral stood, with nothing anyone
+could do about it — and a gate nobody can satisfy trains everyone to ignore it, the same failure
+mode Step 3 exists to fix and how the drift accumulated in the first place.
+
+**The count is a recorded acceptance, not a suppression.** `mc.py status` reports findings and
+deferrals separately, so accepted debt stays visible as debt instead of vanishing from the ledger.
+Only a finding Step 2.4 resolved as missing architecture is deferrable — one you merely did not get
+to is not deferred, it is unfixed.
+
+**Deferring is this skill's judgement and no other's.** Deciding that a finding may stand is a call
+about which artefact is authoritative, which is exactly what `mfix` exists to make: `mverify`
+reports findings and never adjudicates one, and `mmigrate` will not touch it either.
 
 The run report lists, per finding: `code` | `spec` | `both` | `deferred` | `not-reproduced`, the
 one-line reason, the files touched, and any release/propagation the fix forced. Deferred items
@@ -200,11 +221,27 @@ name the skill that owns them (`mspec` for missing contracts, `mreverse` for a r
 tree). **Anything not fixed is written down** — in the spec file it affects, so it reads as known
 debt, not an unnoticed violation.
 
+**Close the change document the run settled.** When every finding the Step 5 record covers is
+resolved, deferred, or marked `not-reproduced`, that record is finished — move it off `pending`:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py change close context/<repo>/changes/CHANGE-<NNN>-<slug>.md \
+    --status applied
+```
+
+`change emit` writes `pending`, and until this verb existed nothing ever moved a change document
+off it — so every shipped change read as outstanding forever and `check handoff`'s pending list
+only ever grew. The requirements layer has had a terminator since the beginning; this is the change
+layer's. It refuses `complete` (a baseline record's birth status, never a transition), a baseline
+record, and a document already terminal — closing twice is a caller bug, not an idempotent no-op.
+Leave the record open only when the run genuinely did not settle it, and name the finding still
+outstanding when you do.
+
 ## What mfix does / does NOT do
 
 - **Does:** verify findings; decide code-vs-spec per finding — that call is `mfix`'s, not the
-  user's or the tool's; fix at root cause; write a change file; keep gates green; re-verify;
-  record deferrals.
+  user's or the tool's; fix at root cause; write a change file and close it once the run settles
+  it; keep gates green; re-verify in `standalone` mode; record deferrals as an accepted count.
 - **Does NOT:** ship feature code — remediation of a raised finding only, never new functionality
   (that's `mexecute`); refactor beyond a finding's fence; author `context/shared/spec/` contracts
   (that's `mspec`); generate a spec tree for a repo that has none (that's `mreverse`); re-plan
