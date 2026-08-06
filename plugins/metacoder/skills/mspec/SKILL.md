@@ -202,7 +202,7 @@ Before reporting completion, verify. Items 1–4 are executed rather than confir
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
    ```
 
-3. CATALOG.yaml includes entries for all modules and all files. (Agreement between an INTERFACE entry's declared `exports` and the document it describes is not checked by any tool and stays read-confirmed.)
+3. CATALOG.yaml includes entries for all modules and all files.
 4. Every module in CATALOG.yaml has correct layer and facet assignments
 5. COMMON-OVERVIEW.md covers all primary lifecycles identified in brainstorm
 6. `context/<repo>/changes/CHANGE-000-initial-spec.md` exists
@@ -414,7 +414,7 @@ Before reporting completion, verify. Items 1–3 are executed rather than confir
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py check all <target>
    ```
 
-3. CATALOG.yaml is updated for all new or modified modules. (Agreement between an INTERFACE entry's declared `exports` and the document it describes is not checked by any tool and stays read-confirmed.)
+3. CATALOG.yaml is updated for all new or modified modules.
 4. A repo-level change file exists in `context/<repo>/changes/` with the correct naming
 5. The repo-level change file's "Affected Code Paths" table covers every spec change made
 6. A project-level index exists in `context/project/changes/` referencing the repo change file(s)
