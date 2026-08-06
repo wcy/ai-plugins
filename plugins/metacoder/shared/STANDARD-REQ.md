@@ -1,18 +1,18 @@
 # Requirements Document Standards
 
-Standards for the requirements layer — the *what* (user needs and business goals) that sits
-beneath a spec's *how* (technical design). Referenced by prompt files — this is the single source
-of truth for `REQUIREMENTS.md` layout, IDs, and stability rules. Consumed by `mreq` (author) and
-read by `mspec` (Phase 1 context, never written).
+Standards for the requirements layer — the *what* (user needs and business goals) beneath a
+spec's *how* (technical design). Single source of truth for `REQUIREMENTS.md` layout, IDs, and
+stability rules. Consumed by `mreq` (author) and read by `mspec` (Phase 1 context, never
+written).
 
 ---
 
 ## Purpose
 
 A spec answers *how* something works. A requirements document answers *why it should exist at
-all* — the user need or business goal that justifies building it. Keeping this a separate,
-lighter-weight layer means "why" survives design churn: a spec can be rewritten from scratch
-without losing the business rationale that motivated it.
+all* — the user need or business goal that justifies building it. Keeping "why" a separate,
+lighter-weight layer lets it survive design churn: a spec can be rewritten from scratch without
+losing the business rationale behind it.
 
 ---
 
@@ -26,16 +26,16 @@ without losing the business rationale that motivated it.
 - **`context/project/requirements/REQUIREMENTS.md`** — cross-cutting needs and goals tied to no
   single repo or contract.
 
-Exactly one `REQUIREMENTS.md` file per tier — there is no per-module split the way spec has
-`<TAG>-<FACET>.md` files; requirements are lighter-weight by design.
+Exactly one `REQUIREMENTS.md` file per tier — no per-module split; requirements are
+lighter-weight by design.
 
 ---
 
 ## Front-Matter
 
 `REQUIREMENTS.md` sits outside `context/<target>/spec/` and never participates in the
-facet/layer dependency graph `CATALOG.yaml` governs, so it is **exempt** from the general spec
-`depends-on` convention. Its front-matter is exactly two lines:
+facet/layer dependency graph `CATALOG.yaml` governs, so it is **exempt** from the spec
+`depends-on` convention. Front-matter is exactly two lines:
 
 ```markdown
 <!-- requirements: <target-name>|shared|project -->
@@ -76,7 +76,7 @@ never-reused ID order:
   decision. If it reads like a design choice, it belongs in a spec, not here.
 - **`Rationale`** — required. The business justification for the need. A DERIVE-drafted entry
   carries the fixed placeholder `derived from spec — business rationale not yet captured` rather
-  than a fabricated one — a spec states *how*, never *why*.
+  than a fabricated one.
 - **`Status`** — required, one of exactly three values:
   - `active` — still wanted.
   - `stale` — no longer covered by the spec; set only by a DERIVE re-run when the entry's matching
@@ -118,9 +118,8 @@ IDs are **append-only** and stable across every DERIVE re-run:
   the file** — never deleted, never renumbered.
 
 The invariant this protects is that **no id is ever reassigned to a different requirement**.
-Adding or correcting a mnemonic leaves `<NNN>` untouched, so doing so is not a renumber. This is
-what keeps a `CATALOG.yaml` `requirements:` back-reference from being silently orphaned by a later
-`mreq` run.
+Adding or correcting a mnemonic leaves `<NNN>` untouched — not a renumber — which keeps a
+`CATALOG.yaml` `requirements:` back-reference from being silently orphaned by a later `mreq` run.
 
 Mechanically checked: this file must always state the rule in a form
 `grep -qE 'reassigned to a different requirement' plugins/metacoder/shared/STANDARD-REQ.md` can
@@ -138,8 +137,8 @@ context/<tier>/requirements/changes/REQ-CHANGE-<NNN>-<slug>.md
 ```
 
 One file per change, sequenced **per tier**, independently of the `REQ-<NNN>` sequence it
-documents. It is the record of *why* an entry was added or revised and what it replaced — the
-reason a `REQUIREMENTS.md` diff alone cannot carry.
+documents. It records *why* an entry was added or revised and what it replaced — what a
+`REQUIREMENTS.md` diff alone can't carry.
 
 **Front-matter** — four required keys, plus one conditional:
 

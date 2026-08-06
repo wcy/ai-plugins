@@ -25,7 +25,6 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "metacoder"
 MC = PLUGIN_ROOT / "tools" / "mc.py"
-SHIM = PLUGIN_ROOT / "schemas" / "validate.py"
 
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
@@ -214,14 +213,6 @@ class SyntheticWorkspace:
         """Run ``mc.py`` as a subprocess. Returns ``CompletedProcess`` (bytes)."""
         return subprocess.run(
             [sys.executable, str(MC)] + [str(item) for item in argv],
-            capture_output=True,
-            cwd=str(cwd or self.root),
-        )
-
-    def run_shim(self, *argv, cwd=None):
-        """Run the deprecated ``schemas/validate.py`` shim as a subprocess."""
-        return subprocess.run(
-            [sys.executable, str(SHIM)] + [str(item) for item in argv],
             capture_output=True,
             cwd=str(cwd or self.root),
         )

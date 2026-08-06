@@ -2,11 +2,11 @@
 
 An **optional** interaction convention. When loaded into context at Claude Code start, it
 tells Claude to emit structured `<chat-form>` XML blocks for decision questions whose answers
-fit a small, fixed option set — instead of numbered prose lists. It is consumed by clients that
-can render the forms; clients that cannot degrade gracefully to the raw markdown.
+fit a small, fixed option set — instead of numbered prose lists. Clients that can't render the
+forms degrade gracefully to the raw markdown.
 
-This is most useful during interactive brainstorming and clarification (e.g. the `mspec`
-CREATE/UPDATE phases), but applies to any question with a known, bounded option set.
+Most useful during interactive brainstorming and clarification, but applies to any question
+with a known, bounded option set.
 
 ## Rules
 

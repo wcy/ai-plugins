@@ -1,12 +1,11 @@
 # Schemas
 
-Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts. They are the
-source of truth for the *shape* of every automated file, complementing the prose standards in
-`../shared/` (which remain the source of truth for *content and conventions*).
+Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts — source of truth for
+the *shape* of every automated file. `../shared/` holds the prose standards for *content and
+conventions*.
 
-This module is **purely declarative**: ten JSON documents plus this `README.md`, and no executable
-code. The `validate.py` file sitting in this directory is the deprecated compatibility shim; it
-belongs to `../tools/`, not to this module.
+This module is **purely declarative**: ten JSON documents plus this `README.md`, no executable
+code.
 
 ## Kinds and aliases
 
