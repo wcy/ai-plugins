@@ -1,12 +1,12 @@
 # Spec Standards
 
-Standards for writing and updating specification files in a multi-repo workspace. Referenced by prompt files — this is the single source of truth.
+Standards for spec files in a multi-repo workspace. Referenced by prompt files as the single source of truth.
 
 ---
 
 ## Multi-Repo Workspace Layout
 
-A workspace describes **several related repositories** plus a **shared interface contract layer**. The workspace root is the directory Claude Code is run from. The **spec is split per repository** under `context/`; plans and output are global under `context/project/`; source code lives under `repos/`.
+A workspace holds **several related repositories** plus a **shared interface contract layer**. The workspace root is where Claude Code runs. The **spec is split per repository** under `context/`; plans and output are global under `context/project/`; source code lives under `repos/`.
 
 ```
 <workspace>/
@@ -72,7 +72,7 @@ The `context/shared/spec/` tree is the **contract layer** of the workspace. A sh
 | `<IFACE>-DATAMODEL.md` | The shared types, schemas, enums, and constants that cross the boundary |
 | `<IFACE>-INTERFACE.md` | The public contract: function signatures, endpoint schemas, event names/payloads |
 
-Shared interface modules **must not** contain `IMPLEMENTATION` or `TESTING` facets. Implementation and conformance tests belong to the repositories that produce or consume the contract — keeping `shared/` implementation-free is what prevents two repos from coupling to each other's internals. If a contract needs conformance tests, specify them in the consuming/producing repo's own `<TAG>-TESTING.md`.
+Shared interface modules **must not** contain `IMPLEMENTATION` or `TESTING` facets — those belong to the repos that produce or consume the contract; keeping `shared/` implementation-free prevents repos from coupling to each other's internals. Contract conformance tests go in the consuming/producing repo's own `<TAG>-TESTING.md`.
 
 **Consumption is declared, not inferred:**
 
@@ -93,13 +93,13 @@ Every spec file must begin with a **depends-on** comment listing files it depend
 <!-- depends-on: context/repo-a/spec/COMMON/COMMON-STACK.md, context/repo-a/spec/AUTH/AUTH-INTERFACE.md, context/shared/spec/EVENT-BUS/EVENT-BUS-INTERFACE.md -->
 ```
 
-This enables an implementing agent to know exactly which files to load into context. A dependency on a `context/shared/spec/<IFACE>/<IFACE>-INTERFACE.md` path is the **only** sanctioned cross-repo coupling — see "Dependency Rules" below.
+This tells an implementing agent exactly which files to load. A dependency on a `context/shared/spec/<IFACE>/<IFACE>-INTERFACE.md` path is the **only** sanctioned cross-repo coupling — see "Dependency Rules" below.
 
 ---
 
 ## Project Overview Document
 
-Every repo's spec suite must include `context/<repo>/spec/COMMON/COMMON-OVERVIEW.md`. This is the **entry point for that repository's spec** — a README-style document that gives a reader (human or agent) enough context to understand the product before diving into module specs. It should also name the shared interfaces the repo produces or consumes and point to `context/shared/spec/`.
+Every repo's spec suite must include `context/<repo>/spec/COMMON/COMMON-OVERVIEW.md`. This is the **entry point for that repository's spec** — a README-style document giving a reader (human or agent) enough context to understand the product before diving into module specs. It should also name the shared interfaces the repo produces or consumes and point to `context/shared/spec/`.
 
 ### Purpose
 
@@ -147,8 +147,8 @@ Reference CATALOG.yaml for the authoritative layer list.
 
 - **Length:** 200–500 lines. Long enough to be genuinely useful; short enough to fit in context.
 - **Audience:** An engineer starting to implement the system from scratch, and an AI agent about to generate code.
-- **Do not duplicate** module-level detail. If something is covered in a module OVERVIEW or INTERFACE, reference that file — don't copy it.
-- **Stays current:** When a new module is added or a lifecycle changes, `COMMON-OVERVIEW.md` must be updated.
+- **Do not duplicate** module-level detail — if something is covered in a module OVERVIEW or INTERFACE, reference that file instead.
+- **Stays current:** update `COMMON-OVERVIEW.md` when a module is added or a lifecycle changes.
 - **No `depends-on` front-matter required** — this file is the root; nothing precedes it.
 
 ---
@@ -197,7 +197,7 @@ Each file type has a **facet** determining its role in the dependency chain:
 
 ## Layer Tags (Vertical Axis)
 
-Modules are organized into implementation layers. Shared interface specs sit **above** every repo's layers — they are the contract altitude that all participating repos depend on:
+Modules are organized into implementation layers. Shared interface specs sit **above** every repo's layers — the contract altitude every participating repo depends on:
 
 | Layer | Description | Example Modules |
 |-------|-------------|-----------------|
@@ -312,26 +312,25 @@ Applies to all E2E tests (module-level and project-level):
 - **Cover the primary user workflows** as defined in `COMMON-OVERVIEW.md`.
 
 **Delivery.** This section **owns** the four rules above. A story agent's loaded context is only its
-own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file — so the rules
-are **delivered** to an executing story agent by **injection** into `shared/PLAN-STORY-TEMPLATE.md`
-at render time, at both `INJECT:E2E-HARD-RULES` markers (**Post-Story Validation** and **Final
-Validation**, gated on an E2E module existing in the catalog). `mc.py plan story-emit` performs the
-injection, reading the four bullets from this section. The delivered copy is generated, never
-maintained by hand, so it cannot diverge from this section — edit the rules here and every story
-emitted afterwards carries the edit.
+own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file. The rules reach
+it by **injection** into `shared/PLAN-STORY-TEMPLATE.md` at render time, at both
+`INJECT:E2E-HARD-RULES` markers (**Post-Story Validation** and **Final Validation**, gated on an E2E
+module existing in the catalog). `mc.py plan story-emit` performs the injection, reading the four
+bullets from this section. The delivered copy is generated, never hand-maintained, so editing the
+rules here updates every story emitted afterwards.
 
 ---
 
 ## Process & Ordering Rules
 
-1. Write **shared interface specs before the repos that depend on them** (repos reference them).
-2. Write **COMMON files before module files** (modules reference them).
+1. Write **shared interface specs before the repos that depend on them**.
+2. Write **COMMON files before module files**.
 3. Write **modules by layer order:** L1-core → L2-services → L3-orchestration → L4-ui → L5-integration.
 4. Within each module, write **files by facet order:** OVERVIEW → DATAMODEL → INTERFACE → DEPENDENCIES → IMPLEMENTATION → TESTING (DEPENDENCIES may be written any time before IMPLEMENTATION).
 5. **Validate cross-references:** every `depends-on` path must point to a file that actually exists. Run `mc.py check depends-on <target>`.
 6. **Validate coupling rules:** IMPLEMENTATION files must never depend on another module's IMPLEMENTATION — only INTERFACE files. Cross-repo `depends-on` paths must point only into `context/shared/spec/` (never into another repo). Run `mc.py check coupling <target>`.
 7. **Keep `shared_interfaces` honest:** every TAG listed in a repo's catalog must correspond to at least one `depends-on` on the shared `*-INTERFACE.md`, and vice versa. Run `mc.py check coupling <target>`.
-8. **Keep OVERVIEW and COMMON files concise.** They are context-injected into every related task. Verbose shared files waste token budget for implementing agents.
+8. **Keep OVERVIEW and COMMON files concise** — they are context-injected into every related task, and verbose shared files waste token budget for implementing agents.
 
 Rules 1–4 and 8 govern how you write. Rules 5–7 are mechanical checks: invoke the checker named
 above rather than re-reading paths and catalog entries by hand — `mc.py check all <target>` runs all

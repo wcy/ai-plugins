@@ -6,19 +6,18 @@ description: Use when generating a spec from an existing codebase, reconciling a
 # Spec: Reverse-Engineer From Code
 
 Takes existing source code as ground truth and produces or reconciles the spec in
-`context/<repo>/spec/`, using a team of agents to read the code in parallel. Unlike `mspec`, there
-is no brainstorm and no described change — every claim in the output spec must be traceable to
-code an agent actually read.
+`context/<repo>/spec/`, using a team of agents to read the code in parallel. There is no brainstorm
+and no described change — every claim in the output spec must be traceable to code an agent
+actually read.
 
 **Spec reconciliation is per-repo** — the spec is split per repo, so the reconcile phases run once
-per repo (and `mreverse` never authors `context/shared/spec/` — see "What mreverse does NOT do").
-But `mreverse` now also **documents inconsistencies within and between repos**: run it against one
-repo to reconcile that repo's spec and report its **intra-repo** inconsistencies (self-contradiction,
-drift between modules, dead / duplicated-but-divergent code); run it against **two or more repos**
-(or "the whole workspace") to additionally run a **cross-repo inconsistency pass** (Phase 5) that
-compares the repos' *actual code* across shared boundaries and reports where they disagree. It
-documents inconsistencies and reconciles each repo's spec; it does **not** auto-rewrite one repo's
-code to match another.
+per repo (`mreverse` never authors `context/shared/spec/` — see "What mreverse does NOT do"). It also
+**documents inconsistencies within and between repos**: run against one repo to reconcile that
+repo's spec and report its **intra-repo** inconsistencies (self-contradiction, drift between
+modules, dead / duplicated-but-divergent code); run against **two or more repos** (or "the whole
+workspace") to additionally run a **cross-repo inconsistency pass** (Phase 5) comparing the repos'
+*actual code* across shared boundaries. It documents inconsistencies and reconciles each repo's
+spec; it does **not** rewrite one repo's code to match another.
 
 ## Mechanical Steps Are Invoked, Not Re-Derived
 
@@ -40,10 +39,9 @@ Candidate targets are the subdirectories of `repos/`. Resolve in order:
 3. If ambiguous, list every subdirectory of `repos/` and ask which one(s) to target. If the user
    says "everything" / "the whole workspace", the scope is **all** repos.
 
-**Multi-repo scope.** Spec reconciliation is per-repo, so run **Phases 1–4b once per in-scope repo**
-(independently — each repo's spec is self-contained). When **two or more** repos are in scope, then
-run **Phase 5** once at the end: the cross-repo inconsistency pass over all of them. A single-repo
-run stops after Phase 4b (its intra-repo inconsistencies are recorded there).
+**Multi-repo scope.** Run **Phases 1–4b once per in-scope repo**, independently — each repo's spec
+is self-contained. With **two or more** repos in scope, also run **Phase 5** once at the end (the
+cross-repo inconsistency pass). A single-repo run stops after Phase 4b.
 
 **Path convention for the rest of this skill:** `context/spec/...` below is shorthand for
 `context/<repo>/spec/...` for the repo whose Phase 1–4b pass you are currently running.
@@ -74,7 +72,7 @@ elsewhere is a question to ask before Phase 1, not a mode to work around.
    directory structure, entry points (main files, CLI commands, HTTP routers, package manifest),
    and existing test directories. This is reconnaissance, not a deep read.
 2. From that map, propose a candidate module decomposition — inferred from the code's actual
-   package/directory boundaries, not a designed architecture. Present it the same way mspec does:
+   package/directory boundaries, not a designed architecture. Present it as:
 
    ```
    | Module (TAG) | Layer | Source Dirs | Depends On | Purpose (inferred) |
@@ -218,10 +216,9 @@ fix is a separate `mspec` → `mexecute` cycle.
 
 ## Phase 5: Cross-Repo Inconsistency Pass (two or more repos only)
 
-**Skip this phase for a single-repo run.** When two or more repos are in scope, after each repo's
-Phases 1–4b are complete, compare the repos' *actual code* across the boundaries they share. This is
-the pass that lifts mreverse's former single-repo limit — inter-repo findings belong to **no single
-repo**, so they are recorded at the **workspace level**.
+**Skip this phase for a single-repo run.** With two or more repos in scope, after each repo's
+Phases 1–4b complete, compare the repos' *actual code* across the boundaries they share. Inter-repo
+findings belong to **no single repo**, so they are recorded at the **workspace level**.
 
 1. **Find the shared boundaries.** From each repo's `context/<repo>/spec/CATALOG.yaml`
    `shared_interfaces` (and any direct cross-repo calls a Phase 2 reader flagged), list the
@@ -250,9 +247,9 @@ repo**, so they are recorded at the **workspace level**.
    Because these findings cross repo boundaries, they live under `context/project/` (the workspace
    level), not in any one repo's spec tree.
 
-4. **Report** the cross-repo findings to the user by boundary, and state plainly that mreverse
-   **documents** them — it does not rewrite either repo's code to force agreement (that's a
-   deliberate `mspec` cascade → `mexecute` decision).
+4. **Report** the cross-repo findings to the user by boundary. mreverse **documents** them — it
+   does not rewrite either repo's code to force agreement (a deliberate `mspec` cascade →
+   `mexecute` decision).
 
 ---
 
@@ -264,9 +261,9 @@ repo**, so they are recorded at the **workspace level**.
 - **No code changes.** `repos/<repo>/` is read-only input — including in the Phase 5 cross-repo pass,
   which reads both sides of a boundary but rewrites neither.
 - **No authoring the `shared` spec.** mreverse reconciles each **repo's** spec and, in Phase 5,
-  *reads* across repos to detect inconsistencies — but it never writes `context/shared/spec/`. The
-  shared contract layer is a designed agreement, not something to reverse-engineer from one repo's
-  code; use `mspec` to author or change it.
+  *reads* across repos to detect inconsistencies, but never writes `context/shared/spec/`. The
+  shared contract layer is a designed agreement, not something to reverse-engineer from code; use
+  `mspec` to author or change it.
 - **No forcing agreement.** It documents cross-repo inconsistencies; it does not edit one repo's code
   to match another. Resolving a real inconsistency is a deliberate `mspec` cascade → `mexecute` cycle.
 - **No invented lifecycles or features.** Every claim must trace back to code an agent actually
@@ -274,6 +271,6 @@ repo**, so they are recorded at the **workspace level**.
 
 ## Asking Questions
 
-Same convention as `mspec`: ask as plain markdown prose and proceed only after the user answers.
-If `${CLAUDE_PLUGIN_ROOT}/shared/CHATFORM.md` is loaded into context (opt-in via `@import`), follow
-it for fixed-option questions; otherwise plain prose is expected.
+Ask as plain markdown prose and proceed only after the user answers. If
+`${CLAUDE_PLUGIN_ROOT}/shared/CHATFORM.md` is loaded into context (opt-in via `@import`), follow it
+for fixed-option questions; otherwise plain prose is expected.

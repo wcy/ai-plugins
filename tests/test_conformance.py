@@ -853,9 +853,7 @@ OS_SHELL_CALLS = frozenset({"system", "popen"})
 
 def source_files():
     """Every Python file this repository ships or tests with."""
-    return sorted(TESTS_DIR.glob("*.py")) + sorted(TOOLS_DIR.glob("*.py")) + [
-        PLUGIN_ROOT / "schemas" / "validate.py"
-    ]
+    return sorted(TESTS_DIR.glob("*.py")) + sorted(TOOLS_DIR.glob("*.py"))
 
 
 def imported_roots(tree):

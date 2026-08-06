@@ -5,40 +5,39 @@ description: Use when tracked project artifacts (plan/state/catalog YAML, change
 
 # Migrate: Bring Every Tracked Artifact Into Schema and Identifier Conformance
 
-`mverify` asks *does the code match what the spec says?* `mfix` decides, per finding, which of
-the two is right and repairs it. Neither ever asks the more basic question this skill answers:
-**is the artifact itself well-formed** — does it parse and validate against its own JSON Schema,
-does its filename and id follow `STANDARD-REQ.md`/`STANDARD-CHANGE.md`, and do its cross-references
-actually resolve? A `plan.yaml` with a typo'd `run:` field, a `CHANGE-004` front-matter block that
-says `change: 4`, a `REQ-001` heading duplicated by a copy-paste, a `depends-on` line still pointing
-at a file that was renamed a month ago — none of these are spec-vs-code drift, and none of them
-need new architecture. They are bookkeeping defects in artifacts everyone already agreed the shape
-of. `mmigrate` finds every one of these across the whole tracked tree — not just the file another
-skill happened to be touching — and repairs it at the root cause.
+This skill answers one question: **is the artifact itself well-formed** — does it parse and
+validate against its own JSON Schema, does its filename and id follow
+`STANDARD-REQ.md`/`STANDARD-CHANGE.md`, and do its cross-references actually resolve? A `plan.yaml`
+with a typo'd `run:` field, a `CHANGE-004` front-matter block that says `change: 4`, a `REQ-001`
+heading duplicated by a copy-paste, a `depends-on` line pointing at a file renamed a month ago —
+none of these are spec-vs-code drift, and none need new architecture. They are bookkeeping defects
+in artifacts everyone already agreed the shape of. `mmigrate` finds every one of these across the
+whole tracked tree — not just the file another skill happened to be touching — and repairs it at
+the root cause.
 
 **`mmigrate` never writes spec, requirement, or code content.** It makes existing, already-intended
-content conform to its declared shape and cross-reference it correctly. A fix that would require
-inventing a `Need`, a `Rationale`, a coupling decision, or which of two duplicate ids is the real
-one is not this skill's to make — it is recorded as deferred, never guessed.
+content conform to its declared shape and cross-reference correctly. A fix that would require
+inventing a `Need`, a `Rationale`, a coupling decision, or deciding which of two duplicate ids is
+real is not this skill's to make — record it as deferred, never guess.
 
 ## Invoking the Tool
 
 Every mechanical step — resolving the target list, validating an artifact against its schema,
 sweeping depends-on/catalog/requirements links — is a single invocation of
 `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`, never a procedure re-derived from prose. A schema
-`FAIL` or a `check` finding is not a hard error here — it is the defect this skill exists to
-close, and the run continues past it to the next artifact. An invocation that exits `2` (a bad
-kind, an escaped path, an unparseable file) *is* a hard error: report the diagnostic and move on to
-the next artifact rather than guessing at what it meant.
+`FAIL` or a `check` finding is not a hard error here — it's the defect this skill exists to close,
+and the run continues past it to the next artifact. An invocation that exits `2` (a bad kind, an
+escaped path, an unparseable file) *is* a hard error: report the diagnostic and move on rather than
+guessing at what it meant.
 
-Discovering *which files exist* has no dedicated verb — that part is plain shell (`find`, `ls`).
-Deciding *whether a file is well-formed, or what "well-formed" even means* is never re-derived by
-hand; it is always the schema, `req`/`change`'s own parsers, or `check`'s rules.
+Discovering *which files exist* has no dedicated verb — use plain shell (`find`, `ls`). Deciding
+*whether a file is well-formed* is never re-derived by hand; it is always the schema,
+`req`/`change`'s own parsers, or `check`'s rules.
 
 ## Step 0: Build the Artifact Inventory
 
 Get the canonical target list from the tool, not a hand-rolled directory listing — it is exactly
-the set `check`/`spec` themselves walk:
+the set `check`/`spec` walk:
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py --json check all
@@ -58,19 +57,18 @@ or `shared` if this workspace has one). Then enumerate every schema-bearing inst
 | `req-change-frontmatter` | `context/<tier>/requirements/changes/REQ-CHANGE-*.md` for every tier, **including the `project` tier** |
 
 A tier with no directory (no `context/project/requirements/`, no `shared` target, no
-`requirements/changes/` subdirectory) is absent, not defective — skip it without a finding, the same
-rule `TOOLS-IMPLEMENTATION.md` states for a workspace with no `context/shared/` tree.
+`requirements/changes/` subdirectory) is absent, not defective — skip it without a finding, per
+`TOOLS-IMPLEMENTATION.md`'s rule for a workspace with no `context/shared/` tree.
 
-**Scope stays `context/**`.** The inventory above is everything tracked under `context/**`. The
-plugin's own source tree — `SKILL.md` files, `shared/*.md`, `schemas/`, `tools/` — is out of scope
-for this sweep, even where those files (`STANDARD-REQ.md` included) describe the very identifier
-formats this skill polices. Migrating the plugin's own copies is a spec change shipped through
-`mplan`/`mexecute` like any other source edit, never something a conformance sweep reaches into.
+**Scope stays `context/**`.** The plugin's own source tree — `SKILL.md` files, `shared/*.md`,
+`schemas/`, `tools/` — is out of scope, even where those files (`STANDARD-REQ.md` included)
+describe the identifier formats this skill polices. Migrating the plugin's own copies is a spec
+change shipped through `mplan`/`mexecute`, never something a conformance sweep reaches into.
 
 ## Step 1: Schema Conformance
 
-Validate every instance from the inventory against its kind. Batch same-kind files into one call;
-a missing file fails that file alone and does not abort the batch:
+Validate every inventoried instance against its kind. Batch same-kind files into one call — a
+missing file fails only that file, not the batch:
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate project-state context/project/state.yaml
@@ -86,8 +84,8 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate req-change context/<tier>/req
 `change`, and `req-change` are aliases for `requirements-frontmatter`, `change-frontmatter`, and
 `req-change-frontmatter`.)
 
-Every `FAIL` line names the JSON-Schema location and message — that is the fix target, taken
-verbatim, not re-derived by reading the schema again.
+Every `FAIL` line names the JSON-Schema location and message — that's the fix target, taken
+verbatim, not re-derived from the schema.
 
 ## Step 2: Repair Schema Violations — Shape Only
 
@@ -102,7 +100,7 @@ For each `FAIL`, make the **minimal, mechanically-derivable** correction and re-
 - An unrecognized key that is an obvious typo of a real one (`stauts` for `status`) — rename it.
 
 **Never** invent substantive content — a `Need`, a `Rationale`, a `Title`, which `status` a change
-document should carry — to make a required-field check pass. That is content, not shape, and
+document should carry — to make a required-field check pass. That's content, not shape, and
 belongs to `mreq`/`mspec`/a human. Mark it deferred with the exact schema error, and move on.
 
 ## Step 3: REQ Identifiers
@@ -140,14 +138,12 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py req mnemonic "<Title>"
 ```
 
 **Append the returned candidate verbatim.** The tool permits its caller to substitute a different
-word choice; this skill does not exercise that permission. Picking words other than the ones the
-mechanical rule chose is authoring, and a sweep does not author — that judgement belongs to `mreq`.
-What remains here is a transform of content the artifact already contains, the same class as
-zero-padding an id above, and deterministic besides: the candidate is a pure function of the title,
-asserted in `tests/test_determinism.py` rather than promised here. `<NNN>` is preserved unchanged
-throughout: nothing here is a renumber, which is exactly what makes the migration legal under
-`STANDARD-REQ.md`'s stability rule — that rule prohibits reassigning an id to a different
-requirement, not editing a heading's mnemonic.
+word choice; this skill does not exercise that permission. Picking different words is authoring,
+which belongs to `mreq`, not a sweep. This is a transform of content the artifact already
+contains — deterministic, a pure function of the title, asserted in `tests/test_determinism.py`.
+`<NNN>` is preserved unchanged throughout: this is not a renumber, which is what makes the
+migration legal under `STANDARD-REQ.md`'s stability rule — that rule prohibits reassigning an id to
+a different requirement, not editing a heading's mnemonic.
 
 A `<Title>` the tool reports `E_NO_MNEMONIC` for (absent, or with fewer than two significant words)
 is **deferred to `mreq`** and reported `deferred` in the run report with `mreq` named as owner of the
@@ -164,9 +160,7 @@ heading's mnemonic.
 check: `mc.py check requirements <target>` reports `W_STALE_REQ_MNEMONIC` when a reference's
 mnemonic disagrees with the heading it resolves to. Resolve it in **one direction only** — rewrite
 the disagreeing **reference** to match the heading. **Never** rewrite the heading to match the
-reference. The heading is where the requirement is defined; a reference is only a pointer to it, and
-letting a stale reference rename a live requirement's mnemonic is exactly what keeping the number as
-the identity was meant to prevent.
+reference. The heading is where the requirement is defined; a reference is only a pointer to it.
 
 ## Step 4: CHANGE / PROJECT-CHANGE / REQ-CHANGE Identifiers
 
@@ -238,7 +232,7 @@ itself, or it does not — there is no third case:
   zero-padding typo of a real id, correct it; if it names nothing real, remove it and say so.
 - **Orphan `REQ-<NNN>`** (exists, referenced by no module) → **do not** delete it or invent a
   module reference for it. Whether the requirement still applies, and to what, is content — record
-  it as tracked debt, the same way `mfix` defers missing architecture to `mspec`.
+  it as tracked debt.
 - **Malformed `Exports:` trailer** (the last paragraph begins `Exports:` but violates
   `STANDARD-SPEC.md`'s grammar — a parenthetical, an unbackticked token, a missing terminal period,
   a repeated token) → drop only what the grammar forbids and keep every backticked token exactly as
@@ -305,4 +299,4 @@ same id or number (a genuine duplicate, not a mismatch with one clear answer); a
 field demands content no source states; or an outward-facing action is needed — publishing,
 pushing, or deleting — which is confirmed unless already authorised. Every id-format,
 filename-agreement, and reference-integrity repair this skill exists for is mechanical and made
-without asking, the same way `mfix` makes its code-vs-spec calls without a menu.
+without asking.

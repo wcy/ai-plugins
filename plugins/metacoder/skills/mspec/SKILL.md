@@ -5,33 +5,33 @@ description: Use when creating a new specification OR updating an existing one f
 
 # Spec: Create or Update
 
-A workspace holds **several related repositories** plus a **shared interface contract layer**. The workspace root is the directory Claude Code is run from. Before anything else, resolve **which target** you are speccing, then detect the **mode** (CREATE vs UPDATE), then follow the matching path.
+A workspace holds **several related repositories** plus a **shared interface contract layer**. The workspace root is the directory Claude Code runs from. Resolve **which target** you are speccing, then detect the **mode** (CREATE vs UPDATE), then follow the matching path.
 
-**Where the standards live.** The spec/change standards ship with the plugin, not the project. Reference them at `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` — `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime to the plugin's marketplace-cache location, so it resolves wherever Claude Code is running without any files being copied into the project's `.claude/`. Every "Load now" instruction below names the full `${CLAUDE_PLUGIN_ROOT}/shared/…` path; load lazily, only when you reach that step.
+**Where the standards live.** Standards ship with the plugin, not the project: `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md`. `${CLAUDE_PLUGIN_ROOT}` resolves at runtime to the plugin's marketplace-cache location — no files are copied into the project's `.claude/`. Every "Load now" instruction below names the full `${CLAUDE_PLUGIN_ROOT}/shared/…` path; load lazily, only when you reach that step.
 
-**Mechanical steps are invoked, not restated.** Every step of this skill whose outcome follows from its inputs alone — mode detection, the requirements gate, change sequencing, change-document emission, cascade-target lookup, and every mechanical checklist item — has exactly one implementation, in `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Call it; never re-derive it in prose. **A failed `mc.py` invocation is a hard error: report it and halt the phase. There is no prose fallback**, because a fallback is a second implementation of the same step. This rule is stated once and applies to every invocation below. The judgment steps — the brainstorm, the Risk & Ambiguity Scan, the approval gate, and the Phase 5 cascade fan-out — stay yours.
+**Mechanical steps are invoked, not restated.** Steps whose outcome follows from their inputs alone — mode detection, the requirements gate, change sequencing, change-document emission, cascade-target lookup, and every mechanical checklist item — have exactly one implementation: `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Call it; never re-derive it in prose. **A failed `mc.py` invocation is a hard error: report it and halt the phase.** There is no prose fallback — a fallback would be a second implementation of the same step. This rule applies to every invocation below. Judgment steps — the brainstorm, the Risk & Ambiguity Scan, the approval gate, and the Phase 5 cascade fan-out — stay yours.
 
 ## Two Separable Stages (Diagnostic → Write)
 
-`mspec` runs in two cleanly separable stages. Keeping them separate is a **hard requirement**, because `/mquick` reuses each independently:
+`mspec` runs in two cleanly separable stages. Keeping them separate is a **hard requirement**:
 
-- **Stage 1 — Diagnostic / Clarify.** Everything up to and including "Confirm Before Writing" (each mode's **Phase 1**). It **writes no files**: it resolves the target, diagnoses the change/product, runs the **Risk & Ambiguity Scan** (below), surfaces every question the user should answer, and iterates until they're resolved. This is the stage `/mquick` invokes at its single clarification gate.
-- **Stage 2 — Write.** Everything after approval (each mode's **Phase 2** onward): the spec files, the change documents, validation, and (for `shared`) the cascade. `/mquick` invokes this after the gate, unattended.
+- **Stage 1 — Diagnostic / Clarify.** Everything up to and including "Confirm Before Writing" (each mode's **Phase 1**). **Writes no files**: resolves the target, diagnoses the change/product, runs the **Risk & Ambiguity Scan** (below), surfaces every question the user should answer, and iterates until they're resolved.
+- **Stage 2 — Write.** Everything after approval (each mode's **Phase 2** onward): the spec files, the change documents, validation, and (for `shared`) the cascade.
 
 The stage boundary is the "**Get explicit user approval before moving to Phase 2**" line in each mode. Do not write any file before it; do not re-ask for approval after it.
 
 ### Risk & Ambiguity Scan (runs in Stage 1, both modes)
 
-As part of the diagnostic — after you've synthesized what's changing but **before** "Confirm Before Writing" — dispatch a **single risk-scan subagent** (context-efficient: it reads the relevant specs/change description, not the whole workspace) that returns a **ranked list of decisions a human should make** before code gets written. It looks specifically for:
+After you've synthesized what's changing but **before** "Confirm Before Writing," dispatch a **single risk-scan subagent** (context-efficient: reads the relevant specs/change description, not the whole workspace) that returns a **ranked list of decisions a human should make** before code gets written. It looks for:
 
 - **Breaking changes** — signatures/types/endpoints/events that would break existing contracts (and, for `shared`, cascade to consumers).
 - **Data migration** — schema/format changes that need a migration path for existing data.
 - **Security** — auth, secrets, input-validation, or exposure implications.
 - **Ambiguous requirements** — places the description underspecifies behavior.
 - **Dependency choices** — new libraries/services where a preferred option should be picked.
-- **Requirements drift** — a **backstop**, evaluated only when a requirements tier exists for the target: a `REQ-<NNN>` with no corresponding spec coverage, spec content with no traceable requirement, or a `CATALOG.yaml` `requirements:` reference to a `REQ-<NNN>` no longer present in the requirements file. Drift the open `REQ-CHANGE` records already named at Prerequisites is **not** re-reported here — those records are the primary channel; this category only catches drift that predates the record convention or that no record was ever written for.
+- **Requirements drift** — a **backstop**, evaluated only when a requirements tier exists for the target: a `REQ-<NNN>` with no corresponding spec coverage, spec content with no traceable requirement, or a `CATALOG.yaml` `requirements:` reference to a `REQ-<NNN>` no longer present in the requirements file. Drift already covered by the open `REQ-CHANGE` records named at Prerequisites is **not** re-reported here — those records are the primary channel; this category only catches drift predating the record convention, or drift no record was ever written for.
 
-Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. In a gatekept `/mspec` run you present these and iterate as normal; `/mquick` surfaces the exact same list at its Phase A gate. When a **Requirements drift** item surfaces, the Phase 1e "Confirm Before Writing" summary must present the user a per-item choice — widen this change's scope to cover the drifted requirement, or leave it flagged for a later `/mreq` pass to reconcile — since `mspec` never authors content under `context/<repo|shared|project>/requirements/` itself — the one mutation an `mspec` run causes there (closing a `REQ-CHANGE` record, see UPDATE MODE Prerequisites and Phase 3c) is a tool-owned write, not an authoring act.
+Fold the scan's ranked list into the questions you surface in this stage (dedupe against what you already asked). The scan **informs** the clarification; it never writes anything. When a **Requirements drift** item surfaces, the Phase 1e "Confirm Before Writing" summary must present the user a per-item choice — widen this change's scope to cover the drifted requirement, or leave it flagged for a later `/mreq` pass to reconcile. `mspec` never authors content under `context/<repo|shared|project>/requirements/` itself — the one mutation an `mspec` run causes there (closing a `REQ-CHANGE` record, see UPDATE MODE Prerequisites and Phase 3c) is a tool-owned write, not an authoring act.
 
 ## Step 0: Determine the Target
 
@@ -44,7 +44,7 @@ Fold the scan's ranked list into the questions you surface in this stage (dedupe
 
 Change documents are written at **two levels** on every mspec run (see STANDARD-CHANGE.md):
 - **Repo-level:** `context/<repo>/changes/CHANGE-<NNN>-<slug>.md` — one per affected repo, full detail
-- **Project index:** `context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md` — one per mspec run, references repo files, drives mplan
+- **Project index:** `context/project/changes/PROJECT-CHANGE-<NNN>-<slug>.md` — one per mspec run, references repo files
 
 Resolve the target from context, in this order:
 
@@ -79,9 +79,9 @@ Take a requirements description or product idea and produce a complete, implemen
 
 ### Prerequisites
 
-Phase 1 is pure conversation — it writes no files, so do **not** load the standards yet. Defer loading `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` until Phase 2 (Write Spec), where the output must conform to it. This keeps the standard out of context during the (often lengthy) brainstorm.
+Phase 1 is pure conversation — it writes no files. Defer loading `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` until Phase 2 (Write Spec), where the output must conform to it. This keeps the standard out of context during the brainstorm.
 
-**Requirements Gate.** Step 1's `mc.py spec mode <target>` call already returned the gate result for the target's own requirements tier; do not re-check it here. If the gate did not pass, halt before Phase 1a and tell the user to trigger `/mreq <target>` manually first — `mspec` never calls `/mreq` on its own. If it passed, read the target's `REQUIREMENTS.md` and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context, then proceed to Phase 1.
+**Requirements Gate.** Step 1's `mc.py spec mode <target>` call already returned the gate result for the target's own requirements tier; do not re-check it here. If the gate did not pass, halt before Phase 1a and tell the user to run `/mreq <target>` manually — `mspec` never calls `/mreq` on its own. If it passed, read the target's `REQUIREMENTS.md` and, if present, `context/project/requirements/REQUIREMENTS.md` as supplementary cross-cutting context, then proceed to Phase 1.
 
 ### Phase 1: Brainstorm
 
@@ -225,7 +225,7 @@ Phase 1 only diagnoses the change — it modifies nothing. **Defer** loading the
 - Load `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` at the start of Phase 2 (Update Spec Files).
 - Load `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md` at the start of Phase 3 (Write Change Document).
 
-Loading them only when you reach the writing step keeps ~600 lines of standards out of context during the diagnostic phase.
+Loading them only when you reach the writing step keeps ~600 lines out of context during the diagnostic phase.
 
 To understand current state in Phase 1, read only what you need:
 - `context/<repo>/spec/COMMON/COMMON-OVERVIEW.md` — understand the product and current feature set (skip for the `shared` target, which has no COMMON-OVERVIEW requirement)
@@ -465,8 +465,7 @@ Per STANDARD-CHANGE.md → "Shared-Interface Change Cascade", write **separate r
 
 ## Asking Questions
 
-Throughout both modes, ask clarifying/brainstorm questions as plain markdown prose and proceed
-only after the user has answered. If the optional chat-form convention
-(`${CLAUDE_PLUGIN_ROOT}/shared/CHATFORM.md`, opt-in via `@import` — see the README) is loaded into
-context, follow it to render fixed-option questions as `<chat-form>` blocks; if it is not loaded,
-plain prose is the expected behavior.
+Ask clarifying/brainstorm questions as plain markdown prose; proceed only after the user answers.
+If the optional chat-form convention (`${CLAUDE_PLUGIN_ROOT}/shared/CHATFORM.md`, opt-in via
+`@import` — see the README) is loaded into context, render fixed-option questions as
+`<chat-form>` blocks instead; otherwise plain prose is expected.
