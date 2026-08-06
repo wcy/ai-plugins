@@ -624,6 +624,78 @@ def test_the_run_counter_is_read_from_the_file_rather_than_generated(fixture):
 
 
 # ---------------------------------------------------------------------------
+# The story template's two slice fields, rendered deterministically
+# ---------------------------------------------------------------------------
+
+#: The header field ``shared/PLAN-STORY-TEMPLATE.md`` gained with the slice
+#: loop: the delivery slice a story belongs to. It is part of what
+#: ``plan story-emit`` renders, so it is subject to the same promise every
+#: other emission makes -- same workspace bytes, same injected clock, same
+#: output bytes.
+SLICE_HEADER_FIELD = "**Slice:**"
+
+#: The end-to-end section's heading, renamed from
+#: ``## Final Validation (last wave only)``. Pinned here so that renaming it
+#: again without moving the renderer with it fails in this file rather than
+#: silently emitting a story with neither name.
+SLICE_ACCEPTANCE_HEADING = "## Slice Acceptance"
+
+#: The name the section carried before the rename. No rendered story may still
+#: carry it -- two differently-named end-to-end sections would be exactly the
+#: divergence the rename exists to remove.
+RETIRED_ACCEPTANCE_HEADING = "## Final Validation"
+
+
+def rendered_story(workspace, story_id=LAST_STORY):
+    """Emit one story file and return its text.
+
+    :data:`LAST_STORY` by default: the acceptance section is gated, and the
+    fixture's graph declares no ``slices``, so its one synthetic slice spans
+    every wave -- the version-1/2 case whose rendering the rename must leave
+    otherwise unchanged.
+    """
+    result = invoke(workspace, "plan.story-emit", story_id=story_id)
+    assert result.ok, [item.render() for item in result.diagnostics]
+    return workspace.path(result.data["file"]).read_text(encoding="utf-8")
+
+
+def test_the_rendered_story_carries_both_new_template_fields(fixture):
+    """Determinism asserted over an absent field would be vacuously true."""
+    text = rendered_story(fixture)
+    assert text.count(SLICE_HEADER_FIELD) == 1
+    assert text.count(SLICE_ACCEPTANCE_HEADING) == 1
+    assert RETIRED_ACCEPTANCE_HEADING not in text
+
+
+def test_both_new_fields_render_byte_identically_twice(tmp_path):
+    """Build, render, throw the tree away, rebuild identically, render again."""
+    root = tmp_path / "workspace"
+
+    workspace = build(root)
+    first = rendered_story(workspace)
+
+    shutil.rmtree(str(root))
+    workspace = build(root)
+    second = rendered_story(workspace)
+
+    assert first == second
+    assert first.count(SLICE_HEADER_FIELD) == second.count(SLICE_HEADER_FIELD) == 1
+    assert first.count(SLICE_ACCEPTANCE_HEADING) == second.count(SLICE_ACCEPTANCE_HEADING) == 1
+
+
+def test_the_slice_header_is_unconditional_and_the_acceptance_section_is_not(fixture):
+    """The header is on every story; the acceptance section is gated.
+
+    What distinguishes a gated section from a renamed one: a story the gate
+    excludes loses the section while keeping the header field.
+    """
+    text = rendered_story(fixture, story_id=FIRST_STORY)
+    assert SLICE_HEADER_FIELD in text
+    assert SLICE_ACCEPTANCE_HEADING not in text
+    assert RETIRED_ACCEPTANCE_HEADING not in text
+
+
+# ---------------------------------------------------------------------------
 # Filesystem iteration order
 # ---------------------------------------------------------------------------
 

@@ -85,6 +85,36 @@ This declaration is what lets a shared-interface change find its consumers — `
 
 ---
 
+## Spec Depth
+
+A repo module is written at one of two **depths**, recorded as `depth` on its `CATALOG.yaml` module entry:
+
+| Depth | Facets present | Meaning |
+|-------|----------------|---------|
+| `contract` | `OVERVIEW`, `DATAMODEL`, `INTERFACE` | `DEPENDENCIES`, `IMPLEMENTATION` and `TESTING` are **deliberately** unwritten. The module states what it promises; how it keeps that promise is not decided yet. |
+| `full` | all six | Nothing about the module is left to write. |
+
+- **Absence means `full`.** A module entry carrying no `depth` field is `full` — which is exactly what every catalog written before the field existed meant, so introducing it changes no existing catalog's meaning.
+- **Only `contract`-depth modules may have facets missing, and only those three may be the missing ones.** Depth narrows what a module *claims*; it never licenses omitting a facet arbitrarily. A `full` module missing any facet, and a `contract` module missing `OVERVIEW`, `DATAMODEL` or `INTERFACE`, are both `mc.py check catalog` findings.
+- **Deepening is a write, not a discovery.** `mc.py spec depth <target> <module>` reports a module's depth; `--set full` is refused while any of `DEPENDENCIES`, `IMPLEMENTATION` or `TESTING` is still absent, so the field can never claim coverage that is not on disk.
+
+The rule this exists to serve: **a module must be at `contract` depth before anything can be built against it, and is deepened to `full` in the slice that builds it.** Detail written earlier is detail written before the running system could contradict it.
+
+**This is not the same thing as a contract-only shared interface.** A shared interface module has three facets because *a contract has no internals* — it is permanently three, and an `IMPLEMENTATION` or `TESTING` facet there is a defect rather than an unwritten file (see "Shared Interface Specs" above). A repo module at `contract` depth has three *for now*.
+
+---
+
+## Agreement Revision
+
+Each shared interface carries a `revision` — an integer, absent meaning `1` — on its entry in `context/shared/spec/CATALOG.yaml`.
+
+- A cascade that changes the contract **bumps it by one**, via `mc.py spec revision <IFACE> --bump`. Nothing else writes it, and nothing ever lowers it.
+- **Work built against an interface records the revision it saw.** That is what makes "this was written against the old contract" a statement anyone can check rather than an inference from dates: `mc.py spec consumers <IFACE> --stale` returns the delivered stories whose recorded revision is below the interface's current one.
+
+`revision` and `depth` are both **preserved, not derived** across catalog emissions — alongside `layer`, `requirements`, `exports` and `shared_interfaces`. Neither can be read off the spec tree: an absent `IMPLEMENTATION` file is indistinguishable from an unwritten one, and a revision is a fact about what consumers were told, not about what is on disk today.
+
+---
+
 ## Front-Matter (Cross-References)
 
 Every spec file must begin with a **depends-on** comment listing files it depends on. Paths are workspace-relative and may point inside the repo or into the shared contract layer:
@@ -265,6 +295,7 @@ layers:
 modules:
   <TAG>:
     layer: <layer-name>
+    depth: contract | full        # optional; absent means full -- see "Spec Depth"
     files:
       - path: context/<repo>/spec/<TAG>/<TAG>-<FACET>.md
         facet: <facet-name>
@@ -285,6 +316,7 @@ scope: shared
 
 interfaces:
   <IFACE>:
+    revision: <integer>           # optional; absent means 1 -- see "Agreement Revision"
     files:
       - path: context/shared/spec/<IFACE>/<IFACE>-<FACET>.md   # facet ∈ {overview, datamodel, interface}
         facet: <facet-name>
@@ -314,7 +346,7 @@ Applies to all E2E tests (module-level and project-level):
 **Delivery.** This section **owns** the four rules above. A story agent's loaded context is only its
 own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file. The rules reach
 it by **injection** into `shared/PLAN-STORY-TEMPLATE.md` at render time, at both
-`INJECT:E2E-HARD-RULES` markers (**Post-Story Validation** and **Final Validation**, gated on an E2E
+`INJECT:E2E-HARD-RULES` markers (**Post-Story Validation** and **Slice Acceptance**, gated on an E2E
 module existing in the catalog). `mc.py plan story-emit` performs the injection, reading the four
 bullets from this section. The delivered copy is generated, never hand-maintained, so editing the
 rules here updates every story emitted afterwards.
