@@ -5,7 +5,8 @@
     mc.py state set-story <plan-id> <story-id> --status <s> [--attempt <n>]
                                                [--branch <b>] [--worktree <w>]
     mc.py state conformance <plan-id> --status <s> --report <path> --findings <n>
-    mc.py state telemetry <plan-id> --cost <usd> --tokens <n> --wall-clock <s>
+    mc.py state telemetry <plan-id> [--cost <usd>] [--tokens <n>]
+                                    [--wall-clock <s>]
 
 Five verbs over exactly two files -- ``context/project/plans/<plan-id>/state.yaml``
 and the ledger ``context/project/state.yaml`` -- and one shared write path
@@ -17,8 +18,12 @@ memory, and a result that would not validate is refused with **nothing
 persisted** -- so a malformed write can never reach disk. The replacement is a
 temp-file-then-rename, so a crash mid-write cannot truncate the file either.
 
-Two consequences worth stating outright:
+Three consequences worth stating outright:
 
+* ``set-story`` derives the containing wave's status from its stories and writes
+  it in that same call, for the same reason ``set-plan`` writes two files at
+  once: a position maintained separately from what it is a position *of* is a
+  position that can disagree with it. The mapping is :func:`wave_status`.
 * ``set-plan`` writes ``state.yaml`` *and* the ledger in the same call, and
   validates both before either is written. Leaving the two disagreeing is the
   failure this command exists to prevent. No verb touches another plan's ledger
@@ -40,7 +45,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools import core
 
@@ -74,6 +79,10 @@ STATUSES = ("pending", "in-progress", "applied", "failed")
 #: ``conformance.status``, per plan-state.schema.json.
 CONFORMANCE_STATUSES = ("clean", "drift", "not-run")
 
+#: ``waves[].status``, per plan-state.schema.json. The two vocabularies differ
+#: deliberately: a story reaches ``applied``, a wave reaches ``complete``.
+WAVE_STATUSES = ("pending", "in-progress", "complete", "failed")
+
 #: ``--status`` -> ``attempts[].result``. ``pending`` is deliberately absent:
 #: ``result`` has no ``pending`` member, so an attempt recorded against a
 #: ``pending`` story is refused rather than guessed at.
@@ -103,7 +112,13 @@ guarantees:
   set-story derives the two attempts[] fields the CLI does not carry: run from
   the file's top-level counter -- which must already have been incremented, an
   attempt never belonging to run 0 -- and result from --status. --status pending
-  has no legal result and is refused in combination with --attempt.
+  has no legal result and is refused in combination with --attempt. It also
+  derives the containing wave's status from that wave's stories and writes it in
+  the same commit, so the two can never disagree; waves[].status is a record,
+  nothing reads it back.
+
+  telemetry's three flags are all optional. An omitted one is written null,
+  matching plan-state, which requires none of them and types each nullable.
 """
 
 
@@ -198,9 +213,15 @@ def register(subparsers) -> None:
         description="Write state.yaml's telemetry block with the run's rough actuals.",
     )
     telemetry.add_argument("plan_id", metavar="<plan-id>")
-    telemetry.add_argument("--cost", required=True, type=float, metavar="<usd>")
-    telemetry.add_argument("--tokens", required=True, type=int, metavar="<n>")
-    telemetry.add_argument("--wall-clock", required=True, type=float, metavar="<s>")
+    # None of the three is required: plan-state.schema.json gives the telemetry
+    # object no required properties and types every field nullable, and the one
+    # field a CLI flag most insisted on -- cost -- is the one an agent cannot
+    # measure. A required flag satisfiable only by inventing a number is a gate
+    # that cannot be passed honestly, and the observable result was not a loud
+    # failure but an unwritten block.
+    telemetry.add_argument("--cost", default=None, type=float, metavar="<usd>")
+    telemetry.add_argument("--tokens", default=None, type=int, metavar="<n>")
+    telemetry.add_argument("--wall-clock", default=None, type=float, metavar="<s>")
 
 
 def run(args, ws) -> core.Result:
@@ -527,12 +548,75 @@ def _set_story(args, ws, now) -> core.Result:
         data["attempt"] = number
         data["retries"] = story.get("retries")
 
+    _apply_wave_status(state, story)
     state.data["updated"] = now
     written, diagnostics = _commit([state])
     if diagnostics:
         return _refused(command, data, diagnostics)
     data["written"] = written
     return core.Result(command=command, data=data)
+
+
+def wave_status(statuses: Iterable[Optional[str]]) -> str:
+    """The wave status a wave's story statuses reduce to -- the whole mapping.
+
+    Stated once, here, and total: every combination of the four story statuses
+    lands on exactly one of :data:`WAVE_STATUSES`, and the clauses are ordered
+    so that ``failed`` **outranks** ``in-progress`` -- a wave holding one failed
+    and one running story is ``failed``, not ``in-progress``.
+
+    * ``failed`` -- any story is ``failed``
+    * ``complete`` -- every story is ``applied``
+    * ``in-progress`` -- some story has left ``pending``
+    * ``pending`` -- otherwise
+
+    A status the schema does not name (a corrupt file, or a story listed in a
+    wave the ``stories`` map does not hold) is neither ``failed`` nor
+    ``applied``, so it can only hold a wave short of ``complete``; it is never
+    read as progress the run did not make.
+    """
+    values = list(statuses)
+    if any(value == "failed" for value in values):
+        return "failed"
+    if all(value == "applied" for value in values):
+        return "complete"
+    if any(value != "pending" for value in values):
+        return "in-progress"
+    return "pending"
+
+
+def _apply_wave_status(state: Document, story: Dict[str, Any]) -> None:
+    """Set the containing wave's status from its stories, in the caller's write.
+
+    Derived rather than accepted as an argument, and written in the same
+    ``_commit`` as the story it follows from, so no sequence of calls can leave
+    the wave and its stories disagreeing. ``waves[].status`` is a **record, not
+    an input**: ``plan resolve`` derives ``resume_wave`` from the plan graph
+    crossed with the story statuses and does not read this field.
+
+    A story whose ``wave`` matches no ``waves[]`` entry leaves ``waves``
+    untouched and emits no diagnostic. ``plan-state.schema.json`` already
+    requires the entry, so that is a defensive branch for a corrupt file, not a
+    case with behaviour of its own.
+    """
+    number = story.get("wave")
+    waves = state.data.get("waves")
+    stories = state.data.get("stories")
+    if not isinstance(waves, list) or not isinstance(stories, dict):
+        return
+    for entry in waves:
+        if not isinstance(entry, dict) or entry.get("wave") != number:
+            continue
+        # Membership comes from the story records rather than from the wave's
+        # own ``stories`` list: the story just written is one of them by
+        # construction, so the reduction is never over an empty set, and where
+        # the two disagree the records are what a status is a status *of*.
+        entry["status"] = wave_status(
+            member.get("status")
+            for member in stories.values()
+            if isinstance(member, dict) and member.get("wave") == number
+        )
+        return
 
 
 def _record_attempt(
@@ -633,14 +717,20 @@ def _conformance(args, ws, now) -> core.Result:
 
 
 def _telemetry(args, ws, now) -> core.Result:
-    """Write the ``telemetry`` block -- actuals for the run, never estimates."""
+    """Write the ``telemetry`` block -- actuals for the run, never estimates.
+
+    Every field is optional and an omitted one is written ``null``, which is
+    what ``plan-state`` already says. Recording two true fields and one ``null``
+    is strictly better than recording nothing, and it keeps "actuals, never
+    estimates" satisfiable rather than merely stated.
+    """
     command = "%s.telemetry" % COMMAND
     plan_id = _check_plan_id(args.plan_id)
     state = _load_state(ws, plan_id)
     block = {
-        "cost_usd": args.cost,
-        "tokens": args.tokens,
-        "wall_clock_s": args.wall_clock,
+        "cost_usd": getattr(args, "cost", None),
+        "tokens": getattr(args, "tokens", None),
+        "wall_clock_s": getattr(args, "wall_clock", None),
     }
     state.data["telemetry"] = block
     state.data["updated"] = now

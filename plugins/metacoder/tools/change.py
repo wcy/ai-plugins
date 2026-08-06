@@ -476,14 +476,19 @@ def _planned_repo_changes(ws, diagnostics: List[core.Diagnostic]) -> Set[Tuple[s
                 )
             )
             continue
-        body = _section_body(text, REPO_CHANGE_SECTION)
+        body = section_body(text, REPO_CHANGE_SECTION)
         for repo, filename in REPO_CHANGE_REF_RE.findall(body):
             keys.add((repo, filename))
     return keys
 
 
-def _section_body(text: str, title: str) -> str:
-    """The body of the ``## <title>`` section, up to the next ``#``/``##``."""
+def section_body(text: str, title: str) -> str:
+    """The body of the ``## <title>`` section, up to the next ``#``/``##``.
+
+    Public because ``plan scope`` and ``check handoff`` read the same section of
+    the same document and must agree about where it starts and ends. A second
+    copy of this walk in either caller is the duplication CHANGE-020 removes.
+    """
     collected: List[str] = []
     inside = False
     for line in text.splitlines():

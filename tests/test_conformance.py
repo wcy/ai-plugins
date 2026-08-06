@@ -32,10 +32,12 @@ fixture file is committed under the plugin tree.
 import ast
 import fnmatch
 import importlib
+import inspect
 import io
 import json
 import os
 import re
+import shutil
 import sys
 import argparse
 import re
@@ -43,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+import conftest
 from conftest import NOW, PLUGIN_ROOT, REPO_ROOT
 from tools import core, mc, plan
 
@@ -736,6 +739,79 @@ def test_a_full_run_leaves_no_bytecode_under_the_plugin_tree(workspace):
 
     assert list(PLUGIN_ROOT.rglob("__pycache__")) == []
     assert list(PLUGIN_ROOT.rglob("*.pyc")) == []
+
+
+@pytest.fixture
+def planted_bytecode():
+    """A ``__pycache__/<name>.pyc`` under ``PLUGIN_ROOT``, always cleaned up.
+
+    Removal happens in the fixture's teardown rather than in each test, so a
+    test that fails part-way cannot leave the tree dirty for the assertions
+    that follow it.
+    """
+    directory = PLUGIN_ROOT / "tools" / "__pycache__"
+    artifact = directory / "planted.cpython-000.pyc"
+    directory.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"not really bytecode")
+    try:
+        yield artifact
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_the_suite_clears_bytecode_that_was_already_there(planted_bytecode):
+    """A stale artifact from an unrelated interactive probe is removed, not tolerated.
+
+    This is the cleaning half of the rule, exercised where the fixture does it:
+    ``conftest.remove_bytecode`` is what the session-scoped autouse fixture
+    calls before the suite runs.
+    """
+    assert planted_bytecode.exists()
+    removed = conftest.remove_bytecode()
+
+    # It really did have something to do: the whole `__pycache__` went, and the
+    # `*.pyc` inside it went with it.
+    assert planted_bytecode.parent in removed
+    assert not planted_bytecode.exists()
+    assert not planted_bytecode.parent.exists()
+    assert list(PLUGIN_ROOT.rglob("__pycache__")) == []
+    assert list(PLUGIN_ROOT.rglob("*.pyc")) == []
+
+
+def test_the_cleanup_runs_before_the_suite_and_never_after_it():
+    """Order is the whole point, and it is the fixture's shape that fixes it.
+
+    Cleaning on the way in removes the false failure; cleaning on the way *out*
+    would delete exactly what the assertions look for, so the fixture must not.
+    """
+    fixture = conftest.clean_plugin_bytecode
+    marker = fixture._fixture_function_marker
+    assert marker.scope == "session"
+    assert marker.autouse is True
+
+    body = inspect.getsource(fixture._get_wrapped_function())
+    before, _, after = body.partition("yield")
+    assert "remove_bytecode()" in before
+    assert "remove_bytecode" not in after
+
+
+def test_bytecode_produced_during_a_run_still_fails_both_assertions(planted_bytecode):
+    """The fixture must not mask a real violation, so both assertions keep teeth.
+
+    The artifact is planted *after* the session fixture has run -- which is what
+    bytecode written by the run itself would be -- and the two expressions
+    ``test_a_full_run_leaves_no_bytecode_under_the_plugin_tree`` asserts on must
+    both report it.
+    """
+    assert list(PLUGIN_ROOT.rglob("__pycache__")) != []
+    assert list(PLUGIN_ROOT.rglob("*.pyc")) != []
+
+
+def test_the_bytecode_assertions_are_not_relaxed():
+    """The rule is enforced, never retired: the assertions stay unconditional."""
+    body = inspect.getsource(test_a_full_run_leaves_no_bytecode_under_the_plugin_tree)
+    assert 'assert list(PLUGIN_ROOT.rglob("__pycache__")) == []' in body
+    assert 'assert list(PLUGIN_ROOT.rglob("*.pyc")) == []' in body
 
 
 def test_the_entry_point_sets_the_guard_before_importing_the_package():

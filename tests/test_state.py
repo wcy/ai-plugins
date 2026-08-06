@@ -17,6 +17,7 @@ claim about the file, not about the parse of it.
 """
 
 import hashlib
+import inspect
 import io
 import json
 
@@ -31,6 +32,11 @@ OTHER_PLAN_ID = "004-other-plan"
 
 STORY = "01-01-demo-ALPHA"
 ABSENT_STORY = "09-09-demo-ZETA"
+
+#: A second story in the same wave as ``STORY``, and one in a later wave -- the
+#: two the wave mapping needs to be observable at all.
+SIBLING = "01-02-demo-BETA"
+LATER = "02-01-demo-GAMMA"
 
 BRANCH = "mexec/003-demo-plan/01-01-demo-ALPHA/r1/1"
 SECOND_BRANCH = "mexec/003-demo-plan/01-01-demo-ALPHA/r1/2"
@@ -48,27 +54,30 @@ REPORT = "context/project/out/003-demo-plan/mverify-report.json"
 # ---------------------------------------------------------------------------
 
 
-def _draft(*story_ids):
+def _draft(*story_ids, waves=None):
+    """A draft graph; ``waves`` maps a story id to its wave, default 1."""
+    waves = waves or {}
     stories = {}
     for story_id in story_ids:
+        module = story_id.rsplit("-", 1)[-1]
         stories[story_id] = {
             "repo": "demo",
-            "module": "ALPHA",
-            "wave": 1,
+            "module": module,
+            "wave": waves.get(story_id, 1),
             "prerequisites": [],
-            "target_paths": ["src/alpha.py"],
+            "target_paths": ["src/%s.py" % module.lower()],
             "validation": {"post_story": [{"kind": "prose", "description": "it holds"}]},
         }
     return {"stories": stories}
 
 
-def _emit(workspace, plan_id=PLAN_ID, story_ids=(STORY,), now=EARLIER):
+def _emit(workspace, plan_id=PLAN_ID, story_ids=(STORY,), now=EARLIER, waves=None):
     """Seed a plan directory, its ``state.yaml``, and its ledger entry."""
     result = plan.run(
         workspace.args(
             verb="emit",
             plan_id=plan_id,
-            stdin=io.StringIO(json.dumps(_draft(*story_ids))),
+            stdin=io.StringIO(json.dumps(_draft(*story_ids, waves=waves))),
             now=now,
         ),
         workspace.ws,
@@ -105,11 +114,20 @@ def _codes(result):
 
 
 def _changed(before, after, path=()):
-    """Every leaf path whose value differs between two loaded documents."""
+    """Every leaf path whose value differs between two loaded documents.
+
+    Lists are walked by index, so a wave write reads as ``waves/0/status``
+    rather than collapsing the whole block into one opaque ``waves``.
+    """
     if isinstance(before, dict) and isinstance(after, dict):
         differences = set()
         for key in set(before) | set(after):
             differences |= _changed(before.get(key), after.get(key), path + (str(key),))
+        return differences
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        differences = set()
+        for index, (one, other) in enumerate(zip(before, after)):
+            differences |= _changed(one, other, path + (str(index),))
         return differences
     return set() if before == after else {"/".join(path)}
 
@@ -136,6 +154,27 @@ def emitted(workspace):
     """A workspace holding one freshly emitted plan."""
     _emit(workspace)
     return workspace
+
+
+@pytest.fixture
+def two_waves(workspace):
+    """Two stories in wave 1 and one in wave 2 -- enough to see the mapping."""
+    _emit(workspace, story_ids=(STORY, SIBLING, LATER), waves={LATER: 2})
+    return workspace
+
+
+def _waves(workspace, plan_id=PLAN_ID):
+    """``wave number -> status`` as the file on disk holds it."""
+    document = _load(_state_path(workspace, plan_id))
+    return {entry["wave"]: entry["status"] for entry in document["waves"]}
+
+
+def _set(workspace, story_id, status):
+    result, code = _run(
+        workspace, verb="set-story", plan_id=PLAN_ID, story_id=story_id, status=status
+    )
+    assert code == 0 and result.ok, [item.render() for item in result.diagnostics]
+    return result
 
 
 @pytest.fixture
@@ -256,15 +295,26 @@ def test_set_plan_refuses_a_plan_the_ledger_does_not_carry(emitted):
 # ---------------------------------------------------------------------------
 
 
-def test_set_story_status_changes_only_that_story(emitted):
+def test_set_story_changes_only_that_story_and_its_wave(emitted):
+    """The write touches three leaves, and the third is the point.
+
+    ``waves[].status`` is derived from the same stories in the same commit --
+    that is the contract ``set-story`` gained, not a stray write: no other
+    story, and no other wave, is rewritten.
+    """
     before = _load(_state_path(emitted))
     result, code = _run(
         emitted, verb="set-story", plan_id=PLAN_ID, story_id=STORY, status="in-progress"
     )
     assert code == 0 and result.ok
     after = _load(_state_path(emitted))
-    assert _changed(before, after) == {"stories/%s/status" % STORY, "updated"}
+    assert _changed(before, after) == {
+        "stories/%s/status" % STORY,
+        "waves/0/status",
+        "updated",
+    }
     assert after["stories"][STORY]["status"] == "in-progress"
+    assert after["waves"][0]["status"] == "in-progress"
 
 
 def test_set_story_records_an_attempt_with_run_and_result_derived(started):
@@ -426,6 +476,143 @@ def test_set_story_reports_a_story_the_state_file_does_not_hold(started):
 
 
 # ---------------------------------------------------------------------------
+# set-story -- the containing wave, derived and written in the same commit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statuses, expected",
+    [
+        ([], "complete"),  # vacuously: every story of an empty wave is applied
+        (["pending"], "pending"),
+        (["pending", "pending"], "pending"),
+        (["applied"], "complete"),
+        (["applied", "applied"], "complete"),
+        (["in-progress"], "in-progress"),
+        (["applied", "pending"], "in-progress"),
+        (["in-progress", "pending"], "in-progress"),
+        (["failed"], "failed"),
+        (["failed", "pending"], "failed"),
+        (["failed", "applied"], "failed"),
+        # The ranking clause: failed outranks in-progress, in either order.
+        (["failed", "in-progress"], "failed"),
+        (["in-progress", "failed"], "failed"),
+    ],
+)
+def test_the_wave_mapping_is_total_and_failed_outranks_in_progress(statuses, expected):
+    """The whole mapping, exercised where it is stated rather than through a file."""
+    assert state.wave_status(statuses) == expected
+    assert expected in state.WAVE_STATUSES
+
+
+def test_the_wave_mapping_is_stated_in_exactly_one_named_place():
+    """Neither the applier nor the verb re-decides what a wave status is."""
+    for function in (state._set_story, state._apply_wave_status):
+        body = inspect.getsource(function)
+        for status in state.WAVE_STATUSES:
+            assert '"%s"' % status not in body, function.__name__
+    assert callable(state.wave_status)
+
+
+def test_a_wave_is_complete_only_once_every_story_is_applied(two_waves):
+    assert _waves(two_waves) == {1: "pending", 2: "pending"}
+    _set(two_waves, STORY, "applied")
+    assert _waves(two_waves)[1] == "in-progress"  # SIBLING is still pending
+    _set(two_waves, SIBLING, "applied")
+    assert _waves(two_waves)[1] == "complete"
+
+
+def test_a_wave_holding_a_failed_story_is_failed_even_beside_a_running_one(two_waves):
+    _set(two_waves, STORY, "in-progress")
+    assert _waves(two_waves)[1] == "in-progress"
+    _set(two_waves, SIBLING, "failed")
+    assert _waves(two_waves)[1] == "failed"
+
+
+def test_a_failed_story_keeps_the_wave_failed_when_a_sibling_starts(two_waves):
+    """The ranking is not an artefact of which story was written last."""
+    _set(two_waves, STORY, "failed")
+    assert _waves(two_waves)[1] == "failed"
+    _set(two_waves, SIBLING, "in-progress")
+    assert _waves(two_waves)[1] == "failed"
+
+
+def test_a_wave_with_a_story_still_pending_is_in_progress(two_waves):
+    _set(two_waves, STORY, "in-progress")
+    assert _waves(two_waves)[1] == "in-progress"
+
+
+def test_a_wave_no_story_has_touched_stays_pending(two_waves):
+    """Wave 2 is never written by a wave-1 story, and never leaves ``pending``."""
+    _set(two_waves, STORY, "applied")
+    _set(two_waves, SIBLING, "applied")
+    assert _waves(two_waves) == {1: "complete", 2: "pending"}
+
+
+def test_a_wave_returns_to_in_progress_when_a_story_is_reopened(two_waves):
+    """Derived, not latched: the wave follows its stories in both directions."""
+    _set(two_waves, STORY, "applied")
+    _set(two_waves, SIBLING, "applied")
+    assert _waves(two_waves)[1] == "complete"
+    _set(two_waves, SIBLING, "in-progress")
+    assert _waves(two_waves)[1] == "in-progress"
+
+
+def test_the_wave_and_the_story_are_written_in_one_commit(two_waves):
+    """A write refused by schema validation leaves **both** unchanged on disk."""
+    _run(two_waves, verb="run-increment", plan_id=PLAN_ID)
+    digest = _digest(_state_path(two_waves))
+    result, code = _run(
+        two_waves,
+        verb="set-story",
+        plan_id=PLAN_ID,
+        story_id=STORY,
+        status="applied",
+        attempt=4,  # attempt.attempt has maximum: 3
+        branch=BRANCH,
+    )
+    assert code == 1 and not result.ok
+    assert _codes(result) == [core.E_SCHEMA_INVALID]
+    assert result.data["written"] == []
+    assert _digest(_state_path(two_waves)) == digest
+    assert _load(_state_path(two_waves))["stories"][STORY]["status"] == "pending"
+    assert _waves(two_waves)[1] == "pending"
+
+
+def test_the_wave_write_still_validates_against_plan_state(two_waves):
+    _set(two_waves, STORY, "applied")
+    document = _load(_state_path(two_waves))
+    assert core.validate_against(core.load_schema("plan-state"), document) == []
+
+
+def test_a_story_whose_wave_matches_no_entry_leaves_waves_untouched(emitted):
+    """Defensive only: the schema already requires the entry, so no diagnostic."""
+    document = _load(_state_path(emitted))
+    document["stories"][STORY]["wave"] = 9
+    emitted.write("context/project/plans/%s/state.yaml" % PLAN_ID, core.dump_yaml(document))
+    before = _load(_state_path(emitted))
+
+    result, code = _run(
+        emitted, verb="set-story", plan_id=PLAN_ID, story_id=STORY, status="applied"
+    )
+    assert code == 0 and result.ok
+    assert result.diagnostics == []
+    after = _load(_state_path(emitted))
+    assert after["waves"] == before["waves"]
+    assert _changed(before, after) == {"stories/%s/status" % STORY, "updated"}
+
+
+def test_no_other_verb_writes_a_wave_status(two_waves):
+    """``set-story`` is the only writer; the field has one master."""
+    before = _waves(two_waves)
+    _run(two_waves, verb="run-increment", plan_id=PLAN_ID)
+    _run(two_waves, verb="set-plan", plan_id=PLAN_ID, status="in-progress")
+    _run(two_waves, verb="conformance", plan_id=PLAN_ID, status="clean", report=REPORT, findings=0)
+    _run(two_waves, verb="telemetry", plan_id=PLAN_ID, cost=1.0, tokens=2, wall_clock=3.0)
+    assert _waves(two_waves) == before
+
+
+# ---------------------------------------------------------------------------
 # The refusal gate -- validated on the serialisation, before any byte lands
 # ---------------------------------------------------------------------------
 
@@ -542,6 +729,60 @@ def test_telemetry_writes_only_its_block(emitted):
     after = _load(_state_path(emitted))
     assert _changed(before, after) == {"telemetry", "updated"}
     assert after["telemetry"] == {"cost_usd": 1.25, "tokens": 4096, "wall_clock_s": 42.5}
+
+
+#: ``--<flag>`` -> the ``telemetry`` key it writes, and a value for it.
+TELEMETRY_FIELDS = {
+    "cost": ("cost_usd", 1.25),
+    "tokens": ("tokens", 4096),
+    "wall_clock": ("wall_clock_s", 42.5),
+}
+
+
+@pytest.mark.parametrize("omitted", sorted(TELEMETRY_FIELDS))
+def test_telemetry_writes_null_for_a_single_omitted_field(emitted, omitted):
+    """The CLI was stricter than its own schema; each flag now stands alone."""
+    supplied = {
+        flag: value for flag, (_key, value) in TELEMETRY_FIELDS.items() if flag != omitted
+    }
+    result, code = _run(emitted, verb="telemetry", plan_id=PLAN_ID, **supplied)
+    assert code == 0 and result.ok
+
+    block = _load(_state_path(emitted))["telemetry"]
+    assert block[TELEMETRY_FIELDS[omitted][0]] is None
+    for flag, (key, value) in TELEMETRY_FIELDS.items():
+        if flag != omitted:
+            assert block[key] == value
+    assert core.validate_against(core.load_schema("plan-state"), _load(_state_path(emitted))) == []
+
+
+def test_telemetry_with_every_field_omitted_writes_three_nulls(emitted):
+    """Two true fields and a null beat nothing at all -- and so does no field."""
+    result, code = _run(emitted, verb="telemetry", plan_id=PLAN_ID)
+    assert code == 0 and result.ok
+    document = _load(_state_path(emitted))
+    assert document["telemetry"] == {"cost_usd": None, "tokens": None, "wall_clock_s": None}
+    assert core.validate_against(core.load_schema("plan-state"), document) == []
+
+
+def test_telemetry_serialises_an_omitted_field_as_yaml_null(emitted):
+    _run(emitted, verb="telemetry", plan_id=PLAN_ID, tokens=4096)
+    text = _state_path(emitted).read_text(encoding="utf-8")
+    assert "cost_usd: null" in text
+    assert "wall_clock_s: null" in text
+
+
+def test_the_telemetry_flags_are_optional_at_the_parser_too(emitted):
+    """Through ``argv``: no flag is ``required``, so the call is accepted."""
+    completed = emitted.run_cli(
+        "--workspace", emitted.root, "--now", NOW, "state", "telemetry", PLAN_ID
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert _load(_state_path(emitted))["telemetry"] == {
+        "cost_usd": None,
+        "tokens": None,
+        "wall_clock_s": None,
+    }
 
 
 def test_the_run_counter_is_not_reset_by_any_other_verb(started):

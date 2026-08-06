@@ -30,8 +30,15 @@ Two boundaries this module keeps deliberately:
   layer is ``mplan``'s call and is not encoded here. ``resolve`` returns the run
   counter exactly as ``state.yaml`` holds it -- it never generates or increments
   one.
-* **No sibling group is imported.** Change documents are read through
-  ``core``'s front-matter helper, not through ``tools/change.py``.
+* **One matcher for one concept.** Change documents are read through ``core``'s
+  front-matter helper, and the *one* thing borrowed from ``tools/change.py`` is
+  the pair that defines what a repo change reference is --
+  ``REPO_CHANGE_REF_RE`` over ``section_body(text, REPO_CHANGE_SECTION)``, the
+  same pair ``check handoff`` uses. ``scope`` previously carried its own
+  stricter pattern, and the two disagreed: a markdown-link ``Repo Change Files``
+  table satisfied the handoff while ``scope`` saw nothing and returned an empty
+  list at exit 0. No *behaviour* is imported -- no verb of ``change`` is called
+  from here, and no other sibling group is reached for at all.
 
 Nothing is persisted until every artifact of the write has validated against its
 schema, so a malformed plan, state file, or ledger cannot reach disk.
@@ -46,7 +53,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools import core
+from tools import change, core
 
 COMMAND = "plan"
 
@@ -84,11 +91,6 @@ STORY_FILE_SUFFIX = ".md"
 
 #: ``PROJECT-CHANGE-<NNN>-<slug>.md`` -- the project-level change index.
 _INDEX_RE = re.compile(r"^PROJECT-CHANGE-([0-9]{3,4})-(.+)\.md$")
-
-#: A repo-level change file referenced from inside an index document.
-_CHANGE_REF_RE = re.compile(
-    r"context/[A-Za-z0-9._-]+/changes/CHANGE-[0-9]{3,4}-[A-Za-z0-9._-]+\.md"
-)
 
 #: A shared-interface spec path named inside a ``scope: shared`` change
 #: document -- the ``<IFACE>`` segment is the changed TAG a cross-repo shard
@@ -339,14 +341,36 @@ def _scope(args, ws, now) -> core.Result:
         return core.Result(command=command, data=data, diagnostics=diagnostics)
 
     number, plan_id, path = index
+    change_files = _referenced_change_files(path)
     data = {
         "type": "incremental",
         "plan_id": plan_id,
         "plan_dir": _plan_dir_rel(plan_id),
         "project_change": number,
-        "change_files": _referenced_change_files(path),
+        "change_files": change_files,
     }
+    if not change_files:
+        # A warning, not an error, and the scope is still returned: the caller
+        # needs to see *which* index came back empty in order to fix it, and
+        # failing the command outright withholds exactly that. Silence is the
+        # one option not available -- an index a plan cannot scope is a
+        # stranded artifact, and a stage reports rather than silently accepts
+        # an input its predecessor left incomplete.
+        diagnostics.append(
+            core.warning(
+                core.E_NOT_FOUND,
+                "incremental scope on %s references no repo change file under "
+                "`## %s`, so this plan would scope nothing"
+                % (path.name, change.REPO_CHANGE_SECTION),
+                file=_index_rel(path),
+            )
+        )
     return core.Result(command=command, data=data, diagnostics=diagnostics)
+
+
+def _index_rel(path: Path) -> str:
+    """The workspace-relative path of a project change index."""
+    return "%s/%s" % ("/".join(CHANGES_DIR), path.name)
 
 
 def _highest_pending_index(
@@ -368,7 +392,7 @@ def _highest_pending_index(
         if match is None:
             continue
         number, slug = match.group(1), match.group(2)
-        relative = "%s/%s" % ("/".join(CHANGES_DIR), entry.name)
+        relative = _index_rel(entry)
         matter = core.load_front_matter(entry, relative)
         if matter.get("status") != SCOPE_STATUS:
             continue
@@ -392,11 +416,26 @@ def _highest_pending_index(
 
 
 def _referenced_change_files(path: Path) -> List[str]:
-    """The repo-level change files an index references, in first-seen order."""
-    text = core.read_text(path)
+    """The repo-level change files an index references, in first-seen order.
+
+    The matcher and the section scoping are ``change``'s, unchanged and not
+    copied: ``REPO_CHANGE_REF_RE`` over ``section_body(text,
+    REPO_CHANGE_SECTION)`` is exactly what ``check handoff`` reads, so an index
+    the handoff calls complete can never scope empty here. The pattern captures
+    ``(repo, filename)`` for both table forms -- the backticked
+    workspace-relative path and the markdown link with its ``../`` prefix -- so
+    the workspace-relative path is rebuilt from the captures rather than taken
+    from the matched text, and both forms yield the same string.
+    """
+    body = change.section_body(core.read_text(path), change.REPO_CHANGE_SECTION)
     seen: List[str] = []
-    for match in _CHANGE_REF_RE.finditer(text):
-        value = match.group(0)
+    for repo, filename in change.REPO_CHANGE_REF_RE.findall(body):
+        value = "%s/%s/%s/%s" % (
+            change.CONTEXT_DIRNAME,
+            repo,
+            change.CHANGES_DIRNAME,
+            filename,
+        )
         if value not in seen:
             seen.append(value)
     return seen

@@ -10,6 +10,7 @@ clock.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,46 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 #: The injected clock. Every test that needs a timestamp uses this.
 NOW = "2026-01-15"
+
+
+def remove_bytecode(root=PLUGIN_ROOT):
+    """Delete every ``__pycache__`` directory and ``*.pyc`` file under ``root``.
+
+    Returns what it removed, workspace-relative-ish, so a caller can assert the
+    removal actually had something to do.
+    """
+    removed = []
+    for path in sorted(Path(root).rglob("__pycache__")):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(path)
+    for path in sorted(Path(root).rglob("*.pyc")):
+        try:
+            path.unlink()
+        except OSError:  # pragma: no cover - already gone with its directory
+            continue
+        removed.append(path)
+    return removed
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clean_plugin_bytecode():
+    """Clear stale bytecode under ``PLUGIN_ROOT`` **before** the suite runs.
+
+    ``sys.dont_write_bytecode`` binds the tool's own runs, not every interpreter
+    that ever touches the tree: a bare ``python -c "from tools import check"``
+    typed at a shell bypasses it and leaves a ``__pycache__`` behind. The
+    conformance suite asserts the tree is clean, so a stale artifact from an
+    unrelated interactive probe fails two tests for a reason that has nothing to
+    do with the change under test.
+
+    Order is the whole point, and this fixture only ever cleans on the way *in*:
+    cleaning first removes the false failure, while the assertions -- untouched
+    and never relaxed -- still catch bytecode *this run* produced. Nothing is
+    removed on the way out, because that would hide exactly what they look for.
+    """
+    remove_bytecode()
+    yield
 
 #: One valid instance per canonical kind: kind -> (filename, content).
 VALID_INSTANCES = {

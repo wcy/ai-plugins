@@ -1224,7 +1224,7 @@ def _index_references(
             )
         )
         return set()
-    body = change._section_body(text, change.REPO_CHANGE_SECTION)
+    body = change.section_body(text, change.REPO_CHANGE_SECTION)
     return set(change.REPO_CHANGE_REF_RE.findall(body))
 
 

@@ -20,7 +20,7 @@ import re
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import core, plan
+from tools import check, core, plan
 
 STANDARD_SPEC = PLUGIN_ROOT / "shared" / "STANDARD-SPEC.md"
 
@@ -36,10 +36,32 @@ def _run(workspace, **fields):
     return result, core.exit_code(result)
 
 
-def _index(number, slug, status, change_files=()):
-    rows = "".join(
-        "| `demo` | `%s` | a change |\n" % path for path in change_files
+def _backtick_row(path):
+    """The form the table has always been written in: a workspace-relative path."""
+    repo = path.split("/")[1]
+    return "| `%s` | `%s` | a change |\n" % (repo, path)
+
+
+def _link_row(path):
+    """The markdown-link form ``check handoff`` accepted and ``scope`` did not."""
+    repo, filename = path.split("/")[1], path.rsplit("/", 1)[-1]
+    return "| [%s](../../%s/) | [%s](../../%s/changes/%s) | a change |\n" % (
+        repo,
+        repo,
+        filename,
+        repo,
+        filename,
     )
+
+
+#: The two ways a ``Repo Change Files`` row can name the same change file. Both
+#: must resolve identically -- the divergence between them is the defect.
+TABLE_FORMS = {"backtick": _backtick_row, "link": _link_row}
+
+
+def _index(number, slug, status, change_files=(), form="backtick"):
+    row = TABLE_FORMS[form]
+    rows = "".join(row(path) for path in change_files)
     return (
         "<!-- project-change: %s -->\n"
         "<!-- scope: repo -->\n"
@@ -58,10 +80,10 @@ def _index(number, slug, status, change_files=()):
     )
 
 
-def _add_index(workspace, number, slug, status, change_files=()):
+def _add_index(workspace, number, slug, status, change_files=(), form="backtick"):
     return workspace.write(
         "context/project/changes/PROJECT-CHANGE-%s-%s.md" % (number, slug),
-        _index(number, slug, status, change_files),
+        _index(number, slug, status, change_files, form),
     )
 
 
@@ -213,13 +235,37 @@ def test_a_missing_verb_is_a_usage_error(workspace):
     assert [d.code for d in result.diagnostics] == [core.E_USAGE]
 
 
-def test_the_group_imports_no_sibling_command_module():
-    """Change files are read through core's front-matter helper, never through
-    ``tools/change.py`` -- a concurrent sibling this group must not depend on."""
+def test_the_group_borrows_only_the_shared_matcher_from_a_sibling():
+    """The one thing taken from ``tools/change.py`` is the definition of what a
+    repo change reference *is* -- the same pair ``check handoff`` reads.
+
+    Change documents themselves are still read through ``core``'s front-matter
+    helper, no ``change`` verb is called from here, and no other sibling group
+    is reached for at all. Duplicating the matcher instead is the defect
+    CHANGE-020 removes, so this is a borrowing the module is required to make.
+    """
     source = (PLUGIN_ROOT / "tools" / "plan.py").read_text(encoding="utf-8")
-    assert "tools.change" not in source
-    assert "import change" not in source
     assert "load_front_matter" in source
+    assert "change.REPO_CHANGE_REF_RE" in source
+    assert "change.section_body" in source
+    # Behaviour is never borrowed: no verb of the sibling group is invoked.
+    assert "change.run(" not in source
+    for sibling in ("state", "worktree", "check", "spec", "req"):
+        assert "from tools import %s" % sibling not in source
+        assert "tools.%s" % sibling not in source
+
+
+def test_the_group_carries_no_second_change_reference_matcher():
+    """``_CHANGE_REF_RE`` is gone: two matchers for one concept is the defect.
+
+    Matched on a word boundary, because the name that stays --
+    ``change.REPO_CHANGE_REF_RE`` -- ends with the name that goes, and a bare
+    substring search cannot tell the survivor from the deletion.
+    """
+    source = (PLUGIN_ROOT / "tools" / "plan.py").read_text(encoding="utf-8")
+    assert re.search(r"(?<![A-Za-z0-9_])_CHANGE_REF_RE", source) is None
+    assert not hasattr(plan, "_CHANGE_REF_RE")
+    assert "REPO_CHANGE_REF_RE" in source  # the survivor, so this is not vacuous
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +335,124 @@ def test_scope_reports_the_repo_change_files_the_index_references(workspace):
     _add_index(workspace, "004", "fourth", "pending", referenced)
     result, _ = _run(workspace, verb="scope")
     assert result.data["change_files"] == referenced
+
+
+@pytest.mark.parametrize("form", sorted(TABLE_FORMS))
+def test_scope_reads_the_same_change_files_from_either_table_form(workspace, form):
+    """One matcher: a link-form table and a backticked one resolve identically.
+
+    The link form is the one ``plan scope``'s own stricter pattern never saw,
+    so this parametrisation is the regression the shared matcher closes.
+    """
+    referenced = [
+        "context/demo/changes/CHANGE-002-thing.md",
+        "context/other/changes/CHANGE-011-other-thing.md",
+    ]
+    _add_index(workspace, "004", "fourth", "pending", referenced, form=form)
+    result, code = _run(workspace, verb="scope")
+    assert code == 0
+    assert result.data["change_files"] == referenced
+    assert [item.severity for item in result.diagnostics] == []
+
+
+@pytest.mark.parametrize("form", sorted(TABLE_FORMS))
+def test_scope_and_check_handoff_see_the_same_references(workspace, form):
+    """The two stages agreed only for one form before; now they agree for both.
+
+    ``check handoff`` reports an index naming no repo change file. Whatever
+    ``scope`` finds, the handoff must have found too -- a handoff reporting
+    clean over a scope that came back empty is the failure being closed.
+    """
+    referenced = ["context/demo/changes/CHANGE-002-thing.md"]
+    index_path = "context/project/changes/PROJECT-CHANGE-004-fourth.md"
+    _add_index(workspace, "004", "fourth", "pending", referenced, form=form)
+
+    scoped = _run(workspace, verb="scope")[0].data["change_files"]
+    handoff = check.run(workspace.args(verb="handoff", target=None), workspace.ws)
+    empty_index = [
+        finding
+        for finding in handoff.data["findings"]
+        if finding.get("file") == index_path and "no repo change file" in finding["message"]
+    ]
+    assert scoped == referenced
+    assert empty_index == []
+
+
+def test_an_index_naming_nothing_is_reported_by_both_stages(workspace):
+    """The negative case, so the agreement above is not vacuous."""
+    index_path = "context/project/changes/PROJECT-CHANGE-004-fourth.md"
+    _add_index(workspace, "004", "fourth", "pending")
+
+    result, code = _run(workspace, verb="scope")
+    handoff = check.run(workspace.args(verb="handoff", target=None), workspace.ws)
+
+    assert code == 0  # a warning, not an error: the caller still gets the scope
+    assert result.data == {
+        "type": "incremental",
+        "plan_id": "004-fourth",
+        "plan_dir": "context/project/plans/004-fourth",
+        "project_change": "004",
+        "change_files": [],
+    }
+    assert len(result.diagnostics) == 1
+    warning = result.diagnostics[0]
+    assert warning.severity == core.SEVERITY_WARNING
+    assert warning.file == index_path  # the diagnostic names the index
+    assert "PROJECT-CHANGE-004-fourth.md" in warning.message
+    assert [
+        finding
+        for finding in handoff.data["findings"]
+        if finding.get("file") == index_path and "no repo change file" in finding["message"]
+    ]
+
+
+def test_an_empty_incremental_scope_is_a_warning_and_not_an_error(workspace):
+    """``result.ok`` stays true, so no caller reads the warning as a failure."""
+    _add_index(workspace, "004", "fourth", "pending")
+    result, code = _run(workspace, verb="scope")
+    assert result.ok is True
+    assert code == 0
+    assert [item.severity for item in result.diagnostics] == [core.SEVERITY_WARNING]
+
+
+def test_a_full_scope_never_warns_about_an_empty_change_file_list(workspace):
+    """``full`` means there is no index to name; an empty list is expected."""
+    result, code = _run(workspace, verb="scope")
+    assert code == 0
+    assert result.data["change_files"] == []
+    assert result.diagnostics == []
+
+
+@pytest.mark.parametrize("form", sorted(TABLE_FORMS))
+def test_scope_keeps_first_seen_order_and_collapses_duplicates(workspace, form):
+    first = "context/demo/changes/CHANGE-009-ninth.md"
+    second = "context/other/changes/CHANGE-002-second.md"
+    third = "context/demo/changes/CHANGE-001-first.md"
+    _add_index(
+        workspace,
+        "004",
+        "fourth",
+        "pending",
+        [first, second, first, third, second],
+        form=form,
+    )
+    result, _ = _run(workspace, verb="scope")
+    # First-seen order, not sorted and not de-duplicated into set order.
+    assert result.data["change_files"] == [first, second, third]
+
+
+def test_scope_ignores_a_change_reference_outside_the_repo_change_section(workspace):
+    """The section scoping is the sibling's too: prose elsewhere is not scope."""
+    path = workspace.write(
+        "context/project/changes/PROJECT-CHANGE-004-fourth.md",
+        _index("004", "fourth", "pending").replace(
+            "## Summary\n\nOne change.\n",
+            "## Summary\n\nSupersedes context/demo/changes/CHANGE-001-first.md.\n",
+        ),
+    )
+    assert "CHANGE-001-first.md" in path.read_text(encoding="utf-8")
+    result, _ = _run(workspace, verb="scope")
+    assert result.data["change_files"] == []
 
 
 def test_scope_ignores_files_that_are_not_indexes(workspace):
