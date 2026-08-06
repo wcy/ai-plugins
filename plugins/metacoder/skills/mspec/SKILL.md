@@ -9,7 +9,7 @@ A workspace holds **several related repositories** plus a **shared interface con
 
 **Where the standards live.** Standards ship with the plugin, not the project: `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md` and `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-CHANGE.md`. `${CLAUDE_PLUGIN_ROOT}` resolves at runtime to the plugin's marketplace-cache location — no files are copied into the project's `.claude/`. Every "Load now" instruction below names the full `${CLAUDE_PLUGIN_ROOT}/shared/…` path; load lazily, only when you reach that step.
 
-**Mechanical steps are invoked, not restated.** Steps whose outcome follows from their inputs alone — mode detection, the requirements gate, change sequencing, change-document emission, cascade-target lookup, and every mechanical checklist item — have exactly one implementation: `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Call it; never re-derive it in prose. **A failed `mc.py` invocation is a hard error: report it and halt the phase.** There is no prose fallback — a fallback would be a second implementation of the same step. This rule applies to every invocation below. Judgment steps — the brainstorm, the Risk & Ambiguity Scan, the approval gate, and the Phase 5 cascade fan-out — stay yours.
+**Mechanical steps are invoked, not restated.** Steps whose outcome follows from their inputs alone — mode detection, the requirements gate, change sequencing, change-document emission, cascade-target lookup, recording a module's depth or a shared interface's revision, and every mechanical checklist item — have exactly one implementation: `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Call it; never re-derive it in prose. **A failed `mc.py` invocation is a hard error: report it and halt the phase.** There is no prose fallback — a fallback would be a second implementation of the same step. This rule applies to every invocation below. Judgment steps — the brainstorm, the Risk & Ambiguity Scan, the approval gate, and the Phase 5 cascade fan-out — stay yours.
 
 ## Two Separable Stages (Diagnostic → Write)
 
@@ -19,6 +19,8 @@ A workspace holds **several related repositories** plus a **shared interface con
 - **Stage 2 — Write.** Everything after approval (each mode's **Phase 2** onward): the spec files, the change documents, validation, and (for `shared`) the cascade.
 
 The stage boundary is the "**Get explicit user approval before moving to Phase 2**" line in each mode. Do not write any file before it; do not re-ask for approval after it.
+
+The **Deepen Entry** (`/mspec deepen`, below) is Stage 2 standing alone — it has no Stage 1 and no gate, for the reason given there. Nothing else about the boundary moves, and no phase is renumbered by its addition: `/mquick` invokes Stage 1 standalone for its clarification gate and Stage 2 unattended afterwards, and addresses each mode's phases by number.
 
 ### Risk & Ambiguity Scan (runs in Stage 1, both modes)
 
@@ -54,6 +56,8 @@ Resolve the target from context, in this order:
 
 If the request plausibly spans multiple repos, or you cannot tell which repo, **list the candidate targets from subdirectories of `context/` and ask the user** before proceeding. A single invocation may legitimately target the shared layer and then cascade into several repos (see the Cascade phase in UPDATE MODE).
 
+**`deepen` is a branch keyword, not a target.** The literal token `deepen` in the argument position — `/mspec deepen <target> <MODULE> [<MODULE> ...]` — routes to the **Deepen Entry** below before mode detection runs at all; the target follows the keyword, and the entry is neither CREATE nor UPDATE. A target genuinely named `deepen` is addressed as `/mspec deepen deepen`.
+
 **Path convention for the rest of this skill:**
 - Every path written below as `context/spec/...` is shorthand for `context/<target>/spec/...`, where `<target>` is the repo directory you resolved, or `shared`. When the target is `shared`, only the OVERVIEW, DATAMODEL, and INTERFACE facets exist — skip every instruction about IMPLEMENTATION and TESTING facets.
 - Every path written below as `context/<repo>/changes/...` is the **repo-level change path** for that repo.
@@ -75,7 +79,7 @@ One call answers both halves of this step: **CREATE vs UPDATE** — CREATE when 
 
 ## CREATE MODE
 
-Take a requirements description or product idea and produce a complete, implementation-ready specification in `context/<target>/spec/` through structured brainstorming with the user.
+Take a requirements description or product idea and produce a complete specification in `context/<target>/spec/` through structured brainstorming with the user — every module contracted, so anything can be built against it, and each module's internals written in the slice that builds it (see Phase 2 and the **Deepen Entry**).
 
 ### Prerequisites
 
@@ -169,8 +173,21 @@ Risks resolved: {the risk-scan items and how each was decided}
 
 Write in the order STANDARD-SPEC.md §"Process & Ordering Rules" mandates (shared interfaces → COMMON → modules by layer L1→L5 → each module by facet order → `CATALOG.yaml` last), using its §"Module File Structure" for per-facet content. mspec-specific notes:
 
+- **Modules are written at `contract` depth** — OVERVIEW, DATAMODEL, INTERFACE, and those three only. DEPENDENCIES, IMPLEMENTATION and TESTING are **not** written here; they are authored per slice by the **Deepen Entry** below, in the slice that builds the module. See STANDARD-SPEC.md §"Spec Depth" for what each depth claims.
 - **COMMON files** map Phase 1 outputs to disk: `COMMON-OVERVIEW.md` (the 200-500 line narrative), `COMMON-STACK.md` (stack decisions), and `COMMON-DECISIONS.md` (every Phase 1 decision with rationale), plus any others the project needs. Keep each under ~150 lines.
-- **`CATALOG.yaml`:** for a repo target, populate `repo:` and `shared_interfaces:`; for the `shared` target, use the shared catalog schema (`scope: shared`, `interfaces:`). Also populate each touched module's optional `requirements:` list from the Phase 1e-resolved traceability (which `REQ-<NNN>` entries it satisfies), the same way you populate `shared_interfaces`.
+- **`CATALOG.yaml`:** for a repo target, populate `repo:` and `shared_interfaces:`; for the `shared` target, use the shared catalog schema (`scope: shared`, `interfaces:`). Also populate each touched module's optional `requirements:` list from the Phase 1e-resolved traceability (which `REQ-<NNN>` entries it satisfies), the same way you populate `shared_interfaces`. Do **not** hand-write `depth` (or a shared interface's `revision`) into it — both go through the tool.
+
+Once the module files and `CATALOG.yaml` are written, record each repo module's depth through the tool — once per module:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <MODULE> --set contract
+```
+
+Every module written in this phase gets `depth: contract` recorded this way; the entry is not left bare, because a bare entry means `full` and this one is not.
+
+Writing contracts for the whole system but internals for none is the point: a contract is what lets other modules be built against a module, so it is needed before anything can start, whereas an internal describes work that a running slice may yet invalidate. A user who wants the old behaviour — every module described in full up front — asks for it, and gets it: deepen the modules in the same run (see the **Deepen Entry**) so each is recorded `full`. It is no longer the default, because the default was writing detail for modules the first slice might prove unnecessary.
+
+**Depth does not apply to the `shared` target.** A shared interface module has exactly three facets permanently, because a contract has no internals — that is not the same fact as a repo module having three *for now*. Do not record `depth` on a shared interface module, and never deepen one.
 
 Coupling, `depends-on` front-matter, and the INTERFACE-only cross-module/cross-repo rules are all defined in STANDARD-SPEC.md §"Dependency Rules" — obey them rather than re-deriving them. Keep OVERVIEW/COMMON files concise (they are context-injected) and describe logic language-agnostically. All paths in `depends-on` front-matter are workspace-relative (e.g. `context/<repo>/spec/<TAG>/<TAG>-INTERFACE.md`).
 
@@ -212,6 +229,42 @@ Before reporting completion, verify. Items 1–4 are executed rather than confir
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate catalog context/<target>/spec/CATALOG.yaml
    python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate change  context/<repo>/changes/CHANGE-000-initial-spec.md
    ```
+
+---
+
+## DEEPEN ENTRY
+
+```
+/mspec deepen <target> <MODULE> [<MODULE> ...]
+```
+
+Addressed as `mspec-deepen`. It writes the DEPENDENCIES, IMPLEMENTATION and TESTING facets for named modules already at `contract` depth, then flips each to `depth: full`. `/mship` invokes it at the start of each slice, for that slice's modules; a user who wants a module described in full ahead of time invokes it directly.
+
+**This entry runs Stage 2 only — no diagnostic, no approval gate.** The design decisions were settled when the contract was written and confirmed at the gate that approved it. Deepening adds detail beneath a contract already agreed, so re-gating it would reintroduce per-stage supervision for nothing.
+
+For each module named, in the order given:
+
+1. **Skip it if it is already `full`.** Ask the tool, not the tree — an unwritten IMPLEMENTATION file is indistinguishable from an absent one:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <MODULE>
+   ```
+
+   A module the call reports `full` is left exactly as it is — not rewritten, not re-derived — and reported as skipped.
+
+2. **Write the three remaining facets.** **Load now** (once for the run): `${CLAUDE_PLUGIN_ROOT}/shared/STANDARD-SPEC.md`. Write DEPENDENCIES, IMPLEMENTATION and TESTING in that facet order, against the module's own OVERVIEW/DATAMODEL/INTERFACE. Do not restate the standard's rules here; follow them. Do not edit the contract facets — deepening writes *beneath* a contract, it does not revise one.
+
+3. **Flip the depth through the tool:**
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <MODULE> --set full
+   ```
+
+   `--set full` is refused while any of the three facets is still missing, so the flag can never claim coverage the tree does not have. That refusal is this entry's check — a refusal means a facet did not get written, so write it; never work around the refusal.
+
+**A deepen that cannot honour the contract does not redesign.** If writing the internals shows the contract is wrong — it promises something the module cannot deliver, or contradicts a module it depends on — report it: name the module, the obligation, and why it cannot be met, and let the caller decide. Revising a contract is an UPDATE-mode run behind the approval gate, never something this entry does on its way past.
+
+Those facets and that flag are the whole of what this entry writes. It touches no change document and no requirements record.
 
 ---
 
@@ -312,6 +365,8 @@ Keep questions focused — only ask what's needed to write the spec accurately.
 
 State, per open `REQ-CHANGE` record presented at 1a, whether this change covers it. Covering a record is what lets Phase 3c close it; leaving one open is a deliberate outcome you report, not an omission — say so explicitly rather than closing every record just to clear the list.
 
+**Propose the delivery cut.** Present the slices this change will be delivered in — one row per slice in delivery order, in the column shape STANDARD-CHANGE.md §"Slices" defines (slice number, name, behaviour, acceptance, modules) — and get it approved here, with everything else. Cutting a change into slices is a design judgement of the same kind as the module decomposition, and this gate is the only one it ever passes: `mplan` consumes the table verbatim and has no gate at all, so a cut first seen in a written document is a cut nobody approved. The two rules that bind the table (restated at Phase 3b) bind the proposal too — do not put a cut to the user that violates either. Phase 3b writes the approved cut; it does not decide it.
+
 Run the **Risk & Ambiguity Scan** (see "Two Separable Stages") now and fold its ranked decisions into your questions; iterate until they're resolved. Then present a final summary:
 
 ```
@@ -322,6 +377,7 @@ Breaking Changes: {yes/no — list if yes}
 New Modules: {list or "none"}
 Cascade: {for shared target — list of consuming repos whose spec updates this one change doc will record; otherwise "n/a"}
 Decisions Made: {list of key choices}
+Slices: {the proposed cut, in delivery order — per slice: number, name, the behaviour it makes work, how that behaviour is demonstrated}
 Open REQ-CHANGE records: {each presented record, covered or left open — deliberately, per record}
 Risks resolved: {the risk-scan items — breaking/migration/security/ambiguity/dependency/requirements-drift (backstop) — and how each was decided}
 ```
@@ -340,6 +396,7 @@ Update in the dependency order STANDARD-SPEC.md §"Process & Ordering Rules" man
 
 - Touch a COMMON file only when the change reaches it: `COMMON-OVERVIEW.md` (lifecycle/feature-index changes), `COMMON-STACK.md` (new tech), `COMMON-DECISIONS.md` (new decisions).
 - **Only update the sections that actually change — do not rewrite unaffected content.**
+- A **new module** this change introduces is written at `contract` depth exactly as CREATE Phase 2 writes one — three facets, then `mc.py spec depth <target> <MODULE> --set contract`. An existing module keeps the depth it already has; deepening one is the **Deepen Entry**'s job, not this phase's.
 
 Per-facet content and all coupling/`depends-on` rules live in STANDARD-SPEC.md §"Module File Structure" and §"Dependency Rules". Keep OVERVIEW/COMMON files concise (context-injected).
 
@@ -390,6 +447,15 @@ The same status-keyed continue rule applies here.
   `--repo` takes every repo whose change file this index references, comma-separated. A shared-interface cascade uses `--scope shared` instead and is assembled in Phase 5.
 
 **Content:** fill the emitted sections using the project-level index schema from STANDARD-CHANGE.md §"Project-level change index". List every repo-level change file produced in this mspec run in the "Repo Change Files" table.
+
+**Then write the `## Slices` table.** The emitted skeleton does not carry one — the cut is a design judgement, so the tool does not invent it. Write the cut the user approved at Phase 1e into the index, after `## Repo Change Files` and before any `## Cross-Repo Notes`, in the column shape STANDARD-CHANGE.md §"Slices" defines. **This table is written here and nowhere else:** `mplan` consumes it verbatim rather than deriving a cut of its own, which is why the cut has to reach it through this skill's gate. On a **continue** decision, extend the existing index's table with this run's slices, adding the section if the index predates it.
+
+Both of the section's binding rules are obligations on what you write:
+
+1. **Slice `00` must touch every layer the change touches.** That is what makes it a walking skeleton rather than merely the first item somebody listed: its acceptance proves the shape of the whole system runs before any one part of it is finished. A slice `00` reaching only some of the change's layers is not one, and must be recut.
+2. **Every slice must carry at least one runnable acceptance command.** A slice whose acceptance is prose alone can be confirmed only by a person, and a cut made entirely of those turns delivery back into supervision. A behaviour you cannot demonstrate with a command needs a different cut, not a prose acceptance.
+
+Do not re-cut here. If writing the table shows the approved cut cannot satisfy both rules, report that rather than silently substituting a different one — Phase 1e is where a cut is agreed.
 
 #### Step 3c: Close the requirements records this change covers
 
@@ -444,7 +510,15 @@ Before reporting completion, verify. Items 1–3 are executed rather than confir
 
 Per STANDARD-CHANGE.md → "Shared-Interface Change Cascade", write **separate repo-level change files per repo** and one project-level index that references them all. Run this as an **agent team**: you are the **lead**, the **frozen shared-interface contract is the sync point**, and each consuming repo gets **one teammate subagent** that updates only that repo — the consumers are independent (each codes against the frozen contract, not each other), so they fan out in parallel.
 
-1. **Freeze the shared contract first (lead).** Finish the shared `*-INTERFACE.md`/`*-DATAMODEL.md` edits and write `context/shared/changes/CHANGE-<NNN>-<slug>.md` recording them. This frozen contract is what every teammate codes against — do not let it drift once teammates are dispatched.
+1. **Freeze the shared contract first, and bump its revision (lead).** Finish the shared `*-INTERFACE.md`/`*-DATAMODEL.md` edits, then bump the agreement revision of each interface you changed — once per interface:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec revision <IFACE> --bump
+   ```
+
+   Write `context/shared/changes/CHANGE-<NNN>-<slug>.md` recording both the edits and the new revision. This frozen contract is what every teammate codes against — do not let it drift once teammates are dispatched.
+
+   **The bump is what makes the cascade legible to work already delivered.** Freezing the contract stops *future* consumers diverging; the revision is what lets `mc.py spec consumers <IFACE> --stale` name the delivered stories built against the previous one, so a cascade running mid-delivery schedules their remediation instead of leaving them quietly wrong.
 
 2. **Dispatch one teammate per consuming repo, in parallel** (single message, multiple Agent tool calls). Each teammate is scoped to exactly one repo and blind to the others; its prompt names the changed shared files, the frozen contract, and that repo only. Each teammate performs a scoped UPDATE-mode pass on its repo's spec:
    - Re-read the repo's spec files whose `depends-on` names a changed shared file.
@@ -459,7 +533,9 @@ Per STANDARD-CHANGE.md → "Shared-Interface Change Cascade", write **separate r
 
 4. **Confirm coverage.** Before reporting completion, verify that every repo in `consumers:` is represented by either a change file or a documented "unaffected" note, and that the project-level index references all of them.
 
-5. **Report** the cascade to the user: the project change number, the shared interface(s) changed, and the consuming repos covered.
+5. **Report** the cascade to the user: the project change number, the shared interface(s) changed, the new revision of each, and the consuming repos covered.
+
+**This phase may run inside a delivery loop.** `/mship` invokes it at a slice boundary when a slice reveals the contract itself is wrong. Nothing about the phase changes when it does — the contract is frozen, the revision bumps, the consumers are cascaded into — and the freeze is still the cross-repo sync point. What the revision adds is that the sync point is now *versioned*, so "frozen" no longer has to mean "frozen for the life of the plan".
 
 ---
 
