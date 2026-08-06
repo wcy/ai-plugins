@@ -1,11 +1,11 @@
 ---
 name: mplan
-description: Use when you need to generate modular implementation plans from completed specifications in a multi-repo workspace — triggers on phrases like "create plan", "generate plan", "make a plan", "plan the implementation", "break into stories", or when the user wants to turn specs under `context/<repo>/spec/` into executable agent work plans
+description: Use when you need to generate modular implementation plans from specifications in a multi-repo workspace — triggers on phrases like "create plan", "generate plan", "make a plan", "plan the implementation", "break into stories", or when the user wants to turn specs under `context/<repo>/spec/` into executable agent work plans
 ---
 
 # Create Modular Implementation Plan from Spec
 
-Take completed specifications and produce modular, context-efficient implementation plan files a team of Claude Code agents can execute.
+Take a specification and produce modular, context-efficient implementation plan files a team of Claude Code agents can execute, cut into the slices delivery advances along.
 
 **This is a documentation project. Do not write application code. The deliverables are plan files under `context/project/plans/` and the project ledger `context/project/state.yaml`.**
 
@@ -36,11 +36,25 @@ It returns `type` (`full` or `incremental`), the `plan_id` and `plan_dir` this r
 - **Incremental plan** — follow the returned `change_files` to the per-repo change files, which name the affected modules and code paths; plan exactly those.
 - **Full plan** — plan the whole workspace by default: every module in every repo's `CATALOG.yaml`. If the user names a subset (e.g. "plan only repo-a", "plan only AUTH and USERS"), scope to that.
 
+**A different entry point:** `/mplan --slice <NN>` does not generate a plan at all — it refreshes one slice's stories against a graph that already exists. If the invocation names a slice, skip to [Slice-Scoped Re-Plan](#slice-scoped-re-plan---slice) and do only what it says.
+
 **Path convention for the rest of this skill:**
 - `context/spec/...` is shorthand for `context/<repo>/spec/...` for the repo a given story belongs to. Shared interface files are referenced by their full path under `context/shared/spec/`.
 - `context/project/plans/...` and `context/<repo>/changes/...` are **literal paths** — never mixed up.
 
 ## Prerequisites
+
+### Precondition: contract depth, not completeness
+
+Every module this plan touches must be at **at least `contract` depth** — OVERVIEW, DATAMODEL and INTERFACE written, which is enough to build other modules against it. Check it, per module, with the tool:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <module>
+```
+
+A module below `contract` depth **halts the plan**: report it and tell the user to run `/mspec <target>` to bring it up to contract depth. Do not plan around a module whose interface nobody has written — the stories would be guesses.
+
+A module need **not** be `full`, and this skill never asks whether a spec is finished. DEPENDENCIES, IMPLEMENTATION and TESTING are authored per slice by `mspec`'s deepen entry, which `mship` invokes immediately before that slice runs, so internal detail is never written for work an earlier slice invalidated. Waiting for the whole spec before planning is exactly the batching slices exist to remove: require the contract, plan against it, and let the depth arrive slice by slice.
 
 ### Step 1: Determine Plan Type
 
@@ -64,6 +78,30 @@ It returns `type` (`full` or `incremental`), the `plan_id` and `plan_dir` this r
 
 **Note on shared-interface cascades:** if the project-level index carries `<!-- scope: shared -->`, it changed a cross-repo contract. Plan stories for each consuming repo's affected modules, and load the changed `context/shared/spec/<IFACE>/` files as context for those stories.
 
+## Slices: Consumed, Never Derived
+
+A **slice** is the unit of delivery: the set of stories that together make one behaviour work end to end. A slice cuts *vertically* through the layers rather than along one of them, so completing one yields something that runs. Slices are the axis delivery advances along — `mship` ships one at a time — and every plan this skill emits carries them.
+
+**The cut is not yours to make.** The driving `PROJECT-CHANGE-<NNN>-*.md` carries a `## Slices` table, and this skill consumes it **verbatim**: each row's `Slice` id, `Name`, `Behavior`, `Acceptance` and `Modules` are taken exactly as written, in the order written. Assign each story to the slice whose `Modules` column names its module. Do not recut, reorder, renumber, merge or split what the table says, and do not invent a cut of your own where it already gave one.
+
+Deriving the cut here was rejected deliberately. Cutting a change into deliverable increments is a design judgement, and `mspec` makes it behind an approval gate. This skill has **no** interactive gate, so a slicing invented here would reach execution without anyone having seen it — and a wrong cut is the single most expensive planning error there is, because every slice after it is paid for before the mistake shows.
+
+**Two fallbacks, both to lifecycles.** Fall back to the primary lifecycles named in the target's `context/<repo>/spec/COMMON/COMMON-OVERVIEW.md` — one slice per lifecycle, in the order that overview lists them — when either holds:
+
+- the driving change document has **no `## Slices` section**. It was written before the section existed; its absence is not a defect and is never reported as one.
+- there is **no driving change document at all** — a **full or greenfield plan**, scoped from the whole spec rather than from a change. There is nothing to consume, so the same fallback applies.
+
+Those lifecycles are themselves authored behind `mspec`'s gate, which is why falling back to them is still consuming a reviewed cut rather than inventing one.
+
+**Two rules bind the cut**, whichever of the three sources it came from:
+
+1. **Slice `00` is a walking skeleton** — it touches every layer the plan touches. Its acceptance proves the shape of the whole system runs before any depth is built on it. A first slice confined to one layer is the old bottom-up order wearing slice vocabulary.
+2. **Every slice carries at least one runnable acceptance** — one `kind: exit-code` step. A slice whose acceptance is prose alone can only be settled by a person, and a plan made entirely of those turns delivery back into supervision.
+
+`plan emit` refuses a draft that breaks either, so both are enforced mechanically rather than by a careful reading.
+
+**Membership and ordering.** Every story belongs to **exactly one** slice — none to zero, none to two — and a story's **prerequisites never cross into a later slice**. A slice whose work depends on stories scheduled after it is not deliverable on its own, which is the entire property slicing buys.
+
 ## Role
 
 You are a technical project manager creating implementation plans for Claude Code agent teams.
@@ -72,7 +110,7 @@ You are a technical project manager creating implementation plans for Claude Cod
 
 Each plan directory contains one **story file per module** (human-readable, self-contained) plus two machine-readable files that make the plan executable and resumable by `mexecute`:
 
-- **`plan.yaml`** — the immutable **plan graph**: waves, stories, dependencies, and per-story validation. `mexecute` reads this instead of re-deriving structure from story prose. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json`.
+- **`plan.yaml`** — the immutable **plan graph**: slices and their acceptance, waves, stories, dependencies, and per-story validation. `mexecute` reads this instead of re-deriving structure from story prose. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-graph.schema.json`.
 - **`state.yaml`** — the initial **plan-level state**: every story `pending`, no attempts yet. `mexecute` mutates this as it runs. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/plan-state.schema.json`.
 
 The plan is also recorded in the **project-level ledger** `context/project/state.yaml`, the entry point resume/orchestration reads to find the unfinished plan. Conforms to `${CLAUDE_PLUGIN_ROOT}/schemas/project-state.schema.json`.
@@ -109,13 +147,17 @@ Only modules that appear in the referenced repo-level change file(s)' **Spec Fil
 
 ### Wave assignment
 
+**Waves order stories *within* a slice.** They are no longer the axis delivery advances along — slices are — and wave assignment is applied per slice: the stories of one slice are ordered by layer among themselves, then the waves of the next slice follow, so wave numbers keep rising across the plan and **no wave ever mixes stories from two slices**. What a wave has always meant — a set of stories that can run concurrently once the layer beneath them is in — is unchanged; only its scope of application is.
+
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan waves <target>
 ```
 
-returns the layer-ordered assignment for one target repo: one wave per layer, in layer order, with that layer's modules as its parallel siblings. Run it once per in-scope repo and merge the results by altitude — same-index layers across repos share a wave, so modules in different repos run in parallel. The `shared` layer is contract-only: it is pure context and gets no stories.
+is likewise unchanged: it returns the layer-ordered assignment for one target repo — one wave per layer, in layer order, with that layer's modules as its parallel siblings. Run it once per in-scope repo and merge the results by altitude — same-index layers across repos share a wave, so modules in different repos run in parallel. The `shared` layer is contract-only: it is pure context and gets no stories.
 
 **The judgment that stays yours:** where a story depends, via a shared interface, on another repo's module being implemented first, move the **consumer into a later wave than its producer**, even though the layer assignment placed them in the same one. `plan waves` assigns; it never reorders a consumer past its producer. Each story's **Prerequisites** and **Parallel group** then make the resulting order explicit.
+
+**Prerequisites point backwards on both axes.** A prerequisite never names a later wave, and never names a story in a later **slice** (see *Slices*).
 
 ## Story File Template
 
@@ -133,32 +175,33 @@ Each story file must stay **small and focused** — as small as the work allows,
 
 1. Read every in-scope repo's `context/<repo>/spec/CATALOG.yaml` to get its exact layer/module structure
 2. Read all spec files referenced in those catalogs, plus the shared interface files any of them consume
-3. Get each in-scope repo's wave assignment from `plan waves`, merge them by altitude, and apply the consumer-after-producer judgment (see *Wave assignment*)
-4. For each module in each in-scope repo's catalog, decide what its story carries:
-   - The owning repo and its wave
+3. Establish the slices. A full plan has no driving change document, so fall back to the lifecycles in `COMMON-OVERVIEW.md` — one slice per lifecycle, in the order listed (see *Slices*)
+4. Get each in-scope repo's wave assignment from `plan waves`, merge them by altitude, and apply the consumer-after-producer judgment (see *Wave assignment*) — ordering the stories **within** each slice
+5. For each module in each in-scope repo's catalog, decide what its story carries:
+   - The owning repo, the slice it belongs to, and its wave within that slice
    - Exact context files derived from each spec file's `depends_on` fields in that repo's CATALOG.yaml
    - Cross-module dependencies listed explicitly (only INTERFACE files from other modules; cross-repo only via `context/shared/spec/`)
    - Acceptance criteria derived from `*-TESTING.md` specs (if the module has a testing facet)
-   - Prerequisite stories from earlier waves
+   - Prerequisite stories from earlier waves — and never from a later slice
    - Implementation tasks adapted to the facets that actually exist for this module
    - The source paths the story writes, and its Post-Story Validation steps (and, for last-wave stories, its Final Validation steps)
-5. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
-6. Verify: every spec file in every in-scope catalog is referenced in exactly one story; only INTERFACE cross-references
+6. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
+7. Verify: every spec file in every in-scope catalog is referenced in exactly one story; every story belongs to exactly one slice; only INTERFACE cross-references
 
 ### Update Sub-Mode
 
-Applies when doing a full plan (000-initial) but source code already exists. After steps 1–3 of the full plan above:
+Applies when doing a full plan (000-initial) but source code already exists. After steps 1–4 of the full plan above:
 
-4. **Diff each module** against its INTERFACE and DATAMODEL spec. For each module determine:
+5. **Diff each module** against its INTERFACE and DATAMODEL spec. For each module determine:
    - **Implement** — no existing code; generate a standard story
    - **Update** — code exists but has gaps or spec drift; generate a story listing only the specific gaps
    - **Verify** — code appears compliant; generate a minimal story that only runs tests to confirm
 
-5. **Migration stories** — If a spec type, function signature, or API endpoint was renamed or removed compared to what exists in code, add a migration story before the implementation story, named `PLAN-{WW}-{SS}m-{REPO}-{MODULE}-MIGRATION.md`. It must describe the old contract, the new contract, and any data migration steps.
+6. **Migration stories** — If a spec type, function signature, or API endpoint was renamed or removed compared to what exists in code, add a migration story before the implementation story, named `PLAN-{WW}-{SS}m-{REPO}-{MODULE}-MIGRATION.md`. It must describe the old contract, the new contract, and any data migration steps. A migration story belongs to the **same slice** as the implementation story it precedes — a slice that ships a contract without its migration is not deliverable on its own.
 
-6. **Preserve working code** — Stories for "Update" and "Verify" modules must explicitly state which files to leave untouched. Do not re-implement modules that already match their spec.
+7. **Preserve working code** — Stories for "Update" and "Verify" modules must explicitly state which files to leave untouched. Do not re-implement modules that already match their spec.
 
-7. Set **Compliance Status** in each rendered story's header to match the module's classification.
+8. Set **Compliance Status** in each rendered story's header to match the module's classification.
 
 ---
 
@@ -167,21 +210,23 @@ Applies when doing a full plan (000-initial) but source code already exists. Aft
 1. Read the driving `PROJECT-CHANGE-<NNN>-*.md` that `plan scope` named
 2. Read each repo-level change file it references
 3. Extract the list of affected modules — and the repo each belongs to — from each repo change file's **Spec Files Modified** and **Affected Code Paths** tables
-4. Read each affected module's owning repo `context/<repo>/spec/CATALOG.yaml`, and get its wave assignment from `plan waves`
-5. Read only the spec files for affected modules (plus their one-level `depends_on` deps, including any shared `*-INTERFACE.md`)
-6. For each affected module, decide what its story carries:
+4. Take the index's `## Slices` table **verbatim** as the cut, in the order it lists (see *Slices*). An index written before the section existed has none: fall back to the lifecycles in `COMMON-OVERVIEW.md`
+5. Read each affected module's owning repo `context/<repo>/spec/CATALOG.yaml`, and get its wave assignment from `plan waves` — ordering the stories **within** each slice
+6. Read only the spec files for affected modules (plus their one-level `depends_on` deps, including any shared `*-INTERFACE.md`)
+7. For each affected module, decide what its story carries:
+   - The slice it belongs to — the row whose **Modules** column names it — and its wave within that slice
    - A **Change Scope** narrative naming exactly which source files to touch and what to change (from the repo-level change file's **Affected Code Paths** table — only the rows for this story's repo)
    - The path to the repo-level change file (e.g. `context/repo-a/changes/CHANGE-003-retry-logic.md`) so the agent can read it
    - Context files (same derivation as full plan, but scoped to affected modules)
    - Implementation tasks limited to the facets mentioned in the change file
    - Acceptance criteria from the repo change file's **Validation Checklist** plus relevant TESTING spec criteria
    - The source paths the story writes, and its Post-Story Validation steps (and, for last-wave stories, its Final Validation steps, referencing the repo change file's **Validation Checklist**)
-7. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
-8. Verify: every entry in every referenced repo change file's **Affected Code Paths** is covered by a story; no story touches modules not listed in those change files
+8. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
+9. Verify: every entry in every referenced repo change file's **Affected Code Paths** is covered by a story; no story touches modules not listed in those change files; every module the `## Slices` table names has a story, and every story sits in exactly one slice
 
 ## Emit the Plan Graph, Stories, State & Ledger
 
-The graph is emitted **first**: `plan story-emit` reads `plan.yaml` for each story's repo, module, wave, prerequisites, parallel group, change file, and target paths.
+The graph is emitted **first**: `plan story-emit` reads `plan.yaml` for each story's repo, module, slice, wave, prerequisites, parallel group, change file, and target paths.
 
 ### 1. `plan.yaml`, `state.yaml`, and the ledger entry
 
@@ -191,11 +236,22 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan emit <plan-id> < draft.json
 
 One invocation writes all three artifacts together — `<plan-dir>/plan.yaml`, the initial `<plan-dir>/state.yaml`, and the `context/project/state.yaml` ledger entry (`version: 1`, `status: pending`, other plans' entries never overwritten) — and **validates each against its schema before persisting it**, so an invalid graph or state cannot reach disk. A refusal persists nothing at all: fix the draft and re-run.
 
-The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `waves[]`, each story's `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
+The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `version: 3`, `run: 0`, `status: pending`, `waves[]`, each story's `slice` back-reference, `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
 
 ```json
 {
   "project_change": "003",
+  "slices": [
+    {
+      "slice": "00",
+      "name": "retry end to end",
+      "behavior": "An adapter call that fails once succeeds on retry, and the consumer sees the retried result",
+      "acceptance": [
+        {"kind": "exit-code", "command": "pytest tests/e2e/test_retry.py -q", "description": "A failing call succeeds on retry, end to end."}
+      ],
+      "stories": ["01-01-repo-a-AUTH", "02-01-repo-a-USERS"]
+    }
+  ],
   "stories": {
     "01-01-repo-a-AUTH": {
       "repo": "repo-a",
@@ -232,6 +288,8 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
 
 What the draft must get right:
 
+- **`slices[]` carries the cut**, in delivery order, each entry taken from the `## Slices` table (or the lifecycle fallback) with its `slice` id, `name`, `behavior`, `acceptance` steps and the `stories` it delivers. Every story id appears in **exactly one** slice's `stories` list; the tool writes each story's own `slice` field from that listing, so a story entry never sets `slice` itself. A draft carrying `slices` is emitted as a **version-3** graph — `version: 3` is supplied by the tool, not by the draft — and every plan generated now carries the cut. (A version-1/2 graph is a plan written before slices existed; it is read as one implicit slice spanning every wave, and nothing needs migrating.)
+- **`plan emit` refuses**, and persists nothing, when slice `00` does not touch every layer the plan touches, when any slice has no `kind: exit-code` acceptance step, or when a story belongs to no slice or to two. These are mechanical consequences of the draft, so they are the tool's to enforce rather than yours to eyeball — but a refusal means the cut or the story-to-slice assignment is wrong, and the fix is in the draft, never in the tool.
 - **Story keys** come from `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-id <file>` — pass the story's intended `PLAN-…-….md` filename and use the id it returns as the key here and in every `prerequisites` reference. Do not compose the key yourself.
 - `project_change` is the value `plan scope` returned — `null` for a full or greenfield plan; `change_file` is `null` there too.
 - `target_paths` and `validation.post_story` are **mandatory** on every story; `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
@@ -249,6 +307,27 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit <plan-id> <story-id>
 It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects the E2E Hard Rules into both `## Post-Story Validation` and `## Final Validation (last wave only)` (see *E2E Hard Rules* above).
 
 Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands — never edit, reformat, or re-copy the injected E2E rules.
+
+## Slice-Scoped Re-Plan (`--slice`)
+
+`/mplan --slice <NN>` refreshes the stories of **one** slice against a plan graph that already exists. It is the entry `mship` calls at step 2 of each loop iteration, once `mspec` has deepened that slice's modules from `contract` to `full`: the stories are then written against detail that did not exist when the graph was first emitted.
+
+Do this, and only this:
+
+1. Resolve the plan and read the slice:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan resolve [<plan-id>]
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan slices <plan-id>
+   ```
+
+   `resolve` names the plan, its run, and the wave and slice to resume at; `slices` returns the plan's slices in order, each with its acceptance, its stories and its current status.
+2. Load the now-`full` spec files for that slice's modules only — nothing from another slice.
+3. Re-render **that slice's** stories with `plan story-emit`, one invocation per story, then fill their judgment sections in again (Context Files, Change Scope narrative, Implementation Tasks, Acceptance Criteria).
+
+**Do not re-emit the graph.** `plan emit` rewrites `plan.yaml`, `state.yaml` and the ledger entry wholesale, which would disturb slices this run has no business touching — including ones already delivered.
+
+**This is not reslicing.** Refreshing one slice's *stories* is this operation. Rewriting the slice **set** — recutting, reordering, splitting or dropping the slices still outstanding — is `mc.py plan reslice`, a different operation that `mship` owns and invokes, and that refuses any draft altering a slice already `applied`. Never call `plan reslice` from here: two skills with a claim on the same write is how a delivered slice gets rewritten by accident.
 
 ## Context Size Budget
 
@@ -281,7 +360,7 @@ Before finalizing the plan, verify:
 5. **Acceptance criteria are testable** — Each criterion can pass/fail unambiguously
 6. **Context lists are minimal** — Only files from `depends_on` fields, not wildcards
 7. **Files are self-contained** — An agent can implement a story by loading only the listed context files
-8. **Final Validation section present** — Exactly one wave's stories contain the Final Validation section (the last wave)
+8. **Slice acceptance is per slice** — every slice carries its own end-to-end acceptance, and the Final Validation section lands on the last wave *of that slice*, not once per plan. Delivery advances a slice at a time, so a plan with a single terminal validation proves nothing until the last one lands
 9. **Graph agrees with the story files** — every `PLAN-*.md` has exactly one `plan.yaml` story entry and vice versa; each story's `wave`/`prerequisites`/`parallel_group` in `plan.yaml` matches its story-file header; every id in `waves[]`, `prerequisites`, and `parallel_group` resolves to a real story; no prerequisite points to a later wave
 10. **Single-repo stories** — every `plan.yaml` story names exactly one `repo`; same-wave siblings' `target_paths` are disjoint (module-disjoint by construction), tested pairwise on non-empty lists. A story with `target_paths: []` — a Verify story that writes no source files — is an explicit **Verify-story exemption** from this disjointness test, not a trivial pass via an empty intersection.
 11. **Schemas pass** — re-check the three emitted artifacts explicitly, since step 10's fixes may have touched them:
@@ -293,3 +372,11 @@ Before finalizing the plan, verify:
     ```
 
     All three must exit 0, and `state.yaml` must have one story entry per `plan.yaml` story, all `pending`.
+
+12. **Slice `00` is a walking skeleton** — it touches every layer the plan touches. A first slice confined to one layer is the old bottom-up order wearing slice vocabulary
+13. **Every slice has a runnable acceptance** — at least one `kind: exit-code` step. Prose-only acceptance forces a human stop under every gate policy but `never`, so a plan of them is a plan that cannot run unattended
+14. **Every story belongs to exactly one slice**, and no prerequisite crosses into a later slice
+
+Checks 12–14 are enforced mechanically by `plan emit`, which refuses a draft that breaks any of them: they are stated here so the plan can be read against them, not performed here. A refusal is where they actually bite.
+
+The former single-wave Final Validation check is retired. End-to-end validation is now per slice, so exactly one wave *per slice* carries it — which check 13 subsumes.
