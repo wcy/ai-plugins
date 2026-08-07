@@ -1889,6 +1889,17 @@ BARRIER_STEP = {
     "description": "the merged integration branch still passes",
 }
 
+#: The per-increment check a version-4 *story* must carry, alongside the wave's
+#: barrier. Both keys are gated on the same version, so a draft that declares 4
+#: to exercise the barrier must carry this too or the emitted graph would not
+#: validate for a reason that has nothing to do with what is under test.
+INCREMENT_STEP = {
+    "kind": "exit-code",
+    "command": "pytest tests/test_alpha.py -q",
+    "task": 1,
+    "description": "the first increment holds before the second is started",
+}
+
 
 def _wave(number, stories, validation=None):
     entry = {"wave": number, "stories": list(stories)}
@@ -1912,6 +1923,9 @@ def _barrier_draft(validation, version=4, **fields):
         _wave(1, ["01-01-demo-ALPHA"], validation.get(1)),
         _wave(2, ["02-01-demo-BETA"], validation.get(2)),
     ]
+    if version == 4:
+        for story in draft["stories"].values():
+            story["validation"]["increments"] = [dict(INCREMENT_STEP)]
     return draft
 
 
