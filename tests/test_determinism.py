@@ -645,6 +645,16 @@ SLICE_ACCEPTANCE_HEADING = "## Slice Acceptance"
 #: divergence the rename exists to remove.
 RETIRED_ACCEPTANCE_HEADING = "## Final Validation"
 
+#: The header line a version-1/2 graph must render, whole: its synthesized slice
+#: ``00``, named ``whole plan``. Pinned as a whole line rather than counted,
+#: because the template's own unsubstituted ``{NN} — {slice name}`` satisfies a
+#: count and satisfies nothing else.
+LEGACY_SLICE_LINE = "**Slice:** 00 — whole plan"
+
+#: The two placeholders the header line carries in the template. No rendered
+#: story, on any graph version, may still hold either.
+SLICE_PLACEHOLDERS = ("{NN}", "{slice name}")
+
 
 def rendered_story(workspace, story_id=LAST_STORY):
     """Emit one story file and return its text.
@@ -663,6 +673,13 @@ def test_the_rendered_story_carries_both_new_template_fields(fixture):
     """Determinism asserted over an absent field would be vacuously true."""
     text = rendered_story(fixture)
     assert text.count(SLICE_HEADER_FIELD) == 1
+    # Counting the field says only that the template line survived. It counted
+    # 1 while the renderer emitted `{NN} — {slice name}` verbatim, which is how
+    # an unfilled header shipped: the line is pinned whole, and both
+    # placeholders are asserted gone from the story entirely.
+    assert LEGACY_SLICE_LINE in text
+    for placeholder in SLICE_PLACEHOLDERS:
+        assert placeholder not in text
     assert text.count(SLICE_ACCEPTANCE_HEADING) == 1
     assert RETIRED_ACCEPTANCE_HEADING not in text
 
@@ -690,9 +707,33 @@ def test_the_slice_header_is_unconditional_and_the_acceptance_section_is_not(fix
     excludes loses the section while keeping the header field.
     """
     text = rendered_story(fixture, story_id=FIRST_STORY)
-    assert SLICE_HEADER_FIELD in text
+    assert LEGACY_SLICE_LINE in text
+    for placeholder in SLICE_PLACEHOLDERS:
+        assert placeholder not in text
     assert SLICE_ACCEPTANCE_HEADING not in text
     assert RETIRED_ACCEPTANCE_HEADING not in text
+
+
+def test_a_legacy_graph_renders_exactly_what_its_declared_equivalent_does(fixture):
+    """Byte-identity between the synthesized slice and the declared same slice.
+
+    The fixture's graph declares no ``slices``, so it is read as carrying the
+    synthesized ``00`` spanning every wave. Resliced into precisely that slice
+    -- same id, same name, same members -- the graph becomes version 3 and the
+    rendering must not move a byte. The synthesized slice is not a second
+    rendering path kept in step by hand; it is the one path fed a derived
+    value, and this is what says so.
+    """
+    legacy = rendered_story(fixture)
+    equivalent = dict(SLICE_DRAFTS[0], slice="00", name="whole plan")
+    result = invoke(fixture, "plan.reslice", stdin=io.StringIO(json.dumps([equivalent])))
+    assert result.ok, [item.render() for item in result.diagnostics]
+
+    graph = core.load_yaml(fixture.path("context/project/plans/%s/plan.yaml" % PLAN_ID))
+    assert graph["version"] == 3  # the legacy read is no longer in play
+
+    assert rendered_story(fixture) == legacy
+    assert LEGACY_SLICE_LINE in legacy
 
 
 # ---------------------------------------------------------------------------

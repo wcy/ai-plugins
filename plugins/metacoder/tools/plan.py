@@ -29,7 +29,11 @@ Nine verbs, each a pure function of the workspace bytes plus the injected clock:
 * ``reslice`` -- rewrites the **outstanding** slices from a ``SliceDraft[]``.
 * ``emit`` -- ``plan.yaml``, the initial ``state.yaml``, and the ledger entry.
 * ``story-emit`` -- a story file rendered from ``shared/PLAN-STORY-TEMPLATE.md``
-  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``.
+  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``. Two
+  of its substitutions are slice-scoped: the ``**Slice:**`` header, and the
+  ``## Slice Acceptance`` gate, which fires on the last wave *of the story's own
+  slice* -- one gate per slice, not one per plan. ``total_waves`` stays
+  plan-global, so a story may read ``**Wave:** 2 of 4`` and still carry it.
 * ``shards`` -- the ``ShardSpec[]`` conformance shard list ``mverify`` fans out
   over: change-conformance by ``(repo, module)``, then cross-repo by shared
   TAG, then coupling. ``--slice`` restricts it to what that slice shipped.
@@ -1729,7 +1733,7 @@ def _story_emit(args, ws, now) -> core.Result:
             ],
         )
     catalog, catalog_rel = _repo_catalog(ws, repo, diagnostics)
-    context = _story_context(graph, story_id, story, repo, catalog)
+    context = _story_context(graph, story_id, story, repo, catalog, diagnostics, graph_rel)
 
     rules = _e2e_rules()
     body = _template_body()
@@ -1751,7 +1755,11 @@ def _story_emit(args, ws, now) -> core.Result:
         "plan_id": plan_id,
         "story_id": story_id,
         "file": "%s/%s" % (plan_dir_rel, name),
+        "slice": context["slice"],
         "wave": context["wave"],
+        # Slice-scoped, not plan-scoped: the last wave *of this story's slice*.
+        # ``slice`` is published beside it so a caller can tell which slice the
+        # boolean was resolved against without re-reading the graph.
         "last_wave": context["last_wave"],
         "catalog": catalog_rel,
         "e2e_injections": 2 if context["e2e"] else 0,
@@ -1776,23 +1784,118 @@ def _repo_catalog(ws, repo: str, diagnostics: List[core.Diagnostic]):
     return (catalog if isinstance(catalog, dict) else {}), relative
 
 
+def _slice_last_wave(graph: Dict[str, Any], entry: Dict[str, Any]) -> Optional[int]:
+    """The maximum wave among a slice's own member stories.
+
+    **A slice's last wave is the maximum wave among its member stories, never a
+    function of its position or its id.** Wave numbers are global to the plan
+    and ``plan-graph.schema.json`` does not constrain slices to contiguous or
+    non-overlapping ranges, so membership is the only derivation correct under
+    every arrangement.
+    """
+    stories = graph.get("stories")
+    if not isinstance(stories, dict):
+        return None
+    members = entry.get("stories")
+    numbers: List[int] = []
+    for story_id in members if isinstance(members, list) else []:
+        member = stories.get(story_id) if isinstance(story_id, str) else None
+        wave = member.get("wave") if isinstance(member, dict) else None
+        if isinstance(wave, int):
+            numbers.append(wave)
+    return max(numbers) if numbers else None
+
+
+def _story_slice(
+    graph: Dict[str, Any],
+    story_id: str,
+    story: Dict[str, Any],
+    plan_last: Optional[int],
+    diagnostics: Optional[List[core.Diagnostic]],
+    graph_rel: Optional[str],
+) -> Tuple[str, str, Optional[int]]:
+    """``(slice id, slice name, the slice's last wave)`` for one story.
+
+    ``slices[].stories`` is the authority on membership: the story's own
+    ``slice`` key is written from it at ``plan emit`` and ``plan reslice``, but
+    this reads a graph off disk that may have been hand-edited since, and the
+    refusal that would catch a disagreement runs only at those two verbs. All
+    three degenerate cases therefore render with a ``warning`` rather than
+    refuse -- ``story-emit`` is called once per story in a fan-out, and a
+    graph-level defect must not become a rendering outage in stories that are
+    themselves well-formed.
+    """
+
+    def note(message: str) -> None:
+        if diagnostics is not None:
+            diagnostics.append(
+                core.warning(core.E_INVALID_STATE, message, file=graph_rel)
+            )
+
+    # ``graph_slices`` always yields at least one slice -- a version-1/2 graph
+    # is read as carrying the synthesized ``00``, which lists every story -- so
+    # there is no null branch and a legacy graph resolves to the plan's last
+    # wave exactly as it always did.
+    declared, _synthesized = graph_slices(graph)
+    owners = [
+        entry
+        for entry in declared
+        if isinstance(entry.get("stories"), list) and story_id in entry["stories"]
+    ]
+    if len(owners) > 1:
+        note(
+            "story %r is listed by slices %s; the first-listed wins"
+            % (story_id, ", ".join(repr(str(entry.get("slice"))) for entry in owners))
+        )
+    if not owners:
+        note(
+            "no slice lists story %r; it renders as the whole plan and its "
+            "acceptance gate falls back to the plan's last wave" % (story_id,)
+        )
+        return LEGACY_SLICE_ID, LEGACY_SLICE_NAME, plan_last
+
+    entry = owners[0]
+    slice_id = str(entry.get("slice") or "")
+    claimed = story.get("slice")
+    if isinstance(claimed, str) and claimed != slice_id:
+        note(
+            "story %r carries slice %r but slice %r lists it; slices[].stories "
+            "is the authority" % (story_id, claimed, slice_id)
+        )
+    return slice_id, str(entry.get("name") or ""), _slice_last_wave(graph, entry)
+
+
 def _story_context(
-    graph: Dict[str, Any], story_id: str, story: Dict[str, Any], repo: str, catalog: Dict[str, Any]
+    graph: Dict[str, Any],
+    story_id: str,
+    story: Dict[str, Any],
+    repo: str,
+    catalog: Dict[str, Any],
+    diagnostics: Optional[List[core.Diagnostic]] = None,
+    graph_rel: Optional[str] = None,
 ) -> Dict[str, Any]:
     waves = _graph_waves(graph)
     numbers = [wave["wave"] for wave in waves if isinstance(wave.get("wave"), int)]
     total = len(numbers)
     last = max(numbers) if numbers else None
     wave = story.get("wave")
+    slice_id, slice_name, slice_last = _story_slice(
+        graph, story_id, story, last, diagnostics, graph_rel
+    )
     prerequisites = [item for item in story.get("prerequisites", []) if isinstance(item, str)]
     siblings = [item for item in story.get("parallel_group", []) if isinstance(item, str)]
     return {
         "repo": repo,
         "module": str(story.get("module") or ""),
         "layer": _module_layer(catalog, story.get("module")),
+        "slice": slice_id,
+        "slice_name": slice_name,
         "wave": wave,
+        # Plan-global on purpose: scoping the count to the slice would make wave
+        # numbers non-monotonic against the graph's own ``waves:`` block, so a
+        # story may render ``**Wave:** 2 of 4`` and still be its slice's last.
         "total_waves": total,
-        "last_wave": wave == last,
+        "last_wave": wave == slice_last,
         "incremental": graph.get("type") == "incremental",
         "prerequisites": [_story_filename(graph, item) for item in prerequisites],
         "parallel_group": [_story_filename(graph, item) for item in siblings],
@@ -1981,6 +2084,16 @@ def _substitute(text: str, context: Dict[str, Any]) -> str:
             ("`context/{repo}/changes/CHANGE-<NNN>-<slug>.md`", "`%s`" % (change_file,))
         )
     replacements.append(("{repo}", repo))
+    # Deliberately after the ``{repo}`` pass. Rendering is a fixed-order
+    # sequence of replacements, and a substituted value re-entering that
+    # sequence is the one way it could stop being one -- a slice named with a
+    # literal ``{repo}`` would otherwise be rewritten after the fact.
+    replacements.append(
+        (
+            "**Slice:** {NN} — {slice name}",
+            "**Slice:** %s — %s" % (context["slice"], context["slice_name"]),
+        )
+    )
     for needle, value in replacements:
         text = text.replace(needle, value)
     return text
