@@ -242,6 +242,15 @@ Or collapse steps 2–5 into a single `mquick` run.
 
 Invoking `/mexecute` yourself, naming no slice, still puts a whole plan through in one go — that is what a plan written before slices existed does, wave for wave.
 
+**Checking is continuous, not terminal.** Inside a story, the agent runs the plan graph's
+`validation.increments` steps *as it implements* — each one straight after the increment it covers —
+so a failure names the increment that introduced it rather than the story it surfaced in.
+`validation.post_story` stays the story's closing gate rather than its only one. Then at each wave's
+**barrier**, the wave's own `validation` steps run against the **merged** integration branch — the
+branch every story of the run branches off and every green story merges back into — which is the
+first and only point at which stories built in isolation are exercised together. Every one of these
+steps is `kind: exit-code`, so running them often costs no model effort and no human attention.
+
 ## Orchestration
 
 The skills use Claude Code's orchestration primitives only where real parallelism or isolation earns them:
