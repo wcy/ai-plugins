@@ -1,0 +1,68 @@
+{
+  "version": 4,
+  "plan_id": "001-demo",
+  "type": "full",
+  "repos": ["demo"],
+  "slices": [
+    {
+      "slice": "00",
+      "name": "Walking skeleton",
+      "behavior": "The demo greets a caller end to end.",
+      "acceptance": [
+        {
+          "kind": "exit-code",
+          "command": "pytest tests/test_alpha.py -q",
+          "surface": "internal",
+          "description": "The greeting function returns, checked beneath the command line the demo is delivered on."
+        },
+        {
+          "kind": "exit-code",
+          "command": "pytest tests/ -q",
+          "description": "The demo's suite passes; unannotated, and therefore internal by default."
+        }
+      ],
+      "stories": ["01-00-demo-ALPHA"]
+    }
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "stories": ["01-00-demo-ALPHA"],
+      "validation": [
+        {
+          "kind": "exit-code",
+          "command": "pytest tests/ -q",
+          "description": "The merged integration branch still passes before wave 2 is cut from it."
+        }
+      ]
+    }
+  ],
+  "stories": {
+    "01-00-demo-ALPHA": {
+      "file": "PLAN-01-00-demo-ALPHA.md",
+      "repo": "demo",
+      "module": "ALPHA",
+      "wave": 1,
+      "slice": "00",
+      "prerequisites": [],
+      "target_paths": ["src/alpha.py"],
+      "validation": {
+        "post_story": [
+          {
+            "kind": "exit-code",
+            "command": "pytest tests/test_alpha.py -q",
+            "description": "ALPHA's own tests pass."
+          }
+        ],
+        "increments": [
+          {
+            "kind": "exit-code",
+            "command": "pytest tests/test_alpha.py::test_greeting -q",
+            "task": 1,
+            "description": "The greeting exists and returns, checked before the caller is wired to it."
+          }
+        ]
+      }
+    }
+  }
+}

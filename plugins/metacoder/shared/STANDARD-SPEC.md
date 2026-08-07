@@ -353,6 +353,25 @@ rules here updates every story emitted afterwards.
 
 ---
 
+## Delivered-Surface Rule
+
+Applies to every module, whatever its layer:
+
+- **Name the surface.** A module's `TESTING` facet names the surface its behaviour is delivered on — the command line a user invokes, the artifact it emits, the endpoint it answers.
+- **Reach the behaviour through it.** At least one check exercises the behaviour through that surface, not only through the components beneath it: a module delivered as a command line is checked by invoking that command; one delivered as an emitted artifact is checked against that artifact.
+- **Below the surface does not count.** Confirmation obtained below the delivered surface is evidence about internals and is not counted as confirmation of the delivered behaviour.
+- **No condition suspends this.** Unlike the E2E rules, this one is unconditional — every module has a delivered surface, so there is no catalog condition under which it does not apply.
+
+**Delivery.** This section **owns** the four rules above. A story agent's loaded context is only its
+own story, its Context Files, and the repo `CATALOG.yaml` — it never reads this file. The rules reach
+it by **injection** into `shared/PLAN-STORY-TEMPLATE.md` at render time, at the single
+`INJECT:DELIVERED-SURFACE-RULE` marker (**Post-Story Validation**, ungated — every module has a
+delivered surface, so there is no catalog condition to gate on). `mc.py plan story-emit` performs the
+injection, reading the four bullets from this section. The delivered copy is generated, never
+hand-maintained, so editing the rules here updates every story emitted afterwards.
+
+---
+
 ## Process & Ordering Rules
 
 1. Write **shared interface specs before the repos that depend on them**.

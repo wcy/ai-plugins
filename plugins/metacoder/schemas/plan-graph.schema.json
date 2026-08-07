@@ -8,8 +8,8 @@
   "required": ["version", "plan_id", "type", "repos", "waves", "stories"],
   "properties": {
     "version": {
-      "enum": [1, 2, 3],
-      "description": "New plans are written with 3. A 1 or 2 graph carries no slices and is read as one implicit slice containing every wave, which is the delivery model it was written for — no pre-existing plan needs migrating. The version, not the presence of the slices key, is the discriminator: sniffing for slices would let a malformed version-3 graph silently degrade to whole-job delivery."
+      "enum": [1, 2, 3, 4],
+      "description": "New plans are written with 4. 4 declares a graph continuously checked: it carries waves[].validation, the barrier check run against the merged integration branch, and stories{}.validation.increments, the checks run during a story rather than after it. 3 declares a graph slice-bearing but checked only at its story and slice boundaries — the delivery model it was written for. A 1 or 2 graph carries no slices and is read as one implicit slice containing every wave, which is the delivery model those were written for — no pre-existing plan needs migrating. The version, not the presence of a key, is the discriminator at every step: sniffing for slices would let a malformed version-3 graph silently degrade to whole-job delivery, and making the version-4 keys optional on 3 would let a graph omit the very checks that version exists to require and still validate."
     },
     "plan_id": {
       "type": "string",
@@ -33,7 +33,7 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/slice" },
-      "description": "The delivery axis: each entry is the set of stories that make one behaviour run end to end. Required when version is 3, forbidden below it. Two producer obligations JSON Schema cannot express are checked by mc.py instead: every story appears in exactly one slice, and at least one acceptance step of every slice is kind: exit-code."
+      "description": "The delivery axis: each entry is the set of stories that make one behaviour run end to end. Required when version is 3, forbidden below it. Four producer obligations JSON Schema cannot express are checked by mc.py instead: every story appears in exactly one slice; at least one acceptance step of every slice is kind: exit-code; every story's validation.increments holds at least one kind: exit-code step; and every wave's validation holds at least one kind: exit-code step. The last two are obligations only on a version-4 graph, since below it the keys they name do not exist."
     },
     "waves": {
       "type": "array",
@@ -48,6 +48,12 @@
             "type": "array",
             "minItems": 1,
             "items": { "$ref": "#/$defs/storyId" }
+          },
+          "validation": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/validationStep" },
+            "description": "The barrier check: run against the merged integration branch after this wave's greens land and before the next wave is cut from it. Required when version is 4, forbidden below it. This is the only point at which stories built in isolated worktrees are exercised together — mplan guarantees same-wave stories write disjoint paths, which makes the merge conflict-free but says nothing about whether the merged behaviour holds. At least one step must be kind: exit-code, which mc.py checks, since JSON Schema cannot."
           }
         }
       }
@@ -61,18 +67,50 @@
   },
   "if": {
     "required": ["version"],
-    "properties": { "version": { "const": 3 } }
+    "properties": { "version": { "enum": [3, 4] } }
   },
   "then": {
     "required": ["slices"],
     "properties": {
       "stories": { "additionalProperties": { "required": ["slice"] } }
+    },
+    "if": {
+      "required": ["version"],
+      "properties": { "version": { "const": 4 } }
+    },
+    "then": {
+      "properties": {
+        "waves": { "items": { "required": ["validation"] } },
+        "stories": {
+          "additionalProperties": {
+            "properties": { "validation": { "required": ["increments"] } }
+          }
+        }
+      }
+    },
+    "else": {
+      "properties": {
+        "waves": { "items": { "properties": { "validation": false } } },
+        "stories": {
+          "additionalProperties": {
+            "properties": { "validation": { "properties": { "increments": false } } }
+          }
+        }
+      }
     }
   },
   "else": {
     "properties": {
       "slices": false,
-      "stories": { "additionalProperties": { "properties": { "slice": false } } }
+      "stories": {
+        "additionalProperties": {
+          "properties": {
+            "slice": false,
+            "validation": { "properties": { "increments": false } }
+          }
+        }
+      },
+      "waves": { "items": { "properties": { "validation": false } } }
     }
   },
   "$defs": {
@@ -125,7 +163,17 @@
           "type": "string",
           "description": "Required when kind is exit-code: a shell command run relative to repos/<repo>/ that must exit 0."
         },
-        "description": { "type": "string", "minLength": 1 }
+        "description": { "type": "string", "minLength": 1 },
+        "surface": {
+          "enum": ["delivered", "internal"],
+          "default": "internal",
+          "description": "Whether the step exercises the behaviour through the interface it is delivered on, or through a component beneath it. The default is internal because that is what an unannotated step in a version-3 graph actually was, and because a default of delivered would let every pre-existing step silently satisfy the obligation that at least one exit-code acceptance step of every slice reach the delivered surface — which mc.py checks, since JSON Schema cannot."
+        },
+        "task": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The position in the story's Implementation Tasks list this step is run after; 1 is the first task. Meaningful only on a stories{}.validation.increments entry, where it is what lets a failure name the increment that introduced it rather than the story it surfaced in."
+        }
       },
       "if": { "properties": { "kind": { "const": "exit-code" } } },
       "then": { "required": ["command"] }
@@ -176,6 +224,12 @@
               "type": "array",
               "items": { "$ref": "#/$defs/validationStep" },
               "description": "Present only on last-wave stories."
+            },
+            "increments": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/validationStep" },
+              "description": "The checks run during the story rather than after it: each entry names, via its task field, the position in the story's Implementation Tasks list it is run after. Required when version is 4, forbidden below it. A single terminal check makes every failure a search across everything the story produced, so attributing it costs more than fixing it; post_story remains the story's closing gate, and this is what stops it being the only one. At least one step must be kind: exit-code, which mc.py checks, since JSON Schema cannot."
             }
           }
         }

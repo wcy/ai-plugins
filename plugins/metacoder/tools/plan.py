@@ -29,11 +29,14 @@ Nine verbs, each a pure function of the workspace bytes plus the injected clock:
 * ``reslice`` -- rewrites the **outstanding** slices from a ``SliceDraft[]``.
 * ``emit`` -- ``plan.yaml``, the initial ``state.yaml``, and the ledger entry.
 * ``story-emit`` -- a story file rendered from ``shared/PLAN-STORY-TEMPLATE.md``
-  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``. Two
-  of its substitutions are slice-scoped: the ``**Slice:**`` header, and the
-  ``## Slice Acceptance`` gate, which fires on the last wave *of the story's own
-  slice* -- one gate per slice, not one per plan. ``total_waves`` stays
-  plan-global, so a story may read ``**Wave:** 2 of 4`` and still carry it.
+  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``, and
+  each ``validation.increments`` step interleaved into
+  ``## Implementation Tasks`` immediately after the task its ``task`` index
+  names, so the list reads work-then-check repeated. Two of its substitutions
+  are slice-scoped: the ``**Slice:**`` header, and the ``## Slice Acceptance``
+  gate, which fires on the last wave *of the story's own slice* -- one gate per
+  slice, not one per plan. ``total_waves`` stays plan-global, so a story may read
+  ``**Wave:** 2 of 4`` and still carry it.
 * ``shards`` -- the ``ShardSpec[]`` conformance shard list ``mverify`` fans out
   over: change-conformance by ``(repo, module)``, then cross-repo by shared
   TAG, then coupling. ``--slice`` restricts it to what that slice shipped.
@@ -75,7 +78,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tools import change, core
 
@@ -103,6 +106,18 @@ PLAN_GRAPH_VERSION = 2
 PLAN_STATE_VERSION = 2
 PLAN_GRAPH_SLICE_VERSION = 3
 PLAN_STATE_SLICE_VERSION = 3
+
+#: The version that declares a graph *continuously checked*: its waves carry
+#: ``validation``, the barrier check run against the merged integration branch.
+PLAN_GRAPH_BARRIER_VERSION = 4
+
+#: Every graph version that carries ``slices``. The **version** is the
+#: discriminator at every step, never the presence of a key, so a version added
+#: above 3 has to be added here too or it silently degrades to whole-job
+#: delivery -- which is the failure the version-as-discriminator rule exists to
+#: prevent. ``state.yaml`` has its own version line and stays at 3: what changed
+#: in 4 is the graph's shape, not the state file's.
+PLAN_GRAPH_SLICE_VERSIONS = (PLAN_GRAPH_SLICE_VERSION, PLAN_GRAPH_BARRIER_VERSION)
 LEDGER_VERSION = 1
 
 #: ``sliceId`` -- ``^[0-9]{2}$``, per plan-graph.schema.json.
@@ -126,9 +141,17 @@ SLICE_PENDING = "pending"
 #: is written by ``state set-slice`` and never supplied by a draft.
 SLICE_DRAFT_FIELDS = ("slice", "name", "behavior", "acceptance", "stories")
 
-#: The acceptance kind at least one step of every slice must be. JSON Schema
-#: cannot express "at least one item has this value", so it is checked here.
+#: The kind at least one step of every slice's acceptance -- and, on a version-4
+#: graph, of every wave's ``validation`` -- must be. JSON Schema cannot express
+#: "at least one item has this value", so it is checked here.
 EXIT_CODE_KIND = "exit-code"
+
+#: The ``surface`` that same step must carry on a version-4 slice: the interface
+#: the behaviour is delivered on, rather than a component beneath it.
+#: ``validationStep.surface`` defaults to ``internal``, so a step that does not
+#: say ``delivered`` has not claimed it -- which is what stops every step
+#: written before the key existed from silently satisfying the obligation.
+DELIVERED_SURFACE = "delivered"
 
 #: ``plan_id`` -- ``<NNN>-<slug>``, per plan-graph.schema.json.
 PLAN_ID_PATTERN = r"^[0-9]{3}-[a-z0-9-]+$"
@@ -178,7 +201,27 @@ FINAL_WAVE_GATE = "<!-- Include the section below only in stories belonging to t
 INJECT_MARKER = "<!-- INJECT:E2E-HARD-RULES"
 COMPLIANCE_LINE = "**Compliance Status:**"
 
+#: The second injection point. Matched *inside* the comment rather than at its
+#: start, because the template's marker deliberately does not open the line: a
+#: comment beginning ``<!-- WORD:`` reads as front-matter to
+#: :func:`_strip_guidance_comments` and would be emitted verbatim instead of
+#: being replaced.
+DELIVERED_SURFACE_MARKER = "INJECT:DELIVERED-SURFACE-RULE"
+
 E2E_SECTION_HEADING = "## E2E Testing Hard Rules"
+DELIVERED_SURFACE_SECTION_HEADING = "## Delivered-Surface Rule"
+
+#: The section a story's ``validation.increments`` are interleaved into, and the
+#: form each one renders as beneath the task it names -- both declared by
+#: ``PLAN-STORY-TEMPLATE.md`` §"Implementation Tasks", which tells the agent that
+#: reads the story to run the check under a task before starting the next one.
+TASKS_HEADING = "## Implementation Tasks"
+CHECK_PREFIX = "- *Check:*"
+
+#: A top-level ordered-list item in that section -- one rendered task. Position
+#: is the identity, not the printed digit: ``task: 1`` is the first task in the
+#: list, exactly as plan-graph.schema.json words it.
+_TASK_ITEM_RE = re.compile(r"^([0-9]+\.[ \t]+)\S")
 
 _COMMENT_INLINE_RE = re.compile(r"<!--.*?-->")
 
@@ -225,7 +268,18 @@ notes:
   the rest are left in place for mplan's judgment. The four E2E Testing Hard
   Rules are injected verbatim from shared/STANDARD-SPEC.md at both
   INJECT:E2E-HARD-RULES markers, gated exactly as the markers are (the repo's
-  CATALOG.yaml must name an E2E module or an E2E test-facet file).
+  CATALOG.yaml must name an E2E module or an E2E test-facet file). The four
+  Delivered-Surface Rules are injected from that same file at their own
+  INJECT:DELIVERED-SURFACE-RULE marker and are ungated: every module has a
+  surface its behaviour is delivered on, so there is no catalog condition
+  under which the rule does not apply.
+
+  A version-4 story's validation.increments are interleaved into ## Implemen-
+  tation Tasks: each step renders as a `- *Check:*` line immediately beneath
+  the task its `task` index names, so the list reads work-then-check repeated
+  rather than work followed by one closing check. A `task` the rendered list
+  does not reach is placed after the last task and reported as a warning --
+  never a refusal, since this verb is called once per story in a fan-out.
 """
 
 
@@ -775,7 +829,7 @@ def graph_slices(graph: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool]:
     for ``slices`` would let a malformed version-3 graph silently degrade to
     whole-job delivery.
     """
-    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION:
+    if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS:
         declared = graph.get("slices")
         entries = [entry for entry in declared if isinstance(entry, dict)] if isinstance(declared, list) else []
         return entries, False
@@ -1186,10 +1240,16 @@ def _normalize_graph(
     waves, refusals = _reconcile_waves(draft.get("waves"), wave_members)
     if refusals:
         return graph, refusals
+    refusals = _wave_barrier_checks(graph["version"], waves)
+    if refusals:
+        return graph, refusals
 
     normalized: Dict[str, Any] = {}
     for story_id, raw in stories.items():
         normalized[story_id] = _normalize_story(story_id, raw, waves)
+    refusals = _story_increment_checks(graph["version"], normalized)
+    if refusals:
+        return graph, refusals
     graph["stories"] = normalized
     graph["waves"] = waves
     if "repos" not in graph:
@@ -1209,6 +1269,9 @@ def _normalize_graph(
         return graph, []
 
     slices, refusals = _normalize_slices(raw_slices, normalized)
+    if refusals:
+        return graph, refusals
+    refusals = _slice_surface_checks(graph["version"], slices)
     if refusals:
         return graph, refusals
     refusals = _slice_zero_spans_every_layer(slices, normalized, ws)
@@ -1426,6 +1489,7 @@ def _reconcile_waves(
     if not isinstance(declared, list):
         return derived, []
     ordering: Dict[int, List[str]] = {}
+    barriers: Dict[int, Any] = {}
     for entry in declared:
         if not isinstance(entry, dict):
             continue
@@ -1434,6 +1498,12 @@ def _reconcile_waves(
         if isinstance(wave, bool) or not isinstance(wave, int) or not isinstance(stories, list):
             continue
         ordering[wave] = [story for story in stories if isinstance(story, str)]
+        if "validation" in entry:
+            # Carried through, never derived: the barrier check is an assertion
+            # about what must hold once the wave is merged, which the stories
+            # cannot supply. Carrying it on a version below 4 is what lets the
+            # schema *refuse* it there rather than have it silently dropped.
+            barriers[wave] = entry["validation"]
     if not ordering:
         return derived, []
     if sorted(ordering) != sorted(members):
@@ -1455,7 +1525,138 @@ def _reconcile_waves(
                     file="<stdin>",
                 )
             ]
-    return [{"wave": wave, "stories": list(ordering[wave])} for wave in sorted(ordering)], []
+    reconciled: List[Dict[str, Any]] = []
+    for wave in sorted(ordering):
+        entry = {"wave": wave, "stories": list(ordering[wave])}
+        if wave in barriers:
+            entry["validation"] = barriers[wave]
+        reconciled.append(entry)
+    return reconciled, []
+
+
+def _wave_barrier_checks(version: Any, waves: Sequence[Dict[str, Any]]) -> List[core.Diagnostic]:
+    """Every version-4 wave carries a barrier check that actually runs.
+
+    ``plan-graph.schema.json`` requires the ``validation`` array on a version-4
+    wave and can go no further: "at least one item has this ``kind``" is a
+    cross-field count JSON Schema cannot state, so ``emit`` states it. It is a
+    refusal rather than a warning for the same reason the prose-acceptance rule
+    is -- a wave with no runnable barrier produces a plan that *looks* checked
+    and is not, and the omission is invisible in every artifact downstream of
+    the emit.
+
+    A wave declaring no ``validation`` at all and one declaring only prose are
+    the same defect and are reported as one, since both leave the merged branch
+    unexercised.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for entry in waves:
+        steps = entry.get("validation")
+        if isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("kind") == EXIT_CODE_KIND for step in steps
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "wave %s has no `kind: %s` validation step; a wave whose barrier "
+                "check is prose alone cannot be demonstrated to run against the "
+                "merged integration branch" % (entry.get("wave"), EXIT_CODE_KIND),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
+
+
+def _slice_surface_checks(
+    version: Any, slices: Sequence[Dict[str, Any]]
+) -> List[core.Diagnostic]:
+    """Every version-4 slice is demonstrated through its delivered surface.
+
+    ``STANDARD-SPEC.md`` §"Delivered-Surface Rule" is unconditional, and this is
+    where a plan is made to satisfy it mechanically: at least one acceptance
+    step of every slice must be **both** ``kind: exit-code`` and
+    ``surface: delivered``. Neither half suffices alone -- a prose step naming
+    the delivered surface cannot be demonstrated to run, and a runnable step
+    beneath the surface is evidence about internals rather than about the
+    behaviour that was delivered -- and JSON Schema can state neither, since
+    both are cross-field counts over an array.
+
+    It is a refusal rather than a warning for the same reason the
+    prose-acceptance rule is: a slice checked only beneath its surface produces
+    a plan that *looks* demonstrated and is not, and the omission is invisible
+    in every artifact downstream of the emit.
+
+    Gated on the version like the wave and story checks, and for the reason
+    ``surface`` defaults to ``internal``: an unannotated step is exactly what a
+    version-3 acceptance always was, so applying the rule below 4 would refuse
+    every graph written before the key existed.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for entry in slices:
+        acceptance = entry.get("acceptance")
+        if isinstance(acceptance, list) and any(
+            isinstance(step, dict)
+            and step.get("kind") == EXIT_CODE_KIND
+            and step.get("surface") == DELIVERED_SURFACE
+            for step in acceptance
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "slice %r has no `kind: %s` acceptance step carrying `surface: "
+                "%s`; a slice demonstrated only beneath the surface its "
+                "behaviour is delivered on has not been demonstrated to work"
+                % (entry.get("slice"), EXIT_CODE_KIND, DELIVERED_SURFACE),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
+
+
+def _story_increment_checks(version: Any, stories: Dict[str, Any]) -> List[core.Diagnostic]:
+    """Every version-4 story carries a per-increment check that actually runs.
+
+    The story-level counterpart of ``_wave_barrier_checks``, and refused for the
+    same reason: ``plan-graph.schema.json`` requires ``validation.increments`` on
+    a version-4 story and can go no further, since "at least one item has this
+    ``kind``" is a cross-field count JSON Schema cannot state. A story whose
+    increments are prose alone produces a plan that *looks* checked during the
+    work and is not, and the omission is invisible in every artifact downstream
+    of the emit -- including the rendered story, where the interleave would put
+    a check line no agent can run.
+
+    A story declaring no ``increments`` at all and one declaring only prose are
+    the same defect and are reported as one: both leave the story's own work
+    unchecked until its closing gate.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for story_id in sorted(stories):
+        story = stories[story_id]
+        validation = story.get("validation") if isinstance(story, dict) else None
+        steps = validation.get("increments") if isinstance(validation, dict) else None
+        if isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("kind") == EXIT_CODE_KIND for step in steps
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "story %r has no `kind: %s` validation.increments step; a story "
+                "whose per-increment checks are prose alone cannot be "
+                "demonstrated to run during the work it checks"
+                % (story_id, EXIT_CODE_KIND),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
 
 
 def _normalize_story(story_id: str, raw: Any, waves: List[Dict[str, Any]]) -> Any:
@@ -1488,7 +1689,7 @@ def _derive_plan_state(graph: Dict[str, Any], now: str) -> Dict[str, Any]:
         entry["retries"] = 0
         stories[story_id] = entry
     declared = graph.get("slices")
-    sliced = graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list)
+    sliced = graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS and isinstance(declared, list)
     state: Dict[str, Any] = {
         "version": PLAN_STATE_SLICE_VERSION if sliced else PLAN_STATE_VERSION,
         "plan_id": graph.get("plan_id"),
@@ -1530,7 +1731,7 @@ def _derive_ledger(ledger: Dict[str, Any], graph: Dict[str, Any], now: str) -> D
         "updated": now,
     }
     declared = graph.get("slices")
-    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list):
+    if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS and isinstance(declared, list):
         # Seeded here and thereafter maintained only by `state set-slice`, which
         # is the single writer of these two counters. A pre-slice plan carries
         # neither, and is read as pre-slice rather than as zero progress.
@@ -1584,7 +1785,14 @@ def _reslice(args, ws, now) -> core.Result:
         return core.Result(command=command, data=nothing, diagnostics=refusals)
 
     rewritten = dict(graph)
-    rewritten["version"] = PLAN_GRAPH_SLICE_VERSION
+    # A legacy graph is upgraded to the first slice-bearing version; one already
+    # at or above it keeps its own, so reslicing a version-4 graph does not
+    # quietly strip the barrier checks its waves are required to carry.
+    rewritten["version"] = (
+        graph.get("version")
+        if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS
+        else PLAN_GRAPH_SLICE_VERSION
+    )
     rewritten["slices"] = slices
     rewritten["stories"] = {story_id: dict(story) if isinstance(story, dict) else story
                             for story_id, story in stories.items()}
@@ -1736,8 +1944,9 @@ def _story_emit(args, ws, now) -> core.Result:
     context = _story_context(graph, story_id, story, repo, catalog, diagnostics, graph_rel)
 
     rules = _e2e_rules()
+    delivered = _delivered_surface_rules()
     body = _template_body()
-    rendered = _render_story(body, context, rules)
+    rendered = _render_story(body, context, rules, delivered, diagnostics, graph_rel)
 
     name = str(story.get("file") or "%s%s%s" % (STORY_FILE_PREFIX, story_id, STORY_FILE_SUFFIX))
     if Path(name).name != name:
@@ -1902,7 +2111,16 @@ def _story_context(
         "change_file": story.get("change_file"),
         "target_paths": [item for item in story.get("target_paths", []) if isinstance(item, str)],
         "e2e": _catalog_covers_e2e(catalog),
+        # Empty on every graph below version 4, where the key does not exist --
+        # which is what leaves a legacy task list rendered exactly as before.
+        "increments": _story_increments(story),
     }
+
+
+def _story_increments(story: Dict[str, Any]) -> List[Any]:
+    validation = story.get("validation")
+    steps = validation.get("increments") if isinstance(validation, dict) else None
+    return list(steps) if isinstance(steps, list) else []
 
 
 def _story_filename(graph: Dict[str, Any], story_id: str) -> str:
@@ -1963,24 +2181,22 @@ def _template_body() -> str:
     return text[start + len(TEMPLATE_BEGIN) : end].strip("\n")
 
 
-def _e2e_rules() -> str:
-    """The E2E Testing Hard Rules, read verbatim from their owning section.
+def _standard_rules(heading: str) -> str:
+    """The four rules under ``heading``, read verbatim from their owning section.
 
-    ``STANDARD-SPEC.md`` §"E2E Testing Hard Rules" owns the four rules; this
-    returns the section's lead-in line and the four bullets exactly as written
-    there, so the delivered copy is generated rather than maintained by hand.
+    One reader for both injections: ``STANDARD-SPEC.md`` owns each set of rules,
+    and this returns the section's lead-in line and its four bullets exactly as
+    written there, so every delivered copy is generated rather than maintained
+    by hand. A second reader would be a second way to read one convention, and
+    the two could disagree about the same section.
     """
     display = "shared/STANDARD-SPEC.md"
     text = core.read_text(STANDARD_SPEC, display)
     lines = text.split("\n")
     try:
-        start = next(
-            index for index, line in enumerate(lines) if line.strip() == E2E_SECTION_HEADING
-        )
+        start = next(index for index, line in enumerate(lines) if line.strip() == heading)
     except StopIteration:
-        raise core.fail(
-            core.E_NOT_FOUND, "no section %r" % (E2E_SECTION_HEADING,), file=display
-        )
+        raise core.fail(core.E_NOT_FOUND, "no section %r" % (heading,), file=display)
     lead: Optional[str] = None
     bullets: List[str] = []
     for line in lines[start + 1 :]:
@@ -1997,15 +2213,42 @@ def _e2e_rules() -> str:
     if len(bullets) != 4:
         raise core.fail(
             core.E_PARSE,
-            "expected four rules under %r, found %d" % (E2E_SECTION_HEADING, len(bullets)),
+            "expected four rules under %r, found %d" % (heading, len(bullets)),
             file=display,
         )
     block = bullets if lead is None else [lead, ""] + bullets
     return "\n".join(block)
 
 
-def _render_story(body: str, context: Dict[str, Any], rules: str) -> str:
-    """Gate the template's conditional blocks, substitute, and clean up."""
+def _e2e_rules() -> str:
+    """The E2E Testing Hard Rules, from §"E2E Testing Hard Rules"."""
+    return _standard_rules(E2E_SECTION_HEADING)
+
+
+def _delivered_surface_rules() -> str:
+    """The Delivered-Surface Rule, from §"Delivered-Surface Rule".
+
+    Injected at its own marker and **ungated**: unlike the E2E rules there is no
+    catalog condition under which it does not apply, because every module has a
+    surface its behaviour is delivered on.
+    """
+    return _standard_rules(DELIVERED_SURFACE_SECTION_HEADING)
+
+
+def _render_story(
+    body: str,
+    context: Dict[str, Any],
+    rules: str,
+    delivered: str,
+    diagnostics: Optional[List[core.Diagnostic]] = None,
+    graph_rel: Optional[str] = None,
+) -> str:
+    """Gate the template's conditional blocks, substitute, and clean up.
+
+    ``rules`` is injected at each ``INJECT:E2E-HARD-RULES`` marker under the
+    catalog condition those markers carry; ``delivered`` is injected at the
+    ``INJECT:DELIVERED-SURFACE-RULE`` marker under no condition at all.
+    """
     lines = body.split("\n")
     kept: List[str] = []
     index = 0
@@ -2029,6 +2272,13 @@ def _render_story(body: str, context: Dict[str, Any], rules: str) -> str:
                 kept.extend(rules.split("\n"))
             index += 1
             continue
+        if stripped.startswith("<!--") and DELIVERED_SURFACE_MARKER in stripped:
+            # Ungated on purpose. The E2E branch above asks the catalog first;
+            # this one has nothing to ask, which is the difference the two
+            # markers exist to express.
+            kept.extend(delivered.split("\n"))
+            index += 1
+            continue
         if stripped.startswith(FINAL_WAVE_GATE):
             if not context["last_wave"]:
                 break  # the final-validation section runs to the end of the template
@@ -2043,6 +2293,15 @@ def _render_story(body: str, context: Dict[str, Any], rules: str) -> str:
         index += 1
     text = _substitute("\n".join(kept), context)
     text = _strip_guidance_comments(text)
+
+    def note(message: str) -> None:
+        if diagnostics is not None:
+            diagnostics.append(core.warning(core.E_INVALID_STATE, message, file=graph_rel))
+
+    # After the substitution pass on purpose, for the reason the ``**Slice:**``
+    # header is: an increment's own command must never re-enter the fixed-order
+    # sequence of replacements and be rewritten after the fact.
+    text = _interleave_increments(text, context["increments"], note)
     return _tidy(text)
 
 
@@ -2097,6 +2356,120 @@ def _substitute(text: str, context: Dict[str, Any]) -> str:
     for needle, value in replacements:
         text = text.replace(needle, value)
     return text
+
+
+def _interleave_increments(
+    text: str,
+    increments: Sequence[Any],
+    note: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Place each ``validation.increments`` step after the task its index names.
+
+    The rendered ``## Implementation Tasks`` list therefore reads
+    work-then-check repeated rather than work followed by a single closing
+    check, which is the whole of what makes the per-increment claim visible to
+    the agent that reads the story -- true of the graph is not the same as
+    stated in the file the agent is handed.
+
+    A graph carrying no ``increments`` -- every version below 4 -- is returned
+    untouched, so a legacy render is byte-identical.
+    """
+    steps = [step for step in increments if isinstance(step, dict)]
+    if not steps:
+        return text
+    lines = text.split("\n")
+    span = _tasks_span(lines)
+    if span is None:
+        return text
+    tasks = _task_positions(lines, span)
+    if not tasks:
+        return text
+    pending: Dict[int, List[str]] = {}
+    for order, step in enumerate(steps, start=1):
+        position = _increment_task(step, len(tasks), order, note)
+        anchor, indent = tasks[position]
+        boundary = tasks[position + 1][0] if position + 1 < len(tasks) else span[1]
+        end = anchor + 1
+        while end < boundary and lines[end].strip():
+            end += 1
+        pending.setdefault(end, []).append(indent + _check_line(step))
+    rebuilt: List[str] = []
+    for index, line in enumerate(lines):
+        rebuilt.extend(pending.pop(index, []))
+        rebuilt.append(line)
+    for index in sorted(pending):
+        rebuilt.extend(pending[index])
+    return "\n".join(rebuilt)
+
+
+def _tasks_span(lines: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """The half-open line range holding the task section's content."""
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == TASKS_HEADING:
+            start = index + 1
+            break
+    if start is None:
+        return None
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("## ") or stripped == "---":
+            return start, index
+    return start, len(lines)
+
+
+def _task_positions(lines: Sequence[str], span: Tuple[int, int]) -> List[Tuple[int, str]]:
+    """``(line index, continuation indent)`` for each task, in rendered order."""
+    positions: List[Tuple[int, str]] = []
+    for index in range(span[0], span[1]):
+        match = _TASK_ITEM_RE.match(lines[index])
+        if match is not None:
+            positions.append((index, " " * len(match.group(1))))
+    return positions
+
+
+def _increment_task(
+    step: Dict[str, Any], count: int, order: int, note: Optional[Callable[[str], None]]
+) -> int:
+    """The 0-based task an increment is placed after.
+
+    An index the rendered list does not reach falls back to the last task and
+    emits a ``warning`` -- consistent with every other graph-level defect this
+    verb reports rather than refuses, since ``story-emit`` is called once per
+    story in a fan-out and a defect in one story's graph entry must not become a
+    rendering outage. Dropping the step instead was the alternative rejected:
+    the check would then exist in the graph and nowhere the agent can read it,
+    which is the failure the interleave exists to prevent.
+    """
+    task = step.get("task")
+    if isinstance(task, bool) or not isinstance(task, int):
+        if note is not None:
+            note(
+                "increment %d names no task; it is placed after the last of the "
+                "%d rendered tasks" % (order, count)
+            )
+        return count - 1
+    if task < 1 or task > count:
+        if note is not None:
+            note(
+                "increment %d names task %d, but the story renders %d tasks; it "
+                "is placed after the last" % (order, task, count)
+            )
+        return count - 1
+    return task - 1
+
+
+def _check_line(step: Dict[str, Any]) -> str:
+    """One increment as the template's ``- *Check:*`` line."""
+    description = str(step.get("description") or "").strip()
+    command = step.get("command")
+    if step.get("kind") == EXIT_CODE_KIND and isinstance(command, str) and command.strip():
+        body = "`%s`" % (command.strip(),)
+        if description:
+            body = "%s — %s" % (body, description)
+    else:
+        body = description
+    return ("%s %s" % (CHECK_PREFIX, body)).rstrip()
 
 
 def _file_list(names: List[str], empty: str) -> str:

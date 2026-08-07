@@ -96,9 +96,9 @@ Those lifecycles are themselves authored behind `mspec`'s gate, which is why fal
 **Two rules bind the cut**, whichever of the three sources it came from:
 
 1. **Slice `00` is a walking skeleton** — it touches every layer the plan touches. Its acceptance proves the shape of the whole system runs before any depth is built on it. A first slice confined to one layer is the old bottom-up order wearing slice vocabulary.
-2. **Every slice carries at least one runnable acceptance** — one `kind: exit-code` step. A slice whose acceptance is prose alone can only be settled by a person, and a plan made entirely of those turns delivery back into supervision.
+2. **Every slice carries at least one runnable acceptance, and it reaches the delivered surface** — one step that is both `kind: exit-code` and `surface: delivered`. Each half answers a different failure. A slice whose acceptance is prose alone can only be settled by a person, and a plan made entirely of those turns delivery back into supervision. A slice demonstrated only *beneath* the surface its behaviour is delivered on has produced evidence about its components and none about what was delivered — the same green either way, and only one of them means the thing works.
 
-`plan emit` refuses a draft that breaks either, so both are enforced mechanically rather than by a careful reading.
+`plan emit` refuses a draft that breaks either, so both are enforced mechanically rather than by a careful reading — but only as far as counting goes. It can see that a slice has an `exit-code` step marked `surface: delivered`; it cannot see whether the command on that step really drives the surface the annotation claims. That reading stays yours (see *Emit the Plan Graph, Stories, State & Ledger*).
 
 **Membership and ordering.** Every story belongs to **exactly one** slice — none to zero, none to two — and a story's **prerequisites never cross into a later slice**. A slice whose work depends on stories scheduled after it is not deliverable on its own, which is the entire property slicing buys.
 
@@ -158,6 +158,8 @@ is likewise unchanged: it returns the layer-ordered assignment for one target re
 **The judgment that stays yours:** where a story depends, via a shared interface, on another repo's module being implemented first, move the **consumer into a later wave than its producer**, even though the layer assignment placed them in the same one. `plan waves` assigns; it never reorders a consumer past its producer. Each story's **Prerequisites** and **Parallel group** then make the resulting order explicit.
 
 **Prerequisites point backwards on both axes.** A prerequisite never names a later wave, and never names a story in a later **slice** (see *Slices*).
+
+**A wave is also a checkpoint.** Its stories are built in isolated worktrees and merged into the integration branch at the wave barrier, and the graph carries a `validation` block per wave that runs there, against the merged result, before the next wave is cut from it. Authoring it is part of the draft (see *Emit the Plan Graph, Stories, State & Ledger*).
 
 ## Story File Template
 
@@ -236,10 +238,11 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan emit <plan-id> < draft.json
 
 One invocation writes all three artifacts together — `<plan-dir>/plan.yaml`, the initial `<plan-dir>/state.yaml`, and the `context/project/state.yaml` ledger entry (`version: 1`, `status: pending`, other plans' entries never overwritten) — and **validates each against its schema before persisting it**, so an invalid graph or state cannot reach disk. A refusal persists nothing at all: fix the draft and re-run.
 
-The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `version: 3`, `run: 0`, `status: pending`, `waves[]`, each story's `slice` back-reference, `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
+The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `run: 0`, `status: pending`, wave *membership*, each story's `slice` back-reference, `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
 
 ```json
 {
+  "version": 4,
   "project_change": "003",
   "slices": [
     {
@@ -247,9 +250,25 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
       "name": "retry end to end",
       "behavior": "An adapter call that fails once succeeds on retry, and the consumer sees the retried result",
       "acceptance": [
-        {"kind": "exit-code", "command": "pytest tests/e2e/test_retry.py -q", "description": "A failing call succeeds on retry, end to end."}
+        {"kind": "exit-code", "command": "pytest tests/e2e/test_retry.py -q", "description": "A failing call succeeds on retry, end to end.", "surface": "delivered"}
       ],
       "stories": ["01-01-repo-a-AUTH", "02-01-repo-a-USERS"]
+    }
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "stories": ["01-01-repo-a-AUTH"],
+      "validation": [
+        {"kind": "exit-code", "command": "npm test", "description": "The merged integration branch's whole suite passes before wave 2 is cut from it."}
+      ]
+    },
+    {
+      "wave": 2,
+      "stories": ["02-01-repo-a-USERS"],
+      "validation": [
+        {"kind": "exit-code", "command": "npm run typecheck && npm test -- --run integration", "description": "AUTH's retry and the USERS service that calls it type-check and run together — neither story could exercise the other in its own worktree."}
+      ]
     }
   ],
   "stories": {
@@ -261,6 +280,10 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
       "change_file": "context/repo-a/changes/CHANGE-003-retry-logic.md",
       "target_paths": ["src/auth/retry.ts"],
       "validation": {
+        "increments": [
+          {"kind": "exit-code", "command": "npm run typecheck", "description": "The RetryPolicy type compiles.", "task": 1},
+          {"kind": "exit-code", "command": "npm test -- auth/retry", "description": "A call that fails once succeeds on the retry.", "task": 3}
+        ],
         "post_story": [
           {"kind": "exit-code", "command": "npm test -- auth", "description": "Unit tests for the AUTH module pass."}
         ]
@@ -274,6 +297,10 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
       "change_file": "context/repo-a/changes/CHANGE-003-retry-logic.md",
       "target_paths": ["src/users/service.ts"],
       "validation": {
+        "increments": [
+          {"kind": "exit-code", "command": "npm run typecheck", "description": "The service compiles against AUTH's retried call signature.", "task": 1},
+          {"kind": "exit-code", "command": "npm test -- users/retry", "description": "The consumer sees the retried result rather than the first failure.", "task": 2}
+        ],
         "post_story": [
           {"kind": "exit-code", "command": "npm test -- users", "description": "Unit tests for the USERS module pass."}
         ],
@@ -288,11 +315,18 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
 
 What the draft must get right:
 
-- **`slices[]` carries the cut**, in delivery order, each entry taken from the `## Slices` table (or the lifecycle fallback) with its `slice` id, `name`, `behavior`, `acceptance` steps and the `stories` it delivers. Every story id appears in **exactly one** slice's `stories` list; the tool writes each story's own `slice` field from that listing, so a story entry never sets `slice` itself. A draft carrying `slices` is emitted as a **version-3** graph — `version: 3` is supplied by the tool, not by the draft — and every plan generated now carries the cut. (A version-1/2 graph is a plan written before slices existed; it is read as one implicit slice spanning every wave, and nothing needs migrating.)
-- **`plan emit` refuses**, and persists nothing, when slice `00` does not touch every layer the plan touches, when any slice has no `kind: exit-code` acceptance step, or when a story belongs to no slice or to two. These are mechanical consequences of the draft, so they are the tool's to enforce rather than yours to eyeball — but a refusal means the cut or the story-to-slice assignment is wrong, and the fix is in the draft, never in the tool.
+- **`version: 4`** is stated by the draft, and it is the one field of that kind. `plan emit` supplies every other derived value, but it defaults an unversioned draft to `3` — where `waves[].validation` is *forbidden* outright — so a continuously checked plan has to declare the version it is. Version 4 is opt-in for the graphs' sake, not the draft's: the version-3 graphs already on disk keep validating and keep running, read as checked only at their story and slice boundaries, which is the delivery model they were written for. Every plan generated now declares `4`.
+- **`slices[]` carries the cut**, in delivery order, each entry taken from the `## Slices` table (or the lifecycle fallback) with its `slice` id, `name`, `behavior`, `acceptance` steps and the `stories` it delivers. Every story id appears in **exactly one** slice's `stories` list; the tool writes each story's own `slice` field from that listing, so a story entry never sets `slice` itself. Every plan generated now carries the cut. (A version-1/2 graph is a plan written before slices existed; it is read as one implicit slice spanning every wave, and nothing needs migrating.)
+- **One of every slice's `acceptance` steps carries `surface: delivered`**, and that same step must be `kind: exit-code`. `surface` says whether a step exercises the behaviour through the interface the slice is delivered on or through a component beneath it, and it defaults to `internal` — which is what an unannotated step always was, so nothing already written satisfies this by accident. Neither half of the pair is sufficient: a prose step naming the delivered surface has not been demonstrated to run, and a runnable step below it is evidence about internals.
+- **Which interface is the delivered one is a design judgement**, of the same kind as the slice cut, and it is made per slice against the modules that slice touches — the command line a user invokes, the artifact the run emits, the endpoint it answers, the file that lands on disk. Nothing in the graph implies it: layer order does not name it, and the module set does not either. `plan emit` can count the annotation and cannot judge whether it is honest, so an `internal` check wearing a `delivered` mark ships a slice that reports itself demonstrated and is not — invisibly, in every artifact after the emit. Ask which step would still fail if the behaviour were reachable only from inside the code, and mark that one.
+- **`waves[].validation` is mandatory on a version-4 draft** — one array per wave, at least one of its steps `kind: exit-code`. Wave *membership* stays derived: declare each wave's `stories` exactly as the stories' own `wave` fields imply, or the emit is refused for disagreeing with them. The block is in the draft to carry the barrier checks, not to assign the waves.
+- **The barrier check is authored per wave, never copied up from a story.** It runs against the **merged** integration branch — after this wave's greens land, before the next wave is cut from it — which is the only point in a run where more than one story's output is visible at once. Same-wave stories write disjoint paths, so the merge is conflict-free; that says nothing about whether the merged behaviour holds, because disjoint files are not disjoint behaviour. Author it by asking what only the merge can break — a caller and its callee landing in the same wave, a schema and the tool that reads it, a renderer and the template it renders — and write the command that would catch it. Re-running a story's own `post_story` step here proves only what already passed in isolation, which is precisely what no barrier needs to be told.
+- **`plan emit` refuses**, and persists nothing, when slice `00` does not touch every layer the plan touches, when any slice has no `kind: exit-code` acceptance step, when a version-4 slice has no acceptance step that is both `kind: exit-code` and `surface: delivered`, when a story belongs to no slice or to two, when a version-4 wave declares no `kind: exit-code` barrier step, or when a version-4 story declares no `kind: exit-code` `validation.increments` step — no increments at all and prose-only increments are the same defect and are reported as one. These are mechanical consequences of the draft, so they are the tool's to enforce rather than yours to eyeball — but a refusal means the cut, the story-to-slice assignment, the barrier or the story's own per-increment checks are wrong, and the fix is in the draft, never in the tool.
 - **Story keys** come from `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-id <file>` — pass the story's intended `PLAN-…-….md` filename and use the id it returns as the key here and in every `prerequisites` reference. Do not compose the key yourself.
 - `project_change` is the value `plan scope` returned — `null` for a full or greenfield plan; `change_file` is `null` there too.
-- `target_paths` and `validation.post_story` are **mandatory** on every story; `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
+- `target_paths`, `validation.post_story` and `validation.increments` are **mandatory** on every story of a version-4 draft; `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
+- **`validation.increments` carries the checks that run *during* the story**, one per Implementation Task **that admits a runnable check**, each naming with its `task` index the task it runs after (`1` is the first task in that story's list, whatever digit is printed beside it). `plan story-emit` renders each step as a `- *Check:*` line beneath that task, so the story an agent is handed reads work-then-check repeated rather than work followed by one closing gate — which is what lets a failure name the increment that introduced it instead of the story it surfaced in. At least one step must be `kind: exit-code`. The indices are positions in a task list you are about to author, so write the two together: AUTH's four tasks above — the `RetryPolicy` type, the backoff table in the module README, the wrapper itself, then its unit tests — carry increments at `1` and `3` only, because task 2 changes nothing a command can run and task 4's check is the `post_story` step rather than a second copy of it.
+- **Increments are a floor, not a ceiling.** They are what the plan *guarantees* will be checked as the work is done; a story agent that runs further checks of its own is behaving correctly, and this list is never a budget it should stay inside. What a floor must not do is claim ground it does not hold: authoring a step against a task where no runnable check exists yet is **worse than authoring none**, because a step that cannot fail is a false positive with a `task` index on it. `plan emit` counts the steps and cannot judge them, and no artifact downstream of the emit shows the difference — the plan reports continuous checking and performs none, and the rendered story hands the agent a check line that proves nothing. So cover the tasks a command can settle, leave the rest to `post_story`, and never pad the list to match the task count.
 - **Lift validation into the graph.** Translate each story's Post-Story Validation / Slice Acceptance into `validation.post_story[]` / `validation.final[]` steps. Prefer **`kind: exit-code`** with a runnable `command` (build/type-check/test) so `mexecute` can gate mechanically; use `kind: prose` only where a step is genuinely agent-interpreted.
 - All three schemas are `additionalProperties: false` at **every** level. A story entry may carry no field beyond the ones `plan-graph.schema.json` defines, so anything else an agent needs to know belongs in the story file, never in the graph.
 
@@ -304,9 +338,9 @@ One invocation per story, once the graph is on disk:
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit <plan-id> <story-id>
 ```
 
-It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects the E2E Hard Rules into both `## Post-Story Validation` and `## Slice Acceptance` (see *E2E Hard Rules* above).
+It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, injects the E2E Hard Rules into both `## Post-Story Validation` and `## Slice Acceptance` (see *E2E Hard Rules* above), and interleaves each `validation.increments` step into `## Implementation Tasks` as a `- *Check:*` line beneath the task its `task` index names. A `task` index the rendered list does not reach is appended after the last task and reported as a **warning**, not a refusal — so treat any warning here as the draft and the task list having drifted apart, and fix the draft.
 
-Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands — never edit, reformat, or re-copy the injected E2E rules.
+Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands — never edit, reformat, or re-copy the injected E2E rules, and never delete or renumber a task an increment's `task` index points at.
 
 ## Slice-Scoped Re-Plan (`--slice`)
 
@@ -376,7 +410,11 @@ Before finalizing the plan, verify:
 12. **Slice `00` is a walking skeleton** — it touches every layer the plan touches. A first slice confined to one layer is the old bottom-up order wearing slice vocabulary
 13. **Every slice has a runnable acceptance** — at least one `kind: exit-code` step. Prose-only acceptance forces a human stop under every gate policy but `never`, so a plan of them is a plan that cannot run unattended
 14. **Every story belongs to exactly one slice**, and no prerequisite crosses into a later slice
+15. **Every story's increments are authored where a check exists** — each story carries `validation.increments`, every step's `task` index resolves to a real task in that story's rendered `## Implementation Tasks` list, and no step was written for a task that has no runnable check. Read the rendered `- *Check:*` lines, not the draft: a check line an agent cannot run, or one that would pass before the task it sits under is started, is the failure this item exists to catch
+16. **Every slice is demonstrated on the surface it is delivered on** — each slice's `acceptance` carries a step that is both `kind: exit-code` and `surface: delivered`, and that step's command really does reach the behaviour through that interface. Read the command, not the annotation: a unit test over a component beneath the surface, marked `delivered`, is the failure this item exists to catch
 
 Checks 12–14 are enforced mechanically by `plan emit`, which refuses a draft that breaks any of them: they are stated here so the plan can be read against them, not performed here. A refusal is where they actually bite.
+
+Checks 15 and 16 are only **half** mechanical. For 15, `plan emit` refuses a story with no `kind: exit-code` increment step and `plan story-emit` warns on a `task` index the task list does not reach, but neither can tell a step that can fail from one that cannot. For 16, `plan emit` refuses a slice with no `kind: exit-code` step carrying `surface: delivered`, but `surface` is an assertion the draft makes about what a command drives, and no tool can check an assertion against the command's actual reach. Both halves the tool cannot perform are the reading, which is why these items are on the list rather than left to the tool.
 
 The former single-wave Final Validation check is retired. End-to-end validation is now per slice, so exactly one wave *per slice* carries it — which check 13 subsumes.

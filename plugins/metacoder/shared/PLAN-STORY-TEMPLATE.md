@@ -97,14 +97,19 @@ Load these files before implementing. This is the **complete** context — do no
 <!-- Full plan: include all applicable tasks.
      Incremental plan: include only tasks for the facets listed in the change document. -->
 
-Implement in this order:
+Implement in this order. **Run the check under a task before starting the next one.**
+Each task carries the `validation.increments` step whose `task` index names it, rendered
+beneath it as a `- *Check:*` line. A non-zero result is fixed where it appeared, not carried
+into the next task. `## Post-Story Validation` below closes the story; it is not the only gate.
+
 1. **Types & Data Model** — Export all types from the module's DATAMODEL spec (if it exists)
 2. **Interface Exports** — Implement all functions/classes from the module's INTERFACE spec (if it exists)
 3. **Internal Logic** — Wire up internals per the module's IMPLEMENTATION spec (if it exists)
-4. **Unit Tests** — Write tests per the module's TESTING spec (if it exists)
 
 <!-- Adapt the task list to this module's actual CATALOG.yaml facets — include tasks
-     only for facets that exist. -->
+     only for facets that exist. Testing is not a task of its own: a task's check is where
+     the work that task did is confirmed, and the module's TESTING spec is what those
+     checks are drawn from. -->
 
 ---
 
@@ -130,6 +135,8 @@ Run before marking this story complete:
 - [ ] E2E scenarios for this module pass (if E2E module exists in catalog)
 
 <!-- INJECT:E2E-HARD-RULES — replace this line with the four rules from STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim, when the checkbox above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit` — never hand-copied. -->
+
+<!-- Ungated. INJECT:DELIVERED-SURFACE-RULE — replace this line with the four rules from STANDARD-SPEC.md § "Delivered-Surface Rule", verbatim. There is no checkbox and no catalog condition above it: every module has a surface its behaviour is delivered on, so the line is never dropped. Injected by `mc.py plan story-emit` — never hand-copied. The marker deliberately does not open the line: a comment starting `<!-- WORD:` reads as front-matter and is emitted verbatim rather than dropped as guidance. -->
 
 <!-- Include the section below only in stories belonging to the final wave of this story's *slice* ({WW} = the slice's last wave), not of the plan. On a version-1/2 graph the single synthetic slice spans every wave, so the gate resolves to the plan's last wave and renders exactly what it always did. -->
 ## Slice Acceptance

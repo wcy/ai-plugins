@@ -1877,6 +1877,506 @@ def test_the_layer_rule_does_not_fire_when_no_catalog_names_a_layer(workspace):
 
 
 # ---------------------------------------------------------------------------
+# plan emit -- the version-4 wave barrier, in both directions
+# ---------------------------------------------------------------------------
+
+#: The barrier check a version-4 wave must carry: a step that actually runs.
+#: JSON Schema requires the ``validation`` array on a version-4 wave but cannot
+#: say "at least one of these has kind: exit-code", so ``emit`` says it instead.
+BARRIER_STEP = {
+    "kind": "exit-code",
+    "command": "pytest tests/ -q",
+    "description": "the merged integration branch still passes",
+}
+
+#: The per-increment check a version-4 *story* must carry, alongside the wave's
+#: barrier. Both keys are gated on the same version, so a draft that declares 4
+#: to exercise the barrier must carry this too or the emitted graph would not
+#: validate for a reason that has nothing to do with what is under test.
+INCREMENT_STEP = {
+    "kind": "exit-code",
+    "command": "pytest tests/test_alpha.py -q",
+    "task": 1,
+    "description": "the first increment holds before the second is started",
+}
+
+#: The acceptance step a version-4 *slice* must carry: runnable **and** reaching
+#: the surface the behaviour is delivered on. ``surface`` defaults to
+#: ``internal``, so :data:`EXIT_STEP` -- runnable but unannotated -- does not
+#: satisfy it, which is what stops every pre-existing step from silently doing
+#: so. Gated on the same version as the other two, so a draft declaring 4 to
+#: exercise either of them must carry this too.
+DELIVERED_STEP = {
+    "kind": "exit-code",
+    "command": "mc.py status",
+    "surface": "delivered",
+    "description": "the behaviour runs through the command line it is delivered on",
+}
+
+
+def _wave(number, stories, validation=None):
+    entry = {"wave": number, "stories": list(stories)}
+    if validation is not None:
+        entry["validation"] = list(validation)
+    return entry
+
+
+def _barrier_draft(validation, version=4, **fields):
+    """A one-slice, two-wave draft whose waves are declared, not derived.
+
+    ``validation`` maps wave number -> the ``validation`` list that wave
+    declares; a wave the map omits declares none at all, which is the other way
+    a draft arrives with no runnable barrier check. ``version`` is what the
+    refusal is gated on, so the same shape can be put to ``emit`` on both sides
+    of the gate.
+    """
+    slices = [
+        _slice(
+            "00",
+            ["01-01-demo-ALPHA", "02-01-demo-BETA"],
+            acceptance=[DELIVERED_STEP] if version == 4 else None,
+        )
+    ]
+    draft = _sliced_draft(slices, version=version, **fields)
+    draft["waves"] = [
+        _wave(1, ["01-01-demo-ALPHA"], validation.get(1)),
+        _wave(2, ["02-01-demo-BETA"], validation.get(2)),
+    ]
+    if version == 4:
+        for story in draft["stories"].values():
+            story["validation"]["increments"] = [dict(INCREMENT_STEP)]
+    return draft
+
+
+def _nothing_persisted(workspace, plan_id="001-first"):
+    """Neither the plan directory nor the ledger exists -- asserted, not assumed."""
+    return (
+        not workspace.path("context/project/plans/%s" % plan_id).exists()
+        and not workspace.path("context/project/state.yaml").exists()
+    )
+
+
+def test_emit_refuses_a_version_four_wave_whose_barrier_check_is_prose_alone(workspace):
+    _add_catalog(workspace)
+    draft = _barrier_draft({1: [BARRIER_STEP], 2: [PROSE_STEP, PROSE_STEP]})
+    result, code = _emit(workspace, "001-first", draft)
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending wave, not merely the draft.
+    assert "wave 2" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_wave_carrying_no_validation_at_all(workspace):
+    """The absent array and the unrunnable one are one refusal, not two."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _barrier_draft({1: [BARRIER_STEP]}))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "wave 2" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_waves_keep_their_barrier_checks(workspace):
+    _add_catalog(workspace)
+    draft = _barrier_draft({1: [BARRIER_STEP], 2: [BARRIER_STEP]})
+    result, code = _emit(workspace, "001-first", draft)
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 4
+    assert [entry["validation"] for entry in graph["waves"]] == [
+        [BARRIER_STEP],
+        [BARRIER_STEP],
+    ]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+    # A version-4 graph is slice-bearing exactly as a version-3 one is: the
+    # version is the discriminator everywhere, and 4 is not read as legacy.
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["slices"] == [{"slice": "00", "status": "pending"}]
+    ledger = core.load_yaml(workspace.path("context/project/state.yaml"))
+    assert ledger["plans"]["001-first"]["slices_total"] == 1
+
+
+def test_the_wave_barrier_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    This is the draft the two tests above are refused for -- waves carrying no
+    runnable barrier check -- offered at version 3, where the schema forbids
+    ``waves[].validation`` outright and the barrier model does not apply. It
+    emits, which is the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _barrier_draft({}, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert [entry for entry in graph["waves"] if "validation" in entry] == []
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_a_sliced_draft_declaring_no_version_is_still_emitted_at_three(workspace):
+    """Version 4 is opt-in: nothing is upgraded by the refusal existing."""
+    _add_catalog(workspace)
+    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+
+
+# ---------------------------------------------------------------------------
+# plan emit -- the version-4 story increment check, in both directions
+# ---------------------------------------------------------------------------
+
+
+def _increment(task, command="pytest tests/test_alpha.py -q", description="the increment holds"):
+    """One ``validation.increments`` step; ``task=None`` names no task at all."""
+    step = {"kind": "exit-code", "command": command, "description": description}
+    if task is not None:
+        step["task"] = task
+    return step
+
+
+def _increment_draft(increments, story_id="01-01-demo-ALPHA", version=4):
+    """A version-4 barrier draft whose named story carries ``increments``.
+
+    ``increments=None`` drops the key entirely -- the other way a story arrives
+    with no runnable per-increment check. Below version 4 the waves declare no
+    barrier at all, since the schema forbids the key there.
+    """
+    barriers = {1: [BARRIER_STEP], 2: [BARRIER_STEP]} if version == 4 else {}
+    draft = _barrier_draft(barriers, version=version)
+    validation = draft["stories"][story_id]["validation"]
+    if increments is None:
+        validation.pop("increments", None)
+    else:
+        validation["increments"] = [dict(step) for step in increments]
+    return draft
+
+
+def test_emit_refuses_a_version_four_story_whose_increments_are_prose_alone(workspace):
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft([PROSE_STEP, PROSE_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending story, not merely the draft.
+    assert "01-01-demo-ALPHA" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_story_carrying_no_increments_at_all(workspace):
+    """The absent array and the unrunnable one are one refusal, not two."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "01-01-demo-ALPHA" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_stories_keep_their_increments(workspace):
+    _add_catalog(workspace)
+    steps = [_increment(1), _increment(2, command="pytest tests/ -q")]
+    result, code = _emit(workspace, "001-first", _increment_draft(steps))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["stories"]["01-01-demo-ALPHA"]["validation"]["increments"] == steps
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_the_increment_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    A version-3 story carries no ``increments`` at all -- the schema forbids the
+    key there -- which is exactly the shape refused above at version 4. It
+    emits, which is the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert "increments" not in graph["stories"]["01-01-demo-ALPHA"]["validation"]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+# ---------------------------------------------------------------------------
+# plan emit -- the version-4 delivered-surface acceptance, in both directions
+# ---------------------------------------------------------------------------
+
+
+def _surface_draft(acceptance, version=4, second=None):
+    """A barrier draft whose slice ``00`` carries ``acceptance``.
+
+    ``second`` adds a second slice holding ``02-01-demo-BETA`` with its own
+    acceptance, which is how a case can show *which* slice a refusal names. No
+    catalog is written for those cases, so the walking-skeleton rule -- which
+    would fire first on a slice ``00`` that no longer spans both layers -- has
+    no layer to compare against and stays out of the way.
+    """
+    barriers = {1: [BARRIER_STEP], 2: [BARRIER_STEP]} if version == 4 else {}
+    draft = _barrier_draft(barriers, version=version)
+    draft["slices"][0]["acceptance"] = [dict(step) for step in acceptance]
+    if second is not None:
+        draft["slices"][0]["stories"] = ["01-01-demo-ALPHA"]
+        draft["slices"].append(
+            _slice("01", ["02-01-demo-BETA"], acceptance=[dict(step) for step in second])
+        )
+    return draft
+
+
+def test_emit_refuses_a_version_four_slice_whose_acceptance_reaches_no_delivered_surface(workspace):
+    """Runnable is not enough: an unannotated step is ``internal`` by default.
+
+    This is the whole reason the schema defaults ``surface`` to ``internal`` --
+    a default of ``delivered`` would let every step written before the key
+    existed satisfy the obligation without anyone having reached the surface.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending slice and what it is missing.
+    assert "00" in result.diagnostics[0].message
+    assert "delivered" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_slice_whose_steps_are_explicitly_internal(workspace):
+    """The annotated case is the same defect as the unannotated one."""
+    _add_catalog(workspace)
+    internal = dict(EXIT_STEP, surface="internal")
+    result, code = _emit(workspace, "001-first", _surface_draft([internal, PROSE_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_slice_whose_delivered_step_is_prose(workspace):
+    """Both halves are required of one step: naming the surface is not running it.
+
+    A prose step may well describe the delivered surface, and a runnable step
+    beneath it may well run -- but the obligation is a demonstration *through*
+    the surface, which neither of them is.
+    """
+    _add_catalog(workspace)
+    prose_at_surface = dict(PROSE_STEP, surface="delivered")
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP, prose_at_surface]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_the_delivered_surface_refusal_names_the_slice_that_lacks_it(workspace):
+    """One finding per offending slice, and none for the conforming one."""
+    result, code = _emit(
+        workspace, "001-first", _surface_draft([DELIVERED_STEP], second=[EXIT_STEP])
+    )
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "'01'" in result.diagnostics[0].message
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_slice_reaches_its_delivered_surface(workspace):
+    _add_catalog(workspace)
+    acceptance = [EXIT_STEP, DELIVERED_STEP]
+    result, code = _emit(workspace, "001-first", _surface_draft(acceptance))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 4
+    # Carried through verbatim -- ``surface`` is the draft's assertion, never
+    # derived and never rewritten.
+    assert graph["slices"][0]["acceptance"] == acceptance
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_the_delivered_surface_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    This is the draft the cases above are refused for -- a slice whose only
+    runnable acceptance step is internal by default -- offered at version 3,
+    where the delivered-surface obligation does not apply. It emits, which is
+    the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP], version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert graph["slices"][0]["acceptance"] == [EXIT_STEP]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+# ---------------------------------------------------------------------------
+# story-emit -- the increments are interleaved into the task list
+# ---------------------------------------------------------------------------
+
+_TASK_RE = re.compile(r"^[0-9]+\. ")
+_CHECK_PREFIX = "- *Check:*"
+
+
+def _emit_increment_story(workspace, increments, story_id="01-01-demo-ALPHA", plan_id="001-first"):
+    """Emit a version-4 plan carrying ``increments``, then render that story."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, plan_id, _increment_draft(increments, story_id=story_id))
+    assert code == 0, [d.render() for d in result.diagnostics]
+    return _render_one(workspace, plan_id, story_id)
+
+
+def _task_section(text):
+    """The rendered ``## Implementation Tasks`` section, heading excluded."""
+    section = text.split("## Implementation Tasks", 1)[1]
+    return re.split(r"\n## |\n---", section, maxsplit=1)[0]
+
+
+def _task_sequence(text):
+    """``(kind, line)`` for every task line and check line, in rendered order."""
+    sequence = []
+    for line in _task_section(text).split("\n"):
+        stripped = line.strip()
+        if _TASK_RE.match(stripped):
+            sequence.append(("task", line))
+        elif stripped.startswith(_CHECK_PREFIX):
+            sequence.append(("check", line))
+    return sequence
+
+
+def test_story_emit_places_each_increment_after_the_task_it_names(workspace):
+    """Work-then-check repeated, not work-work-work then one check."""
+    steps = [_increment(1, command="first"), _increment(3, command="third")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == [
+        "task",
+        "check",
+        "task",
+        "task",
+        "check",
+    ]
+    assert "`first`" in sequence[1][1]
+    assert "`third`" in sequence[4][1]
+    # Rendered beneath its task, indented to the list item's content column.
+    assert sequence[1][1] == "   - *Check:* `first` — the increment holds"
+
+
+def test_two_increments_naming_one_task_keep_their_graph_order(workspace):
+    steps = [_increment(2, command="earlier"), _increment(2, command="later")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "task", "check", "check", "task"]
+    assert "`earlier`" in sequence[2][1]
+    assert "`later`" in sequence[3][1]
+
+
+def test_a_prose_increment_renders_its_description_with_no_command(workspace):
+    result, text = _emit_increment_story(workspace, [_increment(1), dict(PROSE_STEP, task=2)])
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert sequence[3][1] == "   - *Check:* someone looks at it"
+
+
+def test_an_increment_naming_a_task_beyond_the_list_appends_after_the_last(workspace):
+    """A graph-level defect story-emit reports rather than refuses."""
+    steps = [_increment(1, command="first"), _increment(9, command="stray")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok
+    assert [d.severity for d in result.diagnostics] == ["warning"]
+    assert "9" in result.diagnostics[0].message
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == [
+        "task",
+        "check",
+        "task",
+        "task",
+        "check",
+    ]
+    assert "`stray`" in sequence[4][1]
+
+
+def test_an_increment_naming_no_task_appends_after_the_last_with_one_warning(workspace):
+    result, text = _emit_increment_story(workspace, [_increment(None, command="stray")])
+
+    assert result.ok
+    assert [d.severity for d in result.diagnostics] == ["warning"]
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "task", "task", "check"]
+
+
+def test_the_interleave_is_reached_through_the_command_line(workspace):
+    """The delivered surface -- an exit code and a file mc.py itself wrote.
+
+    Every other case here calls the group in process, which cannot catch a
+    render wired wrong at the CLI seam; TOOLS-TESTING.md §"Delivered Surface"
+    is why one of them goes through the subprocess.
+    """
+    _add_catalog(workspace)
+    steps = [_increment(1, command="first"), _increment(3, command="third")]
+    result, code = _emit(workspace, "001-first", _increment_draft(steps))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    completed = workspace.run_cli(
+        "--workspace",
+        workspace.root,
+        "--now",
+        NOW,
+        "plan",
+        "story-emit",
+        "001-first",
+        "01-01-demo-ALPHA",
+    )
+    assert completed.returncode == 0, completed.stderr
+    text = workspace.path(
+        "context/project/plans/001-first/PLAN-01-01-demo-ALPHA.md"
+    ).read_text(encoding="utf-8")
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "check", "task", "task", "check"]
+    assert "`first`" in sequence[1][1] and "`third`" in sequence[4][1]
+
+
+def test_a_graph_carrying_no_increments_renders_the_task_list_untouched(workspace):
+    """The version-3 render is unchanged: no check line, no warning, no reflow."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+    result, text = _render_one(workspace, "001-first", "01-01-demo-ALPHA")
+
+    assert result.ok and not result.diagnostics
+    assert [kind for kind, _line in _task_sequence(text)] == ["task", "task", "task"]
+    # The template's own prose names the form; no *line* is one.
+    assert [line for line in text.split("\n") if line.strip().startswith(_CHECK_PREFIX)] == []
+
+
+# ---------------------------------------------------------------------------
 # plan reslice -- the loop's backward edge, and what it will not rewrite
 # ---------------------------------------------------------------------------
 

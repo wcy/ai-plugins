@@ -15,10 +15,18 @@ the group rather than restated in ``core``, so their instance and their place in
 the two tables are declared here beside the cases that exercise them.
 """
 
+import json
+
 import pytest
 
-from conftest import INVALID_INSTANCES, KIND_ALIASES, NOW, VALID_INSTANCES
+from conftest import INVALID_INSTANCES, KIND_ALIASES, NOW, REPO_ROOT, VALID_INSTANCES
 from tools import core, validate
+
+#: The committed graphs the slice's acceptance runs through ``mc.py`` directly.
+FIXTURES = REPO_ROOT / "tests" / "fixtures"
+V4_MINIMAL = "plan-graph-v4-minimal.json"
+V4_NO_WAVE_VALIDATION = "plan-graph-v4-no-wave-validation.json"
+V4_NO_INCREMENTS = "plan-graph-v4-no-increments.json"
 
 #: The eleventh canonical kind and the ninth alias, per SCHEMAS-INTERFACE.md.
 SLICE_REPORT = "slice-report"
@@ -156,6 +164,101 @@ def test_req_change_frontmatter_rejects_a_closed_record_with_no_spec_change(work
     result, code = _run(workspace, "req-change-frontmatter", [path])
     assert code == 1
     assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+# ---------------------------------------------------------------------------
+# plan-graph: the version-4 discriminator, in both directions
+# ---------------------------------------------------------------------------
+#
+# The version -- never the presence of a key -- decides whether a graph must
+# carry ``waves[].validation`` and ``stories{}.validation.increments``. Both
+# directions of each are pinned here, because a discriminator asserted only in
+# the direction that rejects would also be satisfied by a schema that rejected
+# the key everywhere, or required it everywhere. The three committed fixtures
+# are the ones the slices' own acceptance runs through ``mc.py`` as a
+# subprocess; reading them here keeps the in-process assertion and the
+# delivered-surface one on the same bytes. Each negative fixture is otherwise
+# conforming, so it fails for the one reason it is named for.
+
+
+def _fixture(workspace, name):
+    """A committed ``tests/fixtures`` graph, copied into the workspace."""
+    source = FIXTURES / name
+    return workspace.write("instances/%s" % name, source.read_text(encoding="utf-8"))
+
+
+def _fixture_graph(name):
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def test_a_version_four_graph_carrying_a_wave_barrier_check_validates(workspace):
+    path = _fixture(workspace, V4_MINIMAL)
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 0, [d.render() for d in result.diagnostics]
+    assert result.ok is True
+
+
+def test_a_version_four_graph_whose_wave_carries_no_validation_is_rejected(workspace):
+    path = _fixture(workspace, V4_NO_WAVE_VALIDATION)
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_a_version_three_graph_carrying_a_wave_validation_is_rejected(workspace):
+    """The other direction: below 4 the key is forbidden, not merely optional.
+
+    Built from the conforming version-4 fixture with nothing changed but the
+    version line, so the only thing under test is the discriminator.
+    """
+    graph = _fixture_graph(V4_MINIMAL)
+    graph["version"] = 3
+    path = workspace.write("instances/plan-graph-v3-with-wave-validation.json",
+                           json.dumps(graph, indent=2) + "\n")
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_a_version_four_graph_whose_story_carries_no_increments_is_rejected(workspace):
+    """The story-level half of the same discriminator.
+
+    ``increments`` is what makes a story checked *during* the work rather than
+    only at its close, and version 4 is what requires it. A graph that declared
+    4 and carried none would be the terminal-gate shape surviving the rule meant
+    to end it.
+    """
+    path = _fixture(workspace, V4_NO_INCREMENTS)
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_a_version_three_graph_carrying_story_increments_is_rejected(workspace):
+    """And its other direction: below 4 the key is forbidden, not merely optional."""
+    graph = _fixture_graph(V4_MINIMAL)
+    graph["version"] = 3
+    for wave in graph["waves"]:
+        wave.pop("validation", None)
+    path = workspace.write("instances/plan-graph-v3-with-increments.json",
+                           json.dumps(graph, indent=2) + "\n")
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_dropping_both_version_four_keys_makes_the_same_graph_a_valid_version_three(workspace):
+    """And the pair completes: version 3 without the keys is what 3 has always been."""
+    graph = _fixture_graph(V4_MINIMAL)
+    graph["version"] = 3
+    for wave in graph["waves"]:
+        wave.pop("validation", None)
+    for story in graph["stories"].values():
+        story["validation"].pop("increments", None)
+    path = workspace.write("instances/plan-graph-v3-minimal.json",
+                           json.dumps(graph, indent=2) + "\n")
+    result, code = _run(workspace, "plan-graph", [path])
+    assert code == 0, [d.render() for d in result.diagnostics]
 
 
 def test_unknown_kind_is_rejected_with_exit_2(workspace):
