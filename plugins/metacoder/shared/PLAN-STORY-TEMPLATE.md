@@ -136,6 +136,8 @@ Run before marking this story complete:
 
 <!-- INJECT:E2E-HARD-RULES — replace this line with the four rules from STANDARD-SPEC.md § "E2E Testing Hard Rules", verbatim, when the checkbox above applies (this repo's CATALOG.yaml has a module whose TESTING facet covers E2E); otherwise drop the line. Injected by `mc.py plan story-emit` — never hand-copied. -->
 
+<!-- Ungated. INJECT:DELIVERED-SURFACE-RULE — replace this line with the four rules from STANDARD-SPEC.md § "Delivered-Surface Rule", verbatim. There is no checkbox and no catalog condition above it: every module has a surface its behaviour is delivered on, so the line is never dropped. Injected by `mc.py plan story-emit` — never hand-copied. The marker deliberately does not open the line: a comment starting `<!-- WORD:` reads as front-matter and is emitted verbatim rather than dropped as guidance. -->
+
 <!-- Include the section below only in stories belonging to the final wave of this story's *slice* ({WW} = the slice's last wave), not of the plan. On a version-1/2 graph the single synthetic slice spans every wave, so the gate resolves to the plan's last wave and renders exactly what it always did. -->
 ## Slice Acceptance
 
