@@ -1,0 +1,47 @@
+{
+  "version": 4,
+  "plan_id": "001-demo",
+  "type": "full",
+  "repos": ["demo"],
+  "slices": [
+    {
+      "slice": "00",
+      "name": "Walking skeleton",
+      "behavior": "The demo greets a caller end to end.",
+      "acceptance": [
+        {
+          "kind": "exit-code",
+          "command": "python -m demo greet",
+          "description": "The demo greets a caller through its command line."
+        }
+      ],
+      "stories": ["01-00-demo-ALPHA"]
+    }
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "stories": ["01-00-demo-ALPHA"]
+    }
+  ],
+  "stories": {
+    "01-00-demo-ALPHA": {
+      "file": "PLAN-01-00-demo-ALPHA.md",
+      "repo": "demo",
+      "module": "ALPHA",
+      "wave": 1,
+      "slice": "00",
+      "prerequisites": [],
+      "target_paths": ["src/alpha.py"],
+      "validation": {
+        "post_story": [
+          {
+            "kind": "exit-code",
+            "command": "pytest tests/test_alpha.py -q",
+            "description": "ALPHA's own tests pass."
+          }
+        ]
+      }
+    }
+  }
+}
