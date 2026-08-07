@@ -2,15 +2,15 @@
 
     mc.py validate <kind> <file> [<file> ...]
 
-``<kind>`` is a canonical schema basename, one of the seven friendly aliases,
-or an explicit ``<name>.schema.json``. Each file is validated independently
-against the resolved schema; a missing file fails that file alone and does not
-abort the batch. Everything else -- an unresolvable kind, a path escaping the
-workspace, an unreadable or unparseable instance -- aborts the batch with exit
-2, after the files already processed have produced their output.
+``<kind>`` is a canonical schema basename, one of the friendly aliases, or an
+explicit ``<name>.schema.json``. Each file is validated independently against
+the resolved schema; a missing file fails that file alone and does not abort the
+batch. Everything else -- an unresolvable kind, a path escaping the workspace,
+an unreadable or unparseable instance -- aborts the batch with exit 2, after the
+files already processed have produced their output.
 
-The engine lives in ``tools/core.py``; this module is the batch loop and the
-argument declaration.
+The engine lives in ``tools/core.py``; this module is the batch loop, the
+argument declaration, and the registration of the eleventh kind.
 """
 
 from __future__ import annotations
@@ -18,6 +18,34 @@ from __future__ import annotations
 from tools import core
 
 COMMAND = "validate"
+
+# ---------------------------------------------------------------------------
+# The eleventh kind, per SCHEMAS-INTERFACE.md
+# ---------------------------------------------------------------------------
+
+#: ``slice-report`` -- MSHIP's per-slice return. The canonical basename already
+#: resolves on its own, because ``core.resolve_kind`` looks up
+#: ``<basename>.schema.json`` in the schema directory; what it is registered for
+#: here is the *offer* an unknown-kind diagnostic makes. The ``slice`` alias has
+#: to be registered, because an alias exists only in the table.
+SLICE_REPORT_KIND = "slice-report"
+SLICE_ALIAS = "slice"
+
+
+def _register_slice_report() -> None:
+    """Add the eleventh kind and its alias to ``core``'s tables, once.
+
+    Registered from the group that owns ``<kind>`` resolution rather than
+    restated in ``core``, and idempotent, so importing this module twice cannot
+    duplicate an entry. ``CANONICAL_KINDS`` stays sorted, which is the order the
+    unknown-kind diagnostic lists them in.
+    """
+    if SLICE_REPORT_KIND not in core.CANONICAL_KINDS:
+        core.CANONICAL_KINDS = tuple(sorted(core.CANONICAL_KINDS + (SLICE_REPORT_KIND,)))
+    core.KIND_ALIASES.setdefault(SLICE_ALIAS, SLICE_REPORT_KIND)
+
+
+_register_slice_report()
 
 
 def register(subparsers) -> None:

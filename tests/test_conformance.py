@@ -47,7 +47,7 @@ import pytest
 
 import conftest
 from conftest import NOW, PLUGIN_ROOT, REPO_ROOT
-from tools import core, mc, plan
+from tools import check, core, mc, plan, spec
 
 TESTS_DIR = Path(__file__).resolve().parent
 TOOLS_DIR = PLUGIN_ROOT / "tools"
@@ -585,12 +585,12 @@ def e2e_mismatches(story_text, standard_path):
     occurrences = story_text.count(block)
     if occurrences != 2:
         problems.append("the owning block appears %d times, not twice" % occurrences)
-    post = story_text.split("## Post-Story Validation", 1)[-1].split("## Final Validation", 1)[0]
-    final = story_text.split("## Final Validation", 1)[-1]
+    post = story_text.split("## Post-Story Validation", 1)[-1].split("## Slice Acceptance", 1)[0]
+    acceptance = story_text.split("## Slice Acceptance", 1)[-1]
     if block not in post:
         problems.append("absent from Post-Story Validation")
-    if block not in final:
-        problems.append("absent from Final Validation")
+    if block not in acceptance:
+        problems.append("absent from Slice Acceptance")
     for rule in block.split("\n"):
         if rule.strip().startswith("- ") and story_text.count(rule) != 2:
             problems.append("rule appears %d times: %s" % (story_text.count(rule), rule.strip()))
@@ -616,11 +616,11 @@ def test_the_injected_rules_match_the_owning_section_verbatim(emitted):
 def test_the_rules_are_injected_at_both_marked_points(emitted):
     text = story_text(emitted)
     block = owning_e2e_block(STANDARD_SPEC)
-    post = text.split("## Post-Story Validation", 1)[1].split("## Final Validation", 1)[0]
-    final = text.split("## Final Validation", 1)[1]
+    post = text.split("## Post-Story Validation", 1)[1].split("## Slice Acceptance", 1)[0]
+    acceptance = text.split("## Slice Acceptance", 1)[1]
 
     assert block in post
-    assert block in final
+    assert block in acceptance
     assert "INJECT:E2E-HARD-RULES" not in text
 
 
@@ -945,8 +945,8 @@ def _registered_verbs():
     return registry
 
 
-def _invocations(text):
-    """Every ``mc.py <group> [<verb>]`` an authored document spells out."""
+def _invocation_tokens(text):
+    """Every ``mc.py <group> [<verb>] [<rest>...]`` an authored document spells out."""
     for match in re.finditer(r"mc\.py((?:[ \t]+[^\s`\n]+)+)", text):
         tokens = match.group(1).split()
         if tokens and tokens[0].startswith("#"):
@@ -963,6 +963,12 @@ def _invocations(text):
             continue
         group = tokens[index]
         verb = tokens[index + 1] if index + 1 < len(tokens) else None
+        yield group, verb, tokens[index + 2 :]
+
+
+def _invocations(text):
+    """Every ``mc.py <group> [<verb>]`` an authored document spells out."""
+    for group, verb, _rest in _invocation_tokens(text):
         yield group, verb
 
 
@@ -981,3 +987,229 @@ def test_every_documented_invocation_names_a_registered_verb():
                 if verb not in registry[group]:
                     unknown.append(where)
     assert unknown == []
+
+
+# ---------------------------------------------------------------------------
+# MVERIFY's slice-loop rules, against the artifacts they speak about
+#
+# ``mverify`` is a prompt and its findings are judgment, so what is mechanically
+# checkable is not the judgment but the three claims the skill makes about
+# *other* documents: that the option it says it passes through exists on the
+# verb it names; that the finding shape it documents is one
+# ``conformance-report.schema.json`` admits; and that the contract-depth
+# absences it promises never to report are the ones ``check catalog`` also
+# treats as expected. Each is a claim that can go stale silently -- leaving the
+# skill directing a shard to pass a flag that does not exist, to return a report
+# that fails validation, or to report drift the tool says is not there.
+# ---------------------------------------------------------------------------
+
+MVERIFY_SKILL = PLUGIN_ROOT / "skills" / "mverify" / "SKILL.md"
+
+#: The finding type a cross-repo shard raises for work the contract moved under.
+STALE_REVISION = "stale-contract-revision"
+
+_FENCE = re.compile(r"^\s*```([A-Za-z0-9_+-]*)\s*$")
+
+
+def fenced_blocks(text, language):
+    """Every fenced block tagged ``language``, in document order.
+
+    ``fenced`` above returns the first block of any language; a skill documents
+    its command lines and its example payloads in the same file, so the reader
+    that picks the payloads out has to select on the tag. A block nested under
+    a list item is indented, so the fence is matched with its indent rather than
+    at column zero.
+    """
+    blocks, open_tag, body = [], None, []
+    for line in text.split("\n"):
+        match = _FENCE.match(line)
+        if match is None:
+            if open_tag is not None:
+                body.append(line)
+            continue
+        if open_tag is None:
+            open_tag, body = match.group(1), []
+        else:
+            if open_tag == language:
+                blocks.append("\n".join(body))
+            open_tag, body = None, []
+    return blocks
+
+
+def mverify_text():
+    return MVERIFY_SKILL.read_text(encoding="utf-8")
+
+
+def documented_reports():
+    """Every shard payload ``mverify/SKILL.md`` spells out, freshly parsed."""
+    return [json.loads(block) for block in fenced_blocks(mverify_text(), "json")]
+
+
+def stale_findings(reports):
+    return [
+        finding
+        for report in reports
+        for finding in report["findings"]
+        if finding["type"] == STALE_REVISION
+    ]
+
+
+def _registered_options():
+    """``(group, verb) -> option strings``, read out of each group's ``register``."""
+    options = {}
+    for name in mc.GROUPS:
+        parser = argparse.ArgumentParser(prog="mc.py")
+        subparsers = parser.add_subparsers(dest="group")
+        mc.load_group(name).register(subparsers)
+        for action in subparsers.choices[name]._actions:
+            if not isinstance(action, argparse._SubParsersAction):
+                continue
+            for verb, verb_parser in action.choices.items():
+                flags = set()
+                for verb_action in verb_parser._actions:
+                    flags |= set(verb_action.option_strings)
+                options[(name, verb)] = flags
+    return options
+
+
+def _documented_options(text):
+    """``(group, verb, flag)`` for every option an invocation spells out."""
+    for group, verb, rest in _invocation_tokens(text):
+        if verb is None:
+            continue
+        for token in rest:
+            token = token.strip("[](),.`").split("=")[0]
+            if token.startswith("--") and len(token) > 2:
+                yield group, verb, token
+
+
+def test_the_mverify_skill_documents_the_slice_scope_as_a_shards_option():
+    """`--slice` is a scope narrowing because it is *only* an argument to the
+    shard list: a run that carried one differs from a run that did not by which
+    shards `plan shards` returned, and by nothing else."""
+    text = mverify_text()
+    assert "--slice" in _registered_options()[("plan", "shards")]
+    assert ("plan", "shards", "--slice") in set(_documented_options(text))
+    assert "scope narrowing only" in text
+
+
+def test_every_option_the_mverify_skill_documents_is_one_its_verb_accepts():
+    """A skill passing a flag the verb never registered fails at run time,
+    where nobody is reading the exit code, rather than here."""
+    registered = _registered_options()
+    unknown = []
+    for group, verb, flag in _documented_options(mverify_text()):
+        if group.startswith(("<", "-")) or verb.startswith(("<", "-")):
+            continue
+        accepted = registered.get((group, verb))
+        if accepted is not None and flag not in accepted:
+            unknown.append("mc.py %s %s %s" % (group, verb, flag))
+    assert unknown == []
+
+
+def test_the_mverify_examples_are_read_from_the_skill_that_owns_them():
+    """Guards the derivation: no examples would make the next cases vacuous."""
+    reports = documented_reports()
+    assert reports, "mverify/SKILL.md documents no shard payload"
+    assert stale_findings(reports), "no %s example to check" % STALE_REVISION
+
+
+def test_every_documented_shard_payload_validates_as_a_conformance_report():
+    """The shape the skill tells a shard to return is one Step 3's own
+    `mc.py validate conformance-report` call would accept."""
+    schema = core.load_schema("conformance-report")
+    for report in documented_reports():
+        assert core.validate_against(schema, report) == [], report
+
+
+def test_the_stale_revision_finding_is_its_own_type_and_carries_the_gap():
+    """Distinguished from `cross-repo-drift` by remedy, so both types exist
+    side by side, and the gap is carried rather than described in prose."""
+    schema = core.load_schema("conformance-report")
+    types = schema["$defs"]["finding"]["properties"]["type"]["enum"]
+    assert STALE_REVISION in types and "cross-repo-drift" in types
+    for finding in stale_findings(documented_reports()):
+        assert finding["built_against"] < finding["current_revision"]
+        assert finding["type"] != "cross-repo-drift"
+
+
+def test_a_renamed_revision_key_is_caught_by_the_same_schema_walk():
+    """The payload check has teeth: a finding's shape is closed, so a key the
+    schema does not know is a validation failure rather than a silent extra."""
+    schema = core.load_schema("conformance-report")
+    report = next(item for item in documented_reports() if stale_findings([item]))
+    finding = stale_findings([report])[0]
+    finding["builtAgainst"] = finding.pop("built_against")
+    assert core.validate_against(schema, report) != []
+
+
+# -- Spec depth is not drift -------------------------------------------------
+
+DEPTH_TARGET = "demo"
+DEPTH_MODULE = "ALPHA"
+
+
+def facet_name(facet):
+    """``deps`` -> ``DEPENDENCIES`` -- the name an author writes, not the token."""
+    return spec.FACET_FILENAME_SUFFIX[facet].strip("-")[: -len(".md")]
+
+
+def depth_rule():
+    return section(mverify_text(), "### Spec depth is not drift")
+
+
+def contract_depth_workspace(workspace, depth):
+    """A one-module tree holding exactly the contract facets, at ``depth``."""
+    directory = "context/%s/spec/%s" % (DEPTH_TARGET, DEPTH_MODULE)
+    lines = [
+        "version: 1",
+        "repo: %s" % DEPTH_TARGET,
+        "layers:",
+        "  L1-core:",
+        "    modules: [%s]" % DEPTH_MODULE,
+        "modules:",
+        "  %s:" % DEPTH_MODULE,
+        "    layer: L1-core",
+        "    depth: %s" % depth,
+        "    files:",
+    ]
+    for facet in spec.CONTRACT_FACETS:
+        filename = "%s%s" % (DEPTH_MODULE, spec.FACET_FILENAME_SUFFIX[facet])
+        workspace.write("%s/%s" % (directory, filename), "# %s\n\nBody.\n" % filename[:-3])
+        lines.append("      - path: %s/%s" % (directory, filename))
+        lines.append("        facet: %s" % facet)
+    workspace.write("context/%s/spec/CATALOG.yaml" % DEPTH_TARGET, "\n".join(lines) + "\n")
+    return workspace
+
+
+def catalog_findings(workspace):
+    result = check.run(workspace.args(verb="catalog", target=DEPTH_TARGET), workspace.ws)
+    return result.data["findings"]
+
+
+def test_the_depth_rule_names_every_facet_the_deepen_adds():
+    """The rule is stated over the three facets `depth: full` adds, read from
+    the tool rather than transcribed: a fourth facet, or a renamed one, must
+    not leave the skill silently promising less than it says."""
+    body = depth_rule()
+    for facet in spec.DEEPENING_FACETS:
+        assert facet_name(facet) in body, facet
+    assert "`missing`" in body and "never" in body
+
+
+def test_a_contract_depth_module_produces_no_finding_for_the_facets_it_lacks(workspace):
+    """The claim itself, mechanically: the tree the rule describes -- a module
+    at `depth: contract` holding only its contract facets -- is clean. A shard
+    obeying the rule reports no `missing` finding, and the tool agrees."""
+    contract_depth_workspace(workspace, spec.DEPTH_CONTRACT)
+    assert catalog_findings(workspace) == []
+
+
+def test_the_same_absence_is_a_finding_once_the_module_claims_full_depth(workspace):
+    """Negative case, so the one above is not vacuous: the absence is expected
+    because of the declared depth, not because nothing is ever reported."""
+    contract_depth_workspace(workspace, spec.DEPTH_FULL)
+    findings = catalog_findings(workspace)
+    assert [item["code"] for item in findings] == [check.E_CATALOG_DEPTH]
+    for facet in spec.DEEPENING_FACETS:
+        assert facet in findings[0]["message"], facet

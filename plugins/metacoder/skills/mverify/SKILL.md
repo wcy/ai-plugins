@@ -11,15 +11,29 @@ Runs as `mexecute`'s **post-ship sweep** (its Step 3), or standalone against any
 
 Every invocation carries an explicit **mode discriminator** — `sweep` (invoked by `mexecute`) or `standalone` — passed in, never inferred. The mode selects Step 4's behaviour: sweep **returns** its result to the invoker, which persists it; standalone **writes** the plan's `conformance` block itself.
 
+**Slice scope — `--slice <NN>`.** An invocation may narrow the run to what one slice shipped; this is how `mship` verifies each slice as it lands rather than waiting for the whole plan. It passes straight through to `mc.py plan shards --slice <NN>` (Step 1.4) and does nothing else. **It is a scope narrowing only:** the mode discriminator, the shard kinds, which findings are reported and how severe each one is are all exactly what they are without it — the narrowed run is the same run over fewer shards. Omitted, the run covers the whole plan, as it always has.
+
 ## What it detects
 
 Three kinds of drift, all **detection only** (reported, never gated or rewritten):
 
 1. **Change conformance** (`missing` / `extra` / `mismatch`) — for every module the change/plan touched, does the code implement the INTERFACE signatures and DATAMODEL types the change specifies? Flag surface that is missing, extra (present in code but not the contract), or mismatched (wrong signature/type/shape).
-2. **Cross-repo conformance** (`cross-repo-drift`) — for a shared-interface change, do **all** producer/consumer repos the cascade covers actually match the frozen contract in `context/shared/spec/`?
+2. **Cross-repo conformance** (`cross-repo-drift` / `stale-contract-revision`) — for a shared-interface change, do **all** producer/consumer repos the cascade covers actually match the frozen contract in `context/shared/spec/`, and is any delivered story still recorded against an older revision of that agreement?
 3. **Coupling detection** (`coupling`) — coupling violations that a contract comparison can't catch. `mc.py check coupling` and `mc.py check depends-on` detect them; **STANDARD-SPEC.md §"Dependency Rules" is the definition**, and this file does not restate it.
 
 Detection is delegated. **Findings and their severity are not.** Whether a reported violation belongs in the report, what `type` it carries, and whether it is `blocking`, `warning`, or `info` is this skill's judgment on every one of the three kinds — the tool supplies the shard list and the mechanical checks, never the verdict.
+
+### A contract that moved is not a contract someone diverged from
+
+`stale-contract-revision` is a **distinct finding type from `cross-repo-drift`**, and the difference is the remedy. Drift means somebody diverged from the contract: it wants investigating. A stale revision means the delivered code conforms to the agreement revision it was built against and to no other — the contract moved underneath conforming work — and it wants **scheduling**. Filing both under `cross-repo-drift` would put deliberate remediation and suspected mistakes in one bucket, and whoever read the report would have to re-derive the distinction the shard already knew.
+
+The finding carries the gap rather than describing it: **`built_against`** (the revision the delivered story recorded) and **`current_revision`** (the revision the agreement now carries). Step 2's cross-repo shard produces it; see there for how the comparison is made.
+
+### Spec depth is not drift
+
+A module recorded at **`depth: contract`** in `CATALOG.yaml` has **no DEPENDENCIES, IMPLEMENTATION or TESTING facet by design** — those three are written by `mspec`'s deepen entry in the slice that builds the module. Their absence is **expected, and never a `missing` finding**. Verification of such a module covers its **contract only**: OVERVIEW, DATAMODEL and INTERFACE against the code.
+
+This is not a leniency to be traded off against thoroughness. Without it the just-in-time deepen makes **every** not-yet-built module report as drift, and a report that is mostly false positives is one nobody reads — which is the failure this whole skill exists to prevent. A module at `full` depth (including one declaring no depth at all, which means `full`) is checked exactly as before.
 
 ## Invoking the tool
 
@@ -34,6 +48,8 @@ Every mechanical step below runs `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py`. Ad
 ## Step 0: Determine the Verification Target
 
 The mode discriminator (`sweep` or `standalone`) is **passed in**, never inferred from the plan id — a standalone run can pass the same plan id as a sweep, so only the explicit discriminator distinguishes them.
+
+`--slice <NN>` may be passed in alongside it. It plays no part in resolving the target — the plan is resolved the same way with or without it — and is carried forward to Step 1.4 unchanged.
 
 Resolve the plan with:
 
@@ -57,10 +73,12 @@ A plan maps to its driving change via `plan.yaml`'s `project_change` and the pla
 4. Take the **shard list** from the tool rather than building it:
 
    ```
-   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan shards <plan-id> [--granularity repo|module]
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan shards <plan-id> [--granularity repo|module] [--slice <NN>]
    ```
 
    Returns one `ShardSpec` per shard — `shard` (`change-conformance|cross-repo|coupling`), `id`, `repo`, `module`, `interface` — in a stable order (change-conformance by `(repo, module)`, then cross-repo by TAG, then coupling); `--json` puts the list at `data.shards`. This list **is** the fan-out set for Step 2 — do not add to it or drop from it by reading.
+
+   **`--slice <NN>` when the invocation carried one** (Step 0), and never otherwise. The tool restricts the list to the stories that slice holds; a slice the graph does not declare is `E_NOT_FOUND` (exit `1`), which is a target you were given wrongly, not a shard list to work around. Narrowing happens **here and nowhere else** — every step after this one treats the returned list as the whole of what it verifies, so no other step needs to know a slice was named.
 
    **Known limitation — one sanctioned exception:** when Step 0 resolves an ad-hoc change (no plan directory, `mc.py plan resolve` exits `E_NOT_FOUND`), there is no plan graph for `mc.py plan shards` to read, so the shard list is derived by reading instead. This is the sole exception to REQ-018's single-implementation rule; it does not extend to any path where a plan directory exists.
 
@@ -80,8 +98,47 @@ Dispatch the shards **in parallel** (single message, multiple Agent tool calls).
 
 Each shard reads code as it exists in `repos/<repo>/` and compares it to its contract:
 
-- **Change-conformance shard** — compare the module's implemented surface against its `*-INTERFACE.md` / `*-DATAMODEL.md` spec **and** the change doc's Affected Code Paths rows for that module. Report each `missing` / `extra` / `mismatch` with the spec surface, the code path, and the exact signature/type affected.
+- **Change-conformance shard** — compare the module's implemented surface against its `*-INTERFACE.md` / `*-DATAMODEL.md` spec **and** the change doc's Affected Code Paths rows for that module. Report each `missing` / `extra` / `mismatch` with the spec surface, the code path, and the exact signature/type affected. Read the module's depth first, and put it in the shard's prompt:
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec depth <target> <module>
+  ```
+
+  **At `depth: contract`, the absent DEPENDENCIES, IMPLEMENTATION and TESTING facets are expected and produce no finding of any kind** — see §"Spec depth is not drift". The shard checks that module's OVERVIEW/DATAMODEL/INTERFACE against the code and reports nothing about the three it does not have. `full` (which is also what no `depth` field means) is checked across every facet, unchanged.
 - **Cross-repo shard** — for the changed shared interface, read the frozen contract in `context/shared/spec/<IFACE>/` and check each producer/consumer repo's code against it. Report `cross-repo-drift` for any repo that diverges. The bypass half of this shard is mechanical, so it runs `mc.py check coupling <repo>` (below) for each repo in the conformance set rather than looking for bypasses by reading.
+
+  It also compares **recorded revisions** against the agreement's current one, which is a different question from whether the code matches the contract:
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py spec consumers <IFACE> --stale
+  ```
+
+  `--stale` reads every plan's `state.yaml` — not the spec tree, which only ever says what the contract is *now* — and returns `revision` (the current one) plus one `stale` entry per delivered story whose `contract_revisions[<IFACE>]` is below it, carrying `plan_id`, `story_id` and `built_against`. Report each as a **`stale-contract-revision`** finding carrying `built_against` and `current_revision`; an empty `stale` list is a real clean result, not a check that failed to run. Do not fold these into `cross-repo-drift` — §"A contract that moved is not a contract someone diverged from" is why. Severity is still yours: work one revision behind an additive bump is not the same as work behind a breaking one.
+
+  ```json
+  {
+    "shard": "cross-repo",
+    "scope": {
+      "kind": "cross-repo",
+      "interface": "AUTH",
+      "change_ref": "PROJECT-CHANGE-014"
+    },
+    "findings": [
+      {
+        "type": "stale-contract-revision",
+        "severity": "warning",
+        "repo": "repo-b",
+        "spec_ref": "context/shared/spec/AUTH/AUTH-INTERFACE.md",
+        "surface": "AUTH agreement",
+        "code_path": "src/session.ts",
+        "built_against": 2,
+        "current_revision": 4,
+        "detail": "Story 03-02-repo-b-SESSION recorded AUTH revision 2; the agreement now carries 4. The code conforms to what it was built against — schedule remediation, do not investigate it as divergence."
+      }
+    ],
+    "clean": false
+  }
+  ```
 - **Coupling shard** — run the two checkers over the shard's target and judge what comes back:
 
   ```
@@ -127,6 +184,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
    |------|----------|------|-----------------|-----------|--------|
    | mismatch | blocking | repo-a | AUTH-INTERFACE.md `login()` | src/auth.ts | code adds a 3rd arg not in the contract |
    | cross-repo-drift | blocking | repo-b | EVENT-BUS-DATAMODEL.md `Event.ts` | src/consume.ts | reads `ts` as string; contract is number |
+   | stale-contract-revision | warning | repo-b | AUTH-INTERFACE.md (rev 4) | src/session.ts | 03-02-repo-b-SESSION built against rev 2; schedule remediation |
    | coupling | warning | repo-a | — | src/orders/impl.ts | imports users/impl.ts (INTERFACE only allowed) |
 
    ## Suggested Follow-up
@@ -148,7 +206,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
 1. **Persist the result, keyed on the mode discriminator.** Three cases:
 
-   - **`sweep`** — write **no** state. Return `{status, report, findings}` to the invoker (`mexecute`), which persists it. `status` uses `plan-state`'s `clean | drift | not-run` vocabulary — `mverify` carries no separate pass/fail vocabulary of its own; the triple is written into the `conformance` block verbatim by the invoker.
+   - **`sweep`** — write **no** state. Return `{status, report, findings, deferred}` to the invoker (`mexecute`), which persists it. `status` uses `plan-state`'s `clean | drift | not-run` vocabulary — `mverify` carries no separate pass/fail vocabulary of its own; the result is written into the `conformance` block verbatim by the invoker.
    - **`standalone`, plan directory exists** — write the `conformance` block yourself:
 
      ```
@@ -159,9 +217,13 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
    - **`standalone`, no plan directory (ad-hoc change)** — skip the state update entirely; just write the reports, noting there is no plan to record into.
 
-2. **Report to the user** the counts by type (change / cross-repo / coupling) and severity, and point at the report file.
+2. **`deferred` is carried, not judged.** The count is whatever a **prior `mfix` run** already recorded in the plan's `conformance.deferred` (absent means `0`) — read it from `context/project/plans/<plan-id>/state.yaml` and pass it through unchanged in the returned result, so `check handoff` can score `findings - deferred` rather than `findings`.
 
-3. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report.
+   A deferred finding is **still detected and still reported**: it is still true, and re-detecting it every run is exactly what keeps the deferral in the ledger's accounting rather than out of sight. `mverify` does not subtract it from `findings` and does not suppress the finding in the report. Nor does it pass `--deferred` to `state conformance` — deciding that a finding *may* stand is `mfix`'s judgement about which artefact is authoritative, and `mfix` records the count itself after the standalone re-verify it asks for. This skill reports; it does not adjudicate. Carry the number; do not form an opinion about it.
+
+3. **Report to the user** the counts by type (change / cross-repo / coupling) and severity, and point at the report file.
+
+4. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report.
 
 ## Output File Path Patterns
 
@@ -181,6 +243,8 @@ Worked example: `context/project/changes/CHANGE-003-retry.md` → basename `CHAN
 - **No spec/change/plan rewrites.** It reports drift; closing it is a separate `mspec` (respec) or `mreverse` (reconcile) run, or a code fix.
 - **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced.
 - **No delegated verdict.** `mc.py` supplies the shard list and the mechanical checks; which findings the report carries and how severe each one is stays here.
+- **No deferral.** It carries the `deferred` count and never sets, raises, or acts on it. A finding `mfix` accepted as debt is re-detected and re-reported here on every run.
+- **No re-planning.** `--slice <NN>` narrows what this run looks at; deciding what the next slice should be off the back of a report is `mship`'s call.
 
 ## Asking Questions
 

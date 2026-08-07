@@ -14,6 +14,16 @@ All of that is one traversal, and it already exists: ``tools/check.py``'s
 adds nothing to it -- there is deliberately no second stage walk here, because
 two walks are two things to keep in step.
 
+Two stages are worth calling out because they are what the operator view of the
+loop is *for*. ``slices`` reports each in-flight plan's position -- how many of
+its slices are applied, of how many, and which one is current -- because with
+delivery iterative, "which plans are unfinished" no longer says how far any of
+them got. ``conformance`` reports ``findings`` and ``deferred`` **separately**
+rather than pre-subtracting them: an operator needs to see that four findings
+exist and three were accepted as debt, which a single net figure of one hides.
+Deferral is a recorded acceptance, not a suppression, and this is where it stays
+visible as one.
+
 ``generated`` comes from the injected clock (``--now``), so two runs against the
 same workspace bytes with the same ``--now`` are byte-identical. The report is
 data, not a verdict: findings are carried in ``handoff`` rather than raised as
@@ -51,6 +61,12 @@ def build_report(
                 "unplanned_indexes": walk.unplanned_indexes,
                 "unfinished": walk.unfinished_plans,
             },
+            # Work in progress *within* a plan. With delivery iterative, "which
+            # plans are unfinished" no longer says how far any of them got.
+            "slices": walk.slices,
+            # `findings` and `deferred` side by side rather than pre-subtracted:
+            # an operator needs to see that four findings exist and three were
+            # accepted as debt, which a single net figure of one hides.
             "conformance": walk.conformance,
         },
         "handoff": [finding.to_dict() for finding in walk.findings],

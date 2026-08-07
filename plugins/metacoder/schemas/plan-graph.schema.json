@@ -7,7 +7,10 @@
   "additionalProperties": false,
   "required": ["version", "plan_id", "type", "repos", "waves", "stories"],
   "properties": {
-    "version": { "enum": [1, 2] },
+    "version": {
+      "enum": [1, 2, 3],
+      "description": "New plans are written with 3. A 1 or 2 graph carries no slices and is read as one implicit slice containing every wave, which is the delivery model it was written for — no pre-existing plan needs migrating. The version, not the presence of the slices key, is the discriminator: sniffing for slices would let a malformed version-3 graph silently degrade to whole-job delivery."
+    },
     "plan_id": {
       "type": "string",
       "pattern": "^[0-9]{3}-[a-z0-9-]+$",
@@ -25,6 +28,12 @@
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 },
       "description": "Every repo this plan touches (one story targets exactly one repo)."
+    },
+    "slices": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/slice" },
+      "description": "The delivery axis: each entry is the set of stories that make one behaviour run end to end. Required when version is 3, forbidden below it. Two producer obligations JSON Schema cannot express are checked by mc.py instead: every story appears in exactly one slice, and at least one acceptance step of every slice is kind: exit-code."
     },
     "waves": {
       "type": "array",
@@ -50,11 +59,58 @@
       "additionalProperties": { "$ref": "#/$defs/story" }
     }
   },
+  "if": {
+    "required": ["version"],
+    "properties": { "version": { "const": 3 } }
+  },
+  "then": {
+    "required": ["slices"],
+    "properties": {
+      "stories": { "additionalProperties": { "required": ["slice"] } }
+    }
+  },
+  "else": {
+    "properties": {
+      "slices": false,
+      "stories": { "additionalProperties": { "properties": { "slice": false } } }
+    }
+  },
   "$defs": {
     "storyId": {
       "type": "string",
       "pattern": "^[0-9]{2}-[0-9]{2}[a-z]?-[A-Za-z0-9._-]+$",
       "description": "{WW}-{SS}[m]-{REPO}-{MODULE}, matching the PLAN-*.md filename minus the PLAN- prefix and .md suffix."
+    },
+    "sliceId": {
+      "type": "string",
+      "pattern": "^[0-9]{2}$",
+      "description": "Zero-padded slice number; 00 is the walking skeleton."
+    },
+    "slice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slice", "name", "behavior", "acceptance", "stories"],
+      "properties": {
+        "slice": { "$ref": "#/$defs/sliceId" },
+        "name": { "type": "string", "minLength": 1 },
+        "behavior": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one behaviour this slice makes run end to end."
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/validationStep" },
+          "description": "The runnable demonstration that the behaviour works. At least one step must be kind: exit-code — a slice whose acceptance is prose alone forces a human stop under every gate policy but never — which mc.py checks, since JSON Schema cannot."
+        },
+        "stories": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/storyId" },
+          "description": "The stories delivered in this slice; the back-reference each story's slice field is checked against."
+        }
+      }
     },
     "validationStep": {
       "type": "object",
@@ -83,6 +139,10 @@
         "repo": { "type": "string", "minLength": 1 },
         "module": { "type": "string", "minLength": 1 },
         "wave": { "type": "integer", "minimum": 1 },
+        "slice": {
+          "$ref": "#/$defs/sliceId",
+          "description": "The slice this story belongs to. Required alongside version: 3 by the same if/then pair that requires slices, and forbidden below it."
+        },
         "prerequisites": {
           "type": "array",
           "items": { "$ref": "#/$defs/storyId" },

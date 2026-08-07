@@ -306,6 +306,21 @@ def draft(project_change="001"):
     }
 
 
+#: The ``SliceDraft[]`` ``plan reslice`` is exercised with: one slice holding
+#: both of the fixture's stories, so every story lands in exactly one.
+SLICE_DRAFTS = [
+    {
+        "slice": "00",
+        "name": "walking skeleton",
+        "behavior": "the plan runs end to end",
+        "acceptance": [
+            {"kind": "exit-code", "command": "true", "description": "it runs"}
+        ],
+        "stories": [FIRST_STORY, LAST_STORY],
+    }
+]
+
+
 def call(workspace, group, verb, **fields):
     """Call one group directly -- never through ``argv`` -- and return its Result."""
     module = mc.load_group(group)
@@ -371,10 +386,18 @@ def arguments():
             "title": "Emitted Here",
             "repo": "demo",
         },
+        "change.close": {
+            "path": "context/demo/changes/CHANGE-001-alpha-retry.md",
+            "status": "applied",
+        },
         "spec.mode": {"target": "demo"},
         "spec.layers": {"target": "demo"},
         "spec.catalog-emit": {"target": "demo"},
         "spec.consumers": {"interface": "EVENT-BUS"},
+        # The reporting form of each: `--set`/`--bump` are what write, and they
+        # have their own coverage in test_spec.py.
+        "spec.depth": {"target": "demo", "module": "ALPHA", "set": None},
+        "spec.revision": {"interface": "EVENT-BUS", "bump": False},
         "req.next": {"tier": "demo"},
         "req.mnemonic": {"title": "Recover a specification from code that never had one"},
         "req.gate": {"tier": "demo"},
@@ -390,6 +413,11 @@ def arguments():
         "plan.resolve": {"plan_id": None},
         "plan.story-id": {"file": "PLAN-%s.md" % LAST_STORY},
         "plan.waves": {"target": "demo"},
+        "plan.slices": {"plan_id": PLAN_ID},
+        "plan.reslice": {
+            "plan_id": PLAN_ID,
+            "stdin": io.StringIO(json.dumps(SLICE_DRAFTS)),
+        },
         "plan.emit": {
             "plan_id": SECOND_PLAN_ID,
             "stdin": io.StringIO(json.dumps(draft(project_change="002"))),
@@ -405,6 +433,13 @@ def arguments():
             "attempt": 1,
             "branch": BRANCH,
             "worktree": WORKTREE,
+        },
+        "state.set-slice": {
+            "plan_id": PLAN_ID,
+            "slice_id": "00",
+            "status": "applied",
+            "acceptance": "pass",
+            "outcome": "continue",
         },
         "state.conformance": {
             "plan_id": PLAN_ID,
@@ -430,11 +465,17 @@ def arguments():
 COVERED = sorted(arguments())
 
 #: The verbs ``TOOLS-INTERFACE.md`` documents as writing files: ``change emit``,
-#: ``spec catalog-emit``, ``plan emit``, ``plan story-emit``, and every ``state``
-#: verb. :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
+#: ``change close``, ``spec catalog-emit``, ``plan emit``, ``plan reslice``,
+#: ``plan story-emit``, and every ``state`` verb.
+#: :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
 #: against what the tool actually writes, so it cannot quietly go stale.
+#:
+#: ``spec depth`` and ``spec revision`` write only under ``--set``/``--bump``;
+#: the case :func:`arguments` gives each is the reporting form, so neither
+#: appears here and neither may write.
 DOCUMENTED_EMITTING = sorted(
-    {"change.emit", "spec.catalog-emit", "plan.emit", "plan.story-emit"}
+    {"change.emit", "change.close", "spec.catalog-emit"}
+    | {"plan.emit", "plan.reslice", "plan.story-emit"}
     | {"req.change-emit", "req.change-close"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )
@@ -580,6 +621,78 @@ def test_the_run_counter_is_read_from_the_file_rather_than_generated(fixture):
     assert core.load_yaml(path, "state.yaml")["run"] == 2
     invoke(fixture, "state.run-increment")
     assert core.load_yaml(path, "state.yaml")["run"] == 3
+
+
+# ---------------------------------------------------------------------------
+# The story template's two slice fields, rendered deterministically
+# ---------------------------------------------------------------------------
+
+#: The header field ``shared/PLAN-STORY-TEMPLATE.md`` gained with the slice
+#: loop: the delivery slice a story belongs to. It is part of what
+#: ``plan story-emit`` renders, so it is subject to the same promise every
+#: other emission makes -- same workspace bytes, same injected clock, same
+#: output bytes.
+SLICE_HEADER_FIELD = "**Slice:**"
+
+#: The end-to-end section's heading, renamed from
+#: ``## Final Validation (last wave only)``. Pinned here so that renaming it
+#: again without moving the renderer with it fails in this file rather than
+#: silently emitting a story with neither name.
+SLICE_ACCEPTANCE_HEADING = "## Slice Acceptance"
+
+#: The name the section carried before the rename. No rendered story may still
+#: carry it -- two differently-named end-to-end sections would be exactly the
+#: divergence the rename exists to remove.
+RETIRED_ACCEPTANCE_HEADING = "## Final Validation"
+
+
+def rendered_story(workspace, story_id=LAST_STORY):
+    """Emit one story file and return its text.
+
+    :data:`LAST_STORY` by default: the acceptance section is gated, and the
+    fixture's graph declares no ``slices``, so its one synthetic slice spans
+    every wave -- the version-1/2 case whose rendering the rename must leave
+    otherwise unchanged.
+    """
+    result = invoke(workspace, "plan.story-emit", story_id=story_id)
+    assert result.ok, [item.render() for item in result.diagnostics]
+    return workspace.path(result.data["file"]).read_text(encoding="utf-8")
+
+
+def test_the_rendered_story_carries_both_new_template_fields(fixture):
+    """Determinism asserted over an absent field would be vacuously true."""
+    text = rendered_story(fixture)
+    assert text.count(SLICE_HEADER_FIELD) == 1
+    assert text.count(SLICE_ACCEPTANCE_HEADING) == 1
+    assert RETIRED_ACCEPTANCE_HEADING not in text
+
+
+def test_both_new_fields_render_byte_identically_twice(tmp_path):
+    """Build, render, throw the tree away, rebuild identically, render again."""
+    root = tmp_path / "workspace"
+
+    workspace = build(root)
+    first = rendered_story(workspace)
+
+    shutil.rmtree(str(root))
+    workspace = build(root)
+    second = rendered_story(workspace)
+
+    assert first == second
+    assert first.count(SLICE_HEADER_FIELD) == second.count(SLICE_HEADER_FIELD) == 1
+    assert first.count(SLICE_ACCEPTANCE_HEADING) == second.count(SLICE_ACCEPTANCE_HEADING) == 1
+
+
+def test_the_slice_header_is_unconditional_and_the_acceptance_section_is_not(fixture):
+    """The header is on every story; the acceptance section is gated.
+
+    What distinguishes a gated section from a renamed one: a story the gate
+    excludes loses the section while keeping the header field.
+    """
+    text = rendered_story(fixture, story_id=FIRST_STORY)
+    assert SLICE_HEADER_FIELD in text
+    assert SLICE_ACCEPTANCE_HEADING not in text
+    assert RETIRED_ACCEPTANCE_HEADING not in text
 
 
 # ---------------------------------------------------------------------------

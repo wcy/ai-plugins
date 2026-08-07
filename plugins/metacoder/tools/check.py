@@ -37,6 +37,11 @@ Several rules live here, and **only** here -- no other module re-derives one:
   **set**: both directions are reported, absence is symmetric (neither side
   present conforms, one side alone is a finding), and a paragraph that begins
   ``Exports:`` but does not parse is a finding rather than a silent pass.
+* **catalog depth** -- a module *declaring* ``depth: contract`` carries
+  OVERVIEW, DATAMODEL and INTERFACE, and one declaring ``depth: full`` carries
+  every facet. Only a declaration is measured: an absent ``depth`` means
+  ``full`` for resolution but is not an assertion this rule may fire on, which
+  is what keeps every catalog written before spec depth existed conforming.
 
 ``check handoff`` walks the stage chain once. **``stranded`` is the general
 rule** ``TOOLS-DATAMODEL.md`` states -- *the artifact is complete but no
@@ -114,6 +119,15 @@ E_CATALOG_LAYER = "E_CATALOG_LAYER"
 #: An INTERFACE file's `Exports:` trailer disagreeing with the entry's
 #: `exports:` list -- in either direction, or by not parsing at all.
 E_CATALOG_EXPORTS = "E_CATALOG_EXPORTS"
+
+#: A declared `depth` the module's own files do not support: `contract` without
+#: OVERVIEW/DATAMODEL/INTERFACE, or `full` with any facet missing.
+E_CATALOG_DEPTH = "E_CATALOG_DEPTH"
+
+#: A conformance block recording more deferrals than findings. Reported rather
+#: than scored, because a negative outstanding count is not a cleaner plan --
+#: it is a block nobody can act on.
+E_CONFORMANCE_DEFERRED = "E_CONFORMANCE_DEFERRED"
 
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
@@ -991,12 +1005,53 @@ def _catalog_exports(
     return findings
 
 
+def _catalog_depth(
+    catalog: spec.ExistingCatalog, key: str, relative: str
+) -> List[core.Diagnostic]:
+    """A declared ``depth`` the module's own files do not support.
+
+    Only a *declaration* is measured. An absent ``depth`` resolves to ``full``
+    everywhere else in the tool, but absence is not an assertion: reading it as
+    one would fire on every catalog written before spec depth existed, and would
+    convert an oversight into a claim -- the same reason the field is preserved
+    rather than derived.
+    """
+    findings: List[core.Diagnostic] = []
+    for module in catalog.module_names(key):
+        declared = catalog.field(key, module, "depth")
+        if declared not in spec.DEPTH_LEVELS:
+            continue
+        entries = catalog.field(key, module, "files")
+        facets = {
+            entry.get("facet")
+            for entry in (entries if isinstance(entries, list) else [])
+            if isinstance(entry, dict)
+        }
+        required = (
+            spec.CONTRACT_FACETS
+            if declared == spec.DEPTH_CONTRACT
+            else spec.CONTRACT_FACETS + spec.DEEPENING_FACETS
+        )
+        missing = [facet for facet in required if facet not in facets]
+        if not missing:
+            continue
+        findings.append(
+            core.error(
+                E_CATALOG_DEPTH,
+                "module %r declares depth %r but has no %s facet"
+                % (module, declared, "/".join(missing)),
+                file=relative,
+            )
+        )
+    return findings
+
+
 def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
     """Compare ``CATALOG.yaml`` against the spec tree it describes.
 
-    Four rules, applied in this fixed order so finding order is stable
-    between runs: file-set agreement, facet, layer, then exports. The layer
-    rule is skipped for ``spec.SHARED_TARGET``, whose catalog has no
+    Five rules, applied in this fixed order so finding order is stable
+    between runs: file-set agreement, facet, layer, exports, then depth. The
+    layer rule is skipped for ``spec.SHARED_TARGET``, whose catalog has no
     ``layers:`` block; the exports rule is not, since a shared catalog's
     INTERFACE entries carry ``exports`` like any other.
     """
@@ -1014,6 +1069,7 @@ def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
     if target != SHARED_TARGET:
         findings.extend(_catalog_layer(catalog, relative))
     findings.extend(_catalog_exports(ws, declared))
+    findings.extend(_catalog_depth(catalog, key, relative))
     return findings
 
 
@@ -1047,6 +1103,7 @@ class StageWalk:
     unindexed_changes: List[Dict[str, Any]] = field(default_factory=list)
     unplanned_indexes: List[str] = field(default_factory=list)
     unfinished_plans: List[Dict[str, Any]] = field(default_factory=list)
+    slices: List[Dict[str, Any]] = field(default_factory=list)
     conformance: List[Dict[str, Any]] = field(default_factory=list)
     findings: List[HandoffFinding] = field(default_factory=list)
     diagnostics: List[core.Diagnostic] = field(default_factory=list)
@@ -1275,6 +1332,7 @@ def _plans_stage(
             )
         if resolution["pending_stories"] or resolution["status"] in plan.UNFINISHED_STATUSES:
             walk.unfinished_plans.append(resolution)
+        _slice_stage(walk, plan_id, graph, state, ledger)
         _conformance_stage(ws, walk, plan_id, graph, state, ledger, highest_index)
 
 
@@ -1326,14 +1384,58 @@ def _plan_resolution(
 ) -> Dict[str, Any]:
     """A ``PlanResolution``, assembled from ``tools/plan.py``'s readers."""
     resume_wave, pending_stories = plan._resume(graph, plan._story_statuses(state))
+    entries, _synthesized = plan.slice_entries(graph, state)
     return {
         "plan_id": plan_id,
         "plan_dir": plan._plan_dir_rel(plan_id),
         "status": plan._plan_status(state, ledger, plan_id),
         "run": plan._run_counter(state),
         "resume_wave": resume_wave,
+        "resume_slice": plan._resume_slice(entries),
         "pending_stories": pending_stories,
     }
+
+
+def _slice_stage(
+    walk: StageWalk,
+    plan_id: str,
+    graph: Dict[str, Any],
+    state: Dict[str, Any],
+    ledger: Dict[str, Any],
+) -> None:
+    """How far through its slices each plan got.
+
+    The counters come from the **ledger** -- that is what they are there for, and
+    reading them saves a second pass over each plan's state file. The current
+    slice comes from the graph and state this walk has already loaded, so this
+    stage still adds no traversal of its own.
+
+    A pre-slice plan reports ``null`` counters rather than zero: no progress made
+    and no slices to make progress through are different facts, and a zero would
+    present the second as the first.
+    """
+    entry = plan._ledger_plans(ledger).get(plan_id)
+    entry = entry if isinstance(entry, dict) else {}
+    total = entry.get("slices_total")
+    applied = entry.get("slices_applied")
+    entries, synthesized = plan.slice_entries(graph, state)
+    if synthesized and not isinstance(total, int):
+        walk.slices.append(
+            {"plan_id": plan_id, "applied": None, "total": None, "current": None}
+        )
+        return
+    if not isinstance(total, int) or isinstance(total, bool):
+        total = len(entries)
+    if not isinstance(applied, int) or isinstance(applied, bool):
+        applied = len(
+            [item for item in entries if item.get("status") == plan.SLICE_APPLIED]
+        )
+    current = next(
+        (item for item in entries if item.get("status") != plan.SLICE_APPLIED), None
+    )
+    walk.slices.append(
+        {"plan_id": plan_id, "applied": applied, "total": total, "current": current}
+    )
 
 
 def _conformance_stage(
@@ -1345,11 +1447,45 @@ def _conformance_stage(
     ledger: Dict[str, Any],
     highest_index: int,
 ) -> None:
-    """The sweep's verdict per plan, and drift nothing followed up on."""
-    status, findings = _conformance_verdict(ws, plan_id, state, walk)
-    walk.conformance.append({"plan_id": plan_id, "status": status, "findings": findings})
-    if findings <= 0:
+    """The sweep's verdict per plan, and drift nothing followed up on.
+
+    **The stage scores ``findings - deferred``, not ``findings``.** A finding
+    ``mfix`` legitimately accepted as debt -- no contract covers this surface
+    yet, the fix needs architecture that does not exist -- would otherwise hold
+    the check at ``error`` with nothing anyone could do about it, and a gate that
+    cannot be satisfied is one everybody learns to route around. The two numbers
+    are still reported separately, so accepted debt stays visible as debt rather
+    than disappearing.
+    """
+    status, findings, deferred = _conformance_verdict(ws, plan_id, state, walk)
+    walk.conformance.append(
+        {
+            "plan_id": plan_id,
+            "status": status,
+            "findings": findings,
+            "deferred": deferred,
+        }
+    )
+    if deferred > findings:
+        # Not scored to a negative outstanding count: more deferrals than
+        # findings is a block nobody can act on, so it is reported as its own
+        # defect rather than read as a cleaner plan than a clean one.
+        walk.findings.append(
+            handoff(
+                E_CONFORMANCE_DEFERRED,
+                "the conformance block defers %d finding(s) but records only %d"
+                % (deferred, findings),
+                STAGE_MVERIFY,
+                STAGE_MFIX,
+                plan._plan_dir_rel(plan_id),
+                STATE_INCOMPLETE,
+                file="%s/%s" % (plan._plan_dir_rel(plan_id), plan.STATE_FILE),
+            )
+        )
         return
+    if findings - deferred <= 0:
+        return
+    findings = findings - deferred
     # A drift report is consumed by writing the next change. Repo change numbers
     # and index numbers are independent sequences, so the successor is looked for
     # where it would be recorded: a project index numbered above this plan's.
@@ -1370,17 +1506,24 @@ def _conformance_stage(
     )
 
 
+def _count(value: Any) -> int:
+    """A non-negative integer field, or 0 -- ``deferred`` absent means 0."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
 def _conformance_verdict(
     ws: core.Workspace, plan_id: str, state: Dict[str, Any], walk: StageWalk
-) -> Tuple[str, int]:
-    """``(status, findings)`` from the recorded block, else from the report."""
+) -> Tuple[str, int, int]:
+    """``(status, findings, deferred)`` from the block, else from the report."""
     block = state.get("conformance")
     if isinstance(block, dict):
         status = block.get("status")
-        count = block.get("findings")
         return (
             status if status in CONFORMANCE_STATUSES else "not-run",
-            count if isinstance(count, int) and not isinstance(count, bool) else 0,
+            _count(block.get("findings")),
+            _count(block.get("deferred")),
         )
     relative = "%s/%s/%s.json" % (
         "/".join((CONTEXT_DIRNAME, PROJECT_TIER, OUT_DIRNAME)),
@@ -1391,15 +1534,18 @@ def _conformance_verdict(
         CONTEXT_DIRNAME, PROJECT_TIER, OUT_DIRNAME, plan_id, "%s.json" % CONFORMANCE_REPORT_STEM
     )
     if escape is not None or not path.is_file():
-        return "not-run", 0
+        return "not-run", 0, 0
     try:
         report = core.load_json(path, relative)
     except core.ToolError as exc:
         walk.diagnostics.append(exc.diagnostic)
-        return "not-run", 0
+        return "not-run", 0, 0
     listed = report.get("findings") if isinstance(report, dict) else None
     count = len(listed) if isinstance(listed, list) else 0
-    return ("clean" if count == 0 else "drift"), count
+    # A report on disk carries no deferral count -- deferral is a decision
+    # `mfix` records into state.yaml, not something a sweep can report about
+    # itself -- so the fallback path always scores the raw finding count.
+    return ("clean" if count == 0 else "drift"), count, 0
 
 
 def _plan_change_number(plan_id: str, graph: Dict[str, Any], ledger: Dict[str, Any]) -> int:

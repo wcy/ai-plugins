@@ -1,6 +1,6 @@
 # metacoder
 
-A Claude Code plugin providing a structured spec-to-ship workflow for a **multi-repo workspace** that keeps codebases **coherent and consistent** — internally (code implements its spec; specs obey one standard) and across repos (a shared contract layer + change cascade + cross-repo conformance). Brainstorm and write specs per repository (and a shared cross-repo interface layer), generate modular implementation plans, execute them as worktree-isolated waves, and verify conformance — manually gatekept or fully autonomous.
+A Claude Code plugin providing a structured spec-to-ship workflow for a **multi-repo workspace** that keeps codebases **coherent and consistent** — internally (code implements its spec; specs obey one standard) and across repos (a shared contract layer + change cascade + cross-repo conformance). Brainstorm and write specs per repository (and a shared cross-repo interface layer), generate modular implementation plans, deliver them **one slice at a time** as worktree-isolated waves, and verify conformance — manually gatekept or fully autonomous.
 
 ## Getting Started
 
@@ -19,7 +19,7 @@ performed on your behalf.
    Put (or clone) your repositories under `repos/<repo>/`.
 3. Spec a repo: `/mspec` (e.g. "spec out the auth service") — writes `context/<repo>/spec/` and a baseline `CHANGE-000-initial-spec.md`.
 4. Turn a change into stories: `/mplan` — writes `context/project/plans/<NNN>-<slug>/` (story files, `plan.yaml`, `state.yaml`).
-5. Ship it: `/mexecute` — runs the plan as worktree-isolated waves, then a post-ship conformance sweep.
+5. Ship it: `/mship` — delivers the plan **one slice at a time**, invoking `/mexecute` for each slice's worktree-isolated waves and `/mverify` over what it shipped, then deciding what the slices still outstanding should be. (`/mexecute` on its own still puts a whole plan through in one invocation.)
 6. Re-check anytime: `/mverify` (conformance against any change/plan) or `/mreverse` (reconcile a stale spec back to the actual code, or audit consistency across repos).
 7. Close what it found: `/mfix` — decides, per finding, whether the code or the spec is authoritative, and repairs the one that is wrong.
 8. Keep the bookkeeping honest anytime: `/mmigrate` — sweeps every tracked artifact (plan/state/catalog YAML, change and requirements front-matter) against its own schema and identifier conventions, independent of any single change or plan.
@@ -74,6 +74,7 @@ ai-plugins/                              # the marketplace repo
         │   ├── mverify/SKILL.md
         │   ├── mfix/SKILL.md
         │   ├── mexecute/SKILL.md
+        │   ├── mship/SKILL.md           # the per-slice delivery loop
         │   ├── mquick/SKILL.md
         │   └── mmigrate/SKILL.md
         ├── tools/                       # the deterministic step layer every skill invokes
@@ -115,8 +116,9 @@ These are Claude Code skills — Claude invokes them either automatically when y
 | `mplan` | no | "create plan", "generate plan", "break into stories", etc. | Turn the latest `PROJECT-CHANGE-<NNN>-*.md` (or full specs for greenfield) into story files **plus** a machine-readable plan graph (`plan.yaml`), initial plan state (`state.yaml`), and a project-ledger entry, under `context/project/plans/<NNN>-<slug>/`. Fans out subagents to validate the generated stories. A plan may span repos; each story targets exactly one. |
 | `mverify` | no | "verify conformance", "did we implement the change", "check cross-repo contracts", "audit coupling", etc. | From the **change + plan + spec** files, confirm the shipped code implements them: change↔code drift, cross-repo contract conformance, and code-level coupling detection — fanned out into three kinds of subagent shard (change-conformance, cross-repo, coupling). Produces a **change-shaped** report and records it in plan state. Read-only; reports, never rewrites. Runs as `mexecute`'s post-ship sweep and can be re-run against any prior change/plan. |
 | `mfix` | **yes** | "fix the drift", "fix the mverify findings", "reconcile code and spec", "close the conformance report", etc. | Consume a `mverify` conformance report and resolve it. Per finding, decides **which artefact is authoritative** — spec-describes-intent + code-drifted → fix the code; code-is-deliberate + spec-over-promised → fix the spec; contract-does-not-exist-yet → defer to `mspec`. Fixes the root cause, not the symptom, inside the finding's fence. Writes a change file, keeps the repo's gates green, then re-runs `/mverify` to confirm closure. |
-| `mexecute` | **yes** | "execute the plan", "run the plan", "ship it", etc. | Ships a plan as a **dynamic Workflow**: each wave's stories run concurrently, each in its **own git worktree**; validate + merge at a barrier (agent discretion), bounded retry (N=3), two-level state, then a post-ship `/mverify` sweep. |
-| `mquick` | via `mexecute` | "just build it", "spec and ship this", "one-shot this", "mquick", etc. | Autonomous orchestrator: **one** clarification gate (Phase A, reusing `mspec`'s diagnostic stage + risk scan), then `mspec → mplan → mexecute` to shipped, conformed code with no further gates. A thin sequence over the real skills — not a workflow of its own. |
+| `mexecute` | **yes** | "execute the plan", "run the plan", "ship it", etc. | Ships **one slice** of a plan as a **dynamic Workflow**: each wave's stories run concurrently, each in its **own git worktree**; validate + merge at a barrier (agent discretion), bounded retry (N=3), two-level state, the slice's **acceptance** as the demonstration that the behaviour actually runs, then a post-ship `/mverify` sweep. Given no `--slice` it runs every slice in order, which is exactly what a plan written before slices existed does. |
+| `mship` | no | "deliver this slice by slice", "run the loop", "ship it incrementally", "deliver the plan a slice at a time", "mship", etc. | The **loop the other skills run inside** — it writes no spec, plan, code or conformance finding of its own; every step is an invocation of one of its siblings. Once per slice, in order: deepen that slice's modules from `contract` to `full` (`mspec`), refresh the stories of that slice alone (`mplan --slice`), ship them (`mexecute --slice`), sweep them (`mverify --slice`), then **decide** — continue, ask the developer about an acceptance no command can settle, re-plan the slices still outstanding (including an `mspec` cascade and the remediation one schedules), or stop. Owns the **gate policy** (`--gate unverifiable-only\|every-slice\|never`) and the **budget breaker**; never rewrites a slice already delivered. |
+| `mquick` | via `mship` → `mexecute` | "just build it", "spec and ship this", "one-shot this", "mquick", etc. | Autonomous orchestrator: **one** clarification gate (Phase A, reusing `mspec`'s diagnostic stage + risk scan), then `mspec → mplan → mship` to shipped, conformed code. A thin sequence over the real skills — not a workflow of its own, and not a second copy of the loop: all it adds is `mship`'s gate policy, set to `unverifiable-only`, so the run pauses only where an acceptance cannot be obtained mechanically. |
 | `mmigrate` | no | "migrate the artifacts", "check every catalog", "fix the schema", "audit the requirement ids", "the change numbers don't line up", "fix broken depends-on links", etc. | Sweeps every tracked artifact — `plan.yaml`/`state.yaml`, `CATALOG.yaml`, `CHANGE-<NNN>`/`PROJECT-CHANGE-<NNN>`/`REQ-CHANGE-<NNN>` front-matter, `REQUIREMENTS.md` — against its own JSON Schema and the `STANDARD-REQ.md`/`STANDARD-CHANGE.md` id/slug conventions, independent of any single change or plan. Migrates a tier still on bare `REQ-<NNN>` ids onto the mnemonic form (`REQ-<NNN>-<mnemonic>`, derived mechanically from each entry's own title) and keeps every reference's mnemonic in step with its heading afterwards. Repairs filename-vs-front-matter mismatches, malformed or duplicate ids, and dangling/missing cross-references at the root cause; defers anything that would require inventing content or judging between two equally plausible artifacts. Writes a change file only when a fix touches actual spec content. |
 
 Standards load lazily, straight from `${CLAUDE_PLUGIN_ROOT}/shared/`, never copied into your project. `mspec` loads `STANDARD-SPEC.md` at its spec-write step and `STANDARD-CHANGE.md` at its change-doc step, keeping both out of context during brainstorm/diagnosis. `mreverse` loads `STANDARD-SPEC.md` only at its Phase 3 write step. `mplan` never reads the standards — it works from `mspec`'s already-conformant `CATALOG.yaml` and change docs, and renders stories via `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit`, which injects the E2E hard rules from `STANDARD-SPEC.md` at render time so there's no second hand-maintained copy.
@@ -170,11 +172,18 @@ Then register the marketplace from GitHub and install the plugin from inside Cla
 
 (To iterate on the plugin from a local checkout instead, `/plugin marketplace add .` from the repo root also works and picks up uncommitted local edits.)
 
-That registers all nine skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mfix`, `mexecute`, `mquick`, `mreq`, `mmigrate`) and makes them invokable. The skills read their standards, template, schemas, and tool straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
+That registers all ten skills (`mspec`, `mreverse`, `mplan`, `mverify`, `mfix`, `mexecute`, `mship`, `mquick`, `mreq`, `mmigrate`) and makes them invokable. The skills read their standards, template, schemas, and tool straight from the plugin's marketplace cache via `${CLAUDE_PLUGIN_ROOT}`, so **you copy nothing** into the target project — a fresh `.claude/` stays empty of plugin files. `${CLAUDE_PLUGIN_ROOT}` is substituted at runtime (not baked at install) and stores no absolute paths, so it rebases automatically across machines and plugin updates.
 
 ## Workflow
 
-The core path is the top row of the diagram below: **ship → validate → conform → record**. `mreverse` and `mverify` hang off it as read-only detectors; `mfix` closes the loop `mverify` opens.
+The core path — **ship → validate → conform → record** — is the `mspec → mplan → mship` row of the
+diagram below. It does not run once over a whole job. `mship` drives it **once per slice** — a *slice* being the set of stories that
+together make one behaviour run end to end — so a change arrives as a sequence of demonstrably working
+increments rather than as something assembled and tested at the end. What each slice teaches is allowed to
+change what the remaining slices are, which is what keeps a wrong approach from being discovered only once
+it has been paid for in full.
+
+`mreverse` and `mverify` hang off the path as read-only detectors; `mfix` closes the loop `mverify` opens.
 
 `mreq` sits beneath `mspec`: `mspec` reads `REQUIREMENTS.md` read-only at its own Phase 1. `mquick` conditionally runs `mreq`'s BRAINSTORM Phase 1 first, folded into its single Phase A gate, only when a CREATE target's requirements tier is still empty.
 
@@ -184,38 +193,54 @@ well-formed and correctly cross-referenced on its own terms. Run it anytime — 
 version bump, when ids or links look wrong, or periodically.
 
 ```
-                          ┌──────────────────────────── mquick (autonomous) ───────────────────────────┐
-                          │  one clarification gate, then runs the core path unattended                 │
-                          ▼                                                                              │
-   mspec  ───────►  mplan  ───────►  mexecute  ───────►  mverify (post-ship sweep)                      │
-  (spec + change)   (stories +      (worktree waves,     (change↔code + cross-repo                      │
-        ▲            plan.yaml +      barrier merge,       conformance + coupling)                       │
-        │            state.yaml)      retry 3, state)            │                                       │
-        │                                                        │ drift → change-shaped report          │
-        │                                                        ▼                                       │
-        └──────────────  mfix (code-vs-spec) / mspec / mreverse  ◄─┘                                     │
-                                                                                                         │
-   mreverse  ─────►  reconciles spec from code + reports intra-/inter-repo inconsistencies  ─────────────┘
+   ┌───────────────────────────── mquick (autonomous) ──────────────────────────────┐
+   │  one clarification gate, then everything below runs unattended: it hands the   │
+   │  plan to mship with --gate unverifiable-only and adds no delivery logic at all │
+   └────┬───────────────────┬──────────────────────┬────────────────────────────────┘
+        ▼                   ▼                      ▼
+     mspec      ───────►   mplan      ───────►   mship   ───────►  delivered, slice by slice
+  (spec + change,       (stories +          (the loop the
+   with a Slices         plan.yaml +         other skills
+   table)                state.yaml)         run inside)
+        ▲                                          │  once per slice, in order:
+        │                                          ▼
+        │   ┌──► deepen ────► plan ──────► execute ──────► verify ──────► decide ───┐
+        │   │   (mspec:      (mplan        (mexecute       (mverify                 │
+        │   │    contract     --slice)      --slice, then   --slice)                │
+        │   │    → full)                    that slice's                            │
+        │   │                               acceptance)                             │
+        │   │                                                                       │
+        │   └── next slice ◄── continue · ask the developer · re-plan what is ◄─────┘
+        │                      still outstanding · stop (budget breaker,
+        │                      spec defect, or an mexecute halt)
+        │                                          │
+        │                                          │ drift → change-shaped report
+        │                                          ▼
+        └───────────────  mfix (code-vs-spec) / mspec / mreverse
+
+   mreverse  ─────►  reconciles spec from code + reports intra-/inter-repo inconsistencies
 ```
 
 `mfix` closes most `mverify` findings — it decides per finding whether the code or the spec is
 authoritative and fixes the one that's wrong. It defers to `mspec` when no contract exists yet,
 and to `mreverse` when a repo has no spec tree at all.
 
-**Gatekept** — invoke `mspec → mplan → mexecute` (→ `mverify`) yourself and review at each hand-off. `mexecute` still runs every wave through internally (no between-wave gate); it halts only on a genuine blocking condition.
+**Gatekept** — invoke `mspec → mplan → mship` (→ `mverify`) yourself and review at each hand-off. Inside a run, the boundaries you are asked about are `mship`'s **gate policy**, a parameter rather than a fixed behaviour: `--gate every-slice` stops at every slice boundary, `unverifiable-only` (the default) stops only where an acceptance cannot be settled by running a command, `never` stops at none. There is still no gate *between waves* — that is inside `mexecute`, which halts only on a genuine blocking condition.
 
-**Autonomous** — `mquick`: one clarification gate (Phase A, with the risk scan), then the same core path to shipped, conformed code. This **is** the small-task fast path — a small task just has little to clarify.
+**Autonomous** — `mquick`: one clarification gate (Phase A, with the risk scan), then the same core path to shipped, conformed code, with `mship`'s gate policy set to `unverifiable-only`. This **is** the small-task fast path — a small task just has little to clarify.
 
 A typical greenfield-to-change lifecycle:
 
 1. *(Optional, once per shared contract)* `mspec` targeting `shared` to spec the cross-repo interface contracts under `context/shared/spec/`.
 2. `mspec` targeting a repo → spec files under `context/<repo>/spec/` + a baseline record `CHANGE-000-initial-spec.md`. Declare consumed contracts in the repo's `shared_interfaces`.
-3. A later change: an `mspec` update (on `shared`, it cascades as an agent team across consumers) → repo change files + one project-level index in `context/project/changes/`.
-4. `mplan` → story files + `plan.yaml` + `state.yaml` + a project-ledger entry under `context/project/plans/<NNN>-<slug>/`.
-5. `mexecute` → ships the plan as worktree-isolated waves (barrier merge, retry N=3), then a post-ship `mverify` sweep.
+3. A later change: an `mspec` update (on `shared`, it cascades as an agent team across consumers) → repo change files + one project-level index in `context/project/changes/`, including the `## Slices` table that cuts the change into behaviours that run end to end.
+4. `mplan` → story files + `plan.yaml` + `state.yaml` + a project-ledger entry under `context/project/plans/<NNN>-<slug>/`. It consumes the change document's slices rather than inventing a cut of its own, and orders each slice's stories into waves by layer.
+5. `mship` → delivers those slices **one at a time**. Per slice: deepen its modules to `full` (`mspec`), refresh its stories (`mplan --slice`), ship them (`mexecute --slice` — worktree-isolated waves, barrier merge, retry N=3, then the slice's acceptance), sweep them (`mverify --slice`), and decide whether to continue, ask you, re-plan what is still outstanding, or stop. The first slice is a **walking skeleton**: it touches every layer the change reaches, so the shape of the system is proven to run before any depth is built on it.
 6. *(Any time)* `mverify` to re-check conformance against any change/plan, or `mreverse` to reconcile a stale spec back to the code and report intra-/inter-repo inconsistencies.
 
 Or collapse steps 2–5 into a single `mquick` run.
+
+Invoking `/mexecute` yourself, naming no slice, still puts a whole plan through in one go — that is what a plan written before slices existed does, wave for wave.
 
 ## Orchestration
 
@@ -223,8 +248,9 @@ The skills use Claude Code's orchestration primitives only where real parallelis
 
 - **Subagents (fan-out).** `mreverse` deep-dive readers + cross-repo inconsistency readers; `mverify`'s three shard kinds (change-conformance, cross-repo, coupling); `mspec`'s up-front risk scan; `mplan`'s post-generation story validators.
 - **Agent team.** The shared-interface **cascade** in `mspec`: a lead plus one teammate per consuming repo, the frozen shared contract as the sync point.
-- **Dynamic Workflow.** `mexecute` **only** — parallel stories per wave, each worktree-isolated, with a barrier, bounded retry, and merge. `mquick` is a plain sequential pipeline over the skills, not a workflow. Note: `mexecute` shells out to real `git worktree` commands, so it needs a git repo under `repos/<repo>/`.
-- **Two-level state (the ledger).** A project-level ledger (`context/project/state.yaml`) tracks each plan's status; a plan-level `state.yaml` tracks waves, per-story status/retries/worktree refs, and conformance. Orchestration (resume, retry, progress) reads this state, not prose. Both, plus the plan graph, change front-matter, and subagent reports, validate against JSON Schemas in `schemas/` (checked with `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate <kind> <file>`).
+- **Dynamic Workflow.** `mexecute` **only** — parallel stories per wave *within the slice it was given*, each worktree-isolated, with a barrier, bounded retry, and merge. `mship` and `mquick` are plain sequential pipelines over the skills, not workflows. Note: `mexecute` shells out to real `git worktree` commands, so it needs a git repo under `repos/<repo>/`.
+- **Slice iteration (the loop).** `mship` **only** — the unit of delivery is a **slice**, not a plan and not a wave. Waves order stories *inside* a slice by layer; slices are the axis delivery advances along, and a slice cuts vertically through the layers so finishing one yields something that runs. `mship` iterates them in order, running deepen → plan → execute → verify → decide for each, and it is where the three between-slice judgements live: the **gate policy** (which boundaries a human is asked about), the **budget breaker** (stop when a slice's cost departs sharply from what earlier slices of the same job cost), and **re-planning** the slices still outstanding — recut, reorder, split, drop, or cascade a shared contract and schedule remediation for work built against the older revision. A slice already delivered is never rewritten. `mship` itself writes no spec, plan, code or conformance finding; each of its five steps is an invocation of another skill at that skill's normal entry point, which is why the loop adds no second implementation of anything it drives.
+- **Two-level state (the ledger).** A project-level ledger (`context/project/state.yaml`) tracks each plan's status; a plan-level `state.yaml` tracks slices (status, acceptance, outcome), waves, per-story status/retries/worktree refs, and conformance. Orchestration (resume, retry, which slice is next) reads this state, not prose — and `mship` records a slice's result *before* it decides what to do about it, so a run that stops mid-decision resumes from a recorded fact. Both files, plus the plan graph, change front-matter, and subagent reports, validate against JSON Schemas in `schemas/` (checked with `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate <kind> <file>`).
 
 ## License
 

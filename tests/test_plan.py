@@ -530,6 +530,7 @@ def test_resolve_fields_match_the_datamodel(workspace):
         "status",
         "run",
         "resume_wave",
+        "resume_slice",
         "pending_stories",
     ]
 
@@ -1013,11 +1014,11 @@ def test_story_emit_injects_the_four_e2e_rules_at_both_markers(workspace):
     assert text.count(block) == 2, text
     assert result.data["e2e_injections"] == 2
 
-    # One copy under Post-Story Validation, one under Final Validation.
-    post = text.split("## Post-Story Validation", 1)[1].split("## Final Validation", 1)[0]
-    final = text.split("## Final Validation", 1)[1]
+    # One copy under Post-Story Validation, one under Slice Acceptance.
+    post = text.split("## Post-Story Validation", 1)[1].split("## Slice Acceptance", 1)[0]
+    acceptance = text.split("## Slice Acceptance", 1)[1]
     assert block in post
-    assert block in final
+    assert block in acceptance
     # No injection marker survives into the story.
     assert "INJECT:E2E-HARD-RULES" not in text
 
@@ -1038,11 +1039,16 @@ def test_the_injection_is_gated_on_the_catalog_naming_an_e2e_module(workspace):
     assert "- [ ] E2E scenarios for this module pass (if E2E module exists in catalog)" in text
 
 
-def test_the_final_validation_section_is_last_wave_only(workspace):
+def test_the_slice_acceptance_section_is_gated_on_the_slice_s_last_wave(workspace):
+    """The fixture graph is version 1/2, whose one synthetic slice spans every
+    wave — so the gate resolves to the plan's last wave and renders exactly what
+    ``## Final Validation (last wave only)`` always did, under its new name."""
     _, last = _emit_story(workspace, story_id="02-01-demo-BETA")
     _, earlier = _emit_story(workspace, story_id="01-01-demo-ALPHA")
-    assert "## Final Validation (last wave only)" in last
-    assert "## Final Validation" not in earlier
+    assert "## Slice Acceptance" in last
+    assert "## Slice Acceptance" not in earlier
+    # The section it replaced is gone from the rendered story entirely.
+    assert "## Final Validation" not in last
     # The earlier wave still carries its own Post-Story rules.
     assert "\n".join(_e2e_rules_from_standard()) in earlier
 
@@ -1317,3 +1323,640 @@ def test_shards_writes_nothing(workspace):
     _run(workspace, verb="shards", plan_id="001-first")
     after = sorted(p.name for p in plan_dir.iterdir())
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# plan slices -- read from the graph, or synthesized and never written back
+# ---------------------------------------------------------------------------
+
+#: A runnable acceptance step. At least one of these per slice is the obligation
+#: JSON Schema cannot state, so every fixture slice carries one.
+EXIT_STEP = {"kind": "exit-code", "command": "true", "description": "it runs"}
+PROSE_STEP = {"kind": "prose", "description": "someone looks at it"}
+
+
+def _slice(slice_id, stories, acceptance=None, name=None, behavior=None):
+    return {
+        "slice": slice_id,
+        "name": name or "slice %s" % slice_id,
+        "behavior": behavior or "behaviour %s runs end to end" % slice_id,
+        "acceptance": list(acceptance if acceptance is not None else [EXIT_STEP]),
+        "stories": list(stories),
+    }
+
+
+def _module_of(story_id):
+    """``{WW}-{SS}-{repo}-{MODULE}`` -- the module a story id names."""
+    return story_id.rsplit("-", 1)[-1]
+
+
+def _write_sliced_plan(workspace, plan_id, waves, slices, slice_statuses=None):
+    """A version-3 plan directory, written directly, with per-slice status.
+
+    Each story takes its module from its own id, so a plan of two stories is a
+    plan of two modules -- which is what makes the shard list observable.
+    """
+    overrides = {
+        story_id: {"module": _module_of(story_id)}
+        for _wave, story_ids in waves
+        for story_id in story_ids
+    }
+    _write_plan(workspace, plan_id, waves, overrides=overrides)
+    graph = core.load_yaml(workspace.path("context/project/plans/%s/plan.yaml" % plan_id))
+    graph["version"] = 3
+    graph["slices"] = [dict(entry) for entry in slices]
+    for entry in slices:
+        for story_id in entry["stories"]:
+            graph["stories"][story_id]["slice"] = entry["slice"]
+    workspace.write("context/project/plans/%s/plan.yaml" % plan_id, core.dump_yaml(graph))
+
+    state = core.load_yaml(workspace.path("context/project/plans/%s/state.yaml" % plan_id))
+    state["version"] = 3
+    state["slices"] = [
+        {"slice": entry["slice"], "status": (slice_statuses or {}).get(entry["slice"], "pending")}
+        for entry in slices
+    ]
+    workspace.write("context/project/plans/%s/state.yaml" % plan_id, core.dump_yaml(state))
+    assert core.validate_against(core.load_schema("plan-graph"), graph) == []
+    assert core.validate_against(core.load_schema("plan-state"), state) == []
+
+
+def _legacy_plan_with_final(workspace, plan_id, waves, final):
+    """A version-2 plan whose last-wave story carries ``validation.final``."""
+    _write_plan(workspace, plan_id, waves)
+    path = workspace.path("context/project/plans/%s/plan.yaml" % plan_id)
+    graph = core.load_yaml(path)
+    last = waves[-1][1][-1]
+    graph["stories"][last]["validation"]["final"] = list(final)
+    workspace.write("context/project/plans/%s/plan.yaml" % plan_id, core.dump_yaml(graph))
+
+
+def test_slices_synthesizes_exactly_one_spanning_every_wave_on_a_legacy_graph(workspace):
+    _legacy_plan_with_final(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [EXIT_STEP],
+    )
+    result, code = _run(workspace, verb="slices", plan_id="001-first")
+
+    assert code == 0 and result.ok
+    assert result.data["synthesized"] is True
+    assert len(result.data["slices"]) == 1
+    only = result.data["slices"][0]
+    assert only["slice"] == "00"
+    assert only["stories"] == ["01-01-demo-ALPHA", "02-01-demo-BETA"]
+    assert only["status"] == "pending"
+
+
+def test_the_synthesized_slice_takes_its_acceptance_from_validation_final(workspace):
+    _legacy_plan_with_final(
+        workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [EXIT_STEP, PROSE_STEP]
+    )
+    result, _code = _run(workspace, verb="slices", plan_id="001-first")
+    assert result.data["slices"][0]["acceptance"] == [EXIT_STEP, PROSE_STEP]
+
+
+def test_synthesis_leaves_the_graph_byte_identical_on_disk(workspace):
+    """A legacy graph is not silently upgraded by being looked at."""
+    _legacy_plan_with_final(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [EXIT_STEP])
+    graph_path = workspace.path("context/project/plans/001-first/plan.yaml")
+    state_path = workspace.path("context/project/plans/001-first/state.yaml")
+    graph_before, state_before = graph_path.read_bytes(), state_path.read_bytes()
+
+    _run(workspace, verb="slices", plan_id="001-first")
+    _run(workspace, verb="slices", plan_id="001-first")
+
+    assert graph_path.read_bytes() == graph_before
+    assert state_path.read_bytes() == state_before
+
+
+def test_a_legacy_graph_with_no_final_validation_still_synthesizes_one_slice(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    result, code = _run(workspace, verb="slices", plan_id="001-first")
+    assert code == 0
+    assert [entry["slice"] for entry in result.data["slices"]] == ["00"]
+    assert result.data["slices"][0]["acceptance"] == []
+
+
+def test_slices_returns_the_graphs_own_slices_on_a_version_three_graph(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "applied"},
+    )
+    result, code = _run(workspace, verb="slices", plan_id="001-first")
+
+    assert code == 0 and result.data["synthesized"] is False
+    assert [entry["slice"] for entry in result.data["slices"]] == ["00", "01"]
+    assert [entry["status"] for entry in result.data["slices"]] == ["applied", "pending"]
+
+
+def test_a_slice_entry_carries_every_documented_field(workspace):
+    _write_sliced_plan(
+        workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [_slice("00", ["01-01-demo-ALPHA"])]
+    )
+    result, _code = _run(workspace, verb="slices", plan_id="001-first")
+    assert list(result.data["slices"][0]) == [
+        "slice",
+        "name",
+        "behavior",
+        "acceptance",
+        "stories",
+        "status",
+    ]
+
+
+def test_a_slice_status_is_read_not_derived_from_its_stories(workspace):
+    """Every story applied, acceptance failed: `failed`, which no function of
+    story statuses can produce."""
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"])],
+        [_slice("00", ["01-01-demo-ALPHA"])],
+        slice_statuses={"00": "failed"},
+    )
+    state_path = workspace.path("context/project/plans/001-first/state.yaml")
+    state = core.load_yaml(state_path)
+    state["stories"]["01-01-demo-ALPHA"]["status"] = "applied"
+    workspace.write("context/project/plans/001-first/state.yaml", core.dump_yaml(state))
+
+    result, _code = _run(workspace, verb="slices", plan_id="001-first")
+    assert result.data["slices"][0]["status"] == "failed"
+
+
+def test_slices_reports_a_plan_that_does_not_exist(workspace):
+    result, code = _run(workspace, verb="slices", plan_id="009-nope")
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+# ---------------------------------------------------------------------------
+# resume_slice -- added alongside resume_wave, which is never renamed
+# ---------------------------------------------------------------------------
+
+
+def test_resume_slice_is_the_first_slice_that_is_not_applied(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "applied"},
+    )
+    result, _code = _run(workspace, verb="resolve", plan_id="001-first")
+    assert result.data["resume_slice"] == "01"
+
+
+def test_resume_slice_is_null_when_every_slice_is_applied(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"])],
+        [_slice("00", ["01-01-demo-ALPHA"])],
+        slice_statuses={"00": "applied"},
+    )
+    result, _code = _run(workspace, verb="resolve", plan_id="001-first")
+    assert result.data["resume_slice"] is None
+
+
+def test_resume_slice_is_zero_zero_on_a_legacy_graph(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])])
+    result, _code = _run(workspace, verb="resolve", plan_id="001-first")
+    assert result.data["resume_slice"] == "00"
+    # And the wave axis is untouched: the field was added, never renamed.
+    assert result.data["resume_wave"] == 1
+
+
+def test_a_failed_slice_is_the_resume_point_too(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "failed"},
+    )
+    result, _code = _run(workspace, verb="resolve", plan_id="001-first")
+    assert result.data["resume_slice"] == "00"
+
+
+# ---------------------------------------------------------------------------
+# plan emit -- the two slice refusals, and what a sliced emission writes
+# ---------------------------------------------------------------------------
+
+
+def _sliced_draft(slices, **fields):
+    """A two-layer draft: ALPHA in L1-core, BETA in L2-services."""
+    draft = _draft(
+        _story("01-01-demo-ALPHA", module="ALPHA", wave=1),
+        _story("02-01-demo-BETA", module="BETA", wave=2),
+        **fields,
+    )
+    draft["slices"] = slices
+    return draft
+
+
+def test_emit_writes_a_version_three_graph_from_a_sliced_draft(workspace):
+    _add_catalog(workspace)
+    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert [entry["slice"] for entry in graph["slices"]] == ["00"]
+    # Each story carries the back-reference, derived from the slice listing it.
+    assert graph["stories"]["01-01-demo-ALPHA"]["slice"] == "00"
+    assert graph["stories"]["02-01-demo-BETA"]["slice"] == "00"
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_emit_seeds_every_slice_pending_and_the_ledger_counters(workspace):
+    _add_catalog(workspace)
+    # One slice, spanning both layers -- the walking-skeleton rule holds, and
+    # the counters are what this case is about.
+    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["version"] == 3
+    assert state["slices"] == [{"slice": "00", "status": "pending"}]
+
+    ledger = core.load_yaml(workspace.path("context/project/state.yaml"))
+    assert ledger["plans"]["001-first"]["slices_total"] == 1
+    assert ledger["plans"]["001-first"]["slices_applied"] == 0
+
+
+def test_a_pre_slice_emission_carries_no_slices_and_no_ledger_counters(workspace):
+    _emit(workspace, "001-first", _draft(_story("01-01-demo-ALPHA")))
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    ledger = core.load_yaml(workspace.path("context/project/state.yaml"))
+    assert graph["version"] == 2 and "slices" not in graph
+    assert "slices" not in state
+    assert "slices_total" not in ledger["plans"]["001-first"]
+    assert "slices_applied" not in ledger["plans"]["001-first"]
+
+
+def test_emit_refuses_a_slice_whose_acceptance_is_entirely_prose(workspace):
+    _add_catalog(workspace)
+    slices = [
+        _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"], acceptance=[PROSE_STEP, PROSE_STEP])
+    ]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert result.data["written"] == []
+    assert not workspace.path("context/project/plans/001-first").exists()
+
+
+def test_emit_refuses_a_first_slice_that_misses_a_layer_the_plan_touches(workspace):
+    """Slice 00 is the walking skeleton, not merely the first slice listed."""
+    _add_catalog(workspace)
+    slices = [
+        _slice("00", ["01-01-demo-ALPHA"]),
+        _slice("01", ["02-01-demo-BETA"]),
+    ]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "L2-services" in result.diagnostics[0].message
+    assert not workspace.path("context/project/plans/001-first").exists()
+
+
+def test_emit_accepts_a_first_slice_that_reaches_every_layer(workspace):
+    _add_catalog(workspace)
+    slices = [
+        _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"]),
+    ]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+
+def test_emit_refuses_a_draft_leaving_a_story_in_no_slice(workspace):
+    _add_catalog(workspace)
+    slices = [_slice("00", ["01-01-demo-ALPHA"])]
+    draft = _sliced_draft(slices)
+    result, code = _emit(workspace, "001-first", draft)
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "belongs to no slice" in result.diagnostics[0].message
+    assert not workspace.path("context/project/plans/001-first").exists()
+
+
+def test_emit_refuses_a_draft_putting_a_story_in_two_slices(workspace):
+    _add_catalog(workspace)
+    slices = [
+        _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"]),
+        _slice("01", ["02-01-demo-BETA"]),
+    ]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 1
+    assert any("more than one slice" in d.message for d in result.diagnostics)
+    assert not workspace.path("context/project/plans/001-first").exists()
+
+
+def test_emit_refuses_a_duplicate_slice_id(workspace):
+    _add_catalog(workspace)
+    slices = [
+        _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"]),
+        _slice("00", ["02-01-demo-BETA"]),
+    ]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+
+
+def test_emit_rejects_a_slice_id_that_is_not_two_digits(workspace):
+    _add_catalog(workspace)
+    slices = [_slice("zero", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 2
+    assert [d.code for d in result.diagnostics] == [core.E_BAD_IDENT]
+
+
+def test_the_layer_rule_does_not_fire_when_no_catalog_names_a_layer(workspace):
+    """No catalog means no layer to compare against, not an invented refusal."""
+    slices = [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+
+# ---------------------------------------------------------------------------
+# plan reslice -- the loop's backward edge, and what it will not rewrite
+# ---------------------------------------------------------------------------
+
+
+def _reslice(workspace, plan_id, drafts):
+    return _run(
+        workspace,
+        verb="reslice",
+        plan_id=plan_id,
+        stdin=io.StringIO(json.dumps(drafts)),
+    )
+
+
+def _digests(workspace, plan_id):
+    directory = workspace.path("context/project/plans/%s" % plan_id)
+    return {path.name: path.read_bytes() for path in sorted(directory.iterdir())}
+
+
+def test_reslice_rewrites_the_outstanding_slices(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])],
+    )
+    drafts = [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])]
+    result, code = _reslice(workspace, "001-first", drafts)
+
+    assert code == 0, [d.render() for d in result.diagnostics]
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert [entry["slice"] for entry in graph["slices"]] == ["00", "01"]
+    assert graph["stories"]["02-01-demo-BETA"]["slice"] == "01"
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["slices"] == [
+        {"slice": "00", "status": "pending"},
+        {"slice": "01", "status": "pending"},
+    ]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+    assert _validates(workspace, "context/project/plans/001-first/state.yaml", "plan-state") == []
+
+
+def test_reslice_keeps_what_an_outstanding_slice_already_recorded(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "failed"},
+    )
+    drafts = [
+        _slice("00", ["01-01-demo-ALPHA"]),
+        _slice("01", ["02-01-demo-BETA"], name="recut"),
+    ]
+    result, code = _reslice(workspace, "001-first", drafts)
+    assert code == 0, [d.render() for d in result.diagnostics]
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["slices"][0] == {"slice": "00", "status": "failed"}
+
+
+def test_reslice_upgrades_a_legacy_graph_only_when_asked_to(workspace):
+    _legacy_plan_with_final(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [EXIT_STEP])
+    result, code = _reslice(workspace, "001-first", [_slice("00", ["01-01-demo-ALPHA"])])
+    assert code == 0, [d.render() for d in result.diagnostics]
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+
+
+@pytest.mark.parametrize(
+    "drafts,why",
+    [
+        ([], "drops"),
+        ([_slice("01", ["02-01-demo-BETA"])], "renumbers"),
+        (
+            [_slice("01", ["02-01-demo-BETA"]), _slice("00", ["01-01-demo-ALPHA"])],
+            "reorders",
+        ),
+        (
+            [
+                _slice("00", ["01-01-demo-ALPHA"], name="renamed"),
+                _slice("01", ["02-01-demo-BETA"]),
+            ],
+            "alters the name",
+        ),
+        (
+            [
+                _slice("00", ["01-01-demo-ALPHA"], acceptance=[EXIT_STEP, PROSE_STEP]),
+                _slice("01", ["02-01-demo-BETA"]),
+            ],
+            "alters the acceptance",
+        ),
+        (
+            [
+                _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"]),
+            ],
+            "alters the stories",
+        ),
+    ],
+)
+def test_reslice_refuses_to_touch_an_applied_slice(workspace, drafts, why):
+    """What has been delivered is fixed; what is merely planned is not."""
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "applied"},
+    )
+    before = _digests(workspace, "001-first")
+
+    result, code = _reslice(workspace, "001-first", drafts)
+
+    assert code == 1 and not result.ok, why
+    assert result.data["written"] == []
+    assert _digests(workspace, "001-first") == before
+
+
+def test_reslice_allows_an_applied_slice_to_be_carried_through_unchanged(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+        slice_statuses={"00": "applied"},
+    )
+    drafts = [
+        _slice("00", ["01-01-demo-ALPHA"]),
+        _slice("01", ["02-01-demo-BETA"], name="recut", behavior="a better cut"),
+    ]
+    result, code = _reslice(workspace, "001-first", drafts)
+    assert code == 0, [d.render() for d in result.diagnostics]
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["slices"][1]["name"] == "recut"
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["slices"][0] == {"slice": "00", "status": "applied"}
+
+
+@pytest.mark.parametrize(
+    "drafts",
+    [
+        [_slice("00", ["01-01-demo-ALPHA"])],  # BETA left in no slice
+        [
+            _slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"]),
+            _slice("01", ["02-01-demo-BETA"]),
+        ],  # BETA in two
+    ],
+)
+def test_reslice_refuses_a_story_in_no_slice_or_in_two(workspace, drafts):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])],
+    )
+    before = _digests(workspace, "001-first")
+
+    result, code = _reslice(workspace, "001-first", drafts)
+
+    assert code == 1 and not result.ok
+    assert result.data["written"] == []
+    assert _digests(workspace, "001-first") == before
+
+
+def test_reslice_refuses_a_slice_with_no_runnable_acceptance(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"])],
+        [_slice("00", ["01-01-demo-ALPHA"])],
+    )
+    before = _digests(workspace, "001-first")
+    result, code = _reslice(
+        workspace, "001-first", [_slice("00", ["01-01-demo-ALPHA"], acceptance=[PROSE_STEP])]
+    )
+    assert code == 1 and not result.ok
+    assert _digests(workspace, "001-first") == before
+
+
+def test_reslice_refuses_a_draft_that_is_not_an_array(workspace):
+    _write_sliced_plan(
+        workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [_slice("00", ["01-01-demo-ALPHA"])]
+    )
+    before = _digests(workspace, "001-first")
+    result, code = _reslice(workspace, "001-first", {"slice": "00"})
+    assert code == 2 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_PARSE]
+    assert _digests(workspace, "001-first") == before
+
+
+def test_reslice_reports_a_plan_with_no_state_file(workspace):
+    _write_sliced_plan(
+        workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [_slice("00", ["01-01-demo-ALPHA"])]
+    )
+    workspace.path("context/project/plans/001-first/state.yaml").unlink()
+    result, code = _reslice(workspace, "001-first", [_slice("00", ["01-01-demo-ALPHA"])])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+def test_reslice_never_writes_the_ledger(workspace):
+    """`state set-slice` is the only writer of the ledger's slice counters."""
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])],
+    )
+    _write_ledger(workspace, [("001-first", "in-progress")])
+    before = workspace.path("context/project/state.yaml").read_bytes()
+
+    _reslice(
+        workspace,
+        "001-first",
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+    )
+    assert workspace.path("context/project/state.yaml").read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# plan shards --slice
+# ---------------------------------------------------------------------------
+
+
+def test_shards_restricts_the_list_to_what_a_slice_shipped(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+    )
+    result, code = _run(workspace, verb="shards", plan_id="001-first", slice="01")
+    assert code == 0
+    assert [shard["id"] for shard in result.data["shards"]] == [
+        "change-conformance-demo-BETA",
+        "coupling-demo",
+    ]
+    assert result.data["slice"] == "01"
+
+
+def test_shards_without_a_slice_still_spans_the_whole_plan(workspace):
+    _write_sliced_plan(
+        workspace,
+        "001-first",
+        [(1, ["01-01-demo-ALPHA"]), (2, ["02-01-demo-BETA"])],
+        [_slice("00", ["01-01-demo-ALPHA"]), _slice("01", ["02-01-demo-BETA"])],
+    )
+    result, _code = _run(workspace, verb="shards", plan_id="001-first")
+    assert [shard["id"] for shard in result.data["shards"]] == [
+        "change-conformance-demo-ALPHA",
+        "change-conformance-demo-BETA",
+        "coupling-demo",
+    ]
+
+
+def test_shards_reports_a_slice_the_graph_does_not_declare(workspace):
+    _write_sliced_plan(
+        workspace, "001-first", [(1, ["01-01-demo-ALPHA"])], [_slice("00", ["01-01-demo-ALPHA"])]
+    )
+    result, code = _run(workspace, verb="shards", plan_id="001-first", slice="07")
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_NOT_FOUND]
+
+
+def test_the_synthesized_slice_is_addressable_by_shards_on_a_legacy_graph(workspace):
+    _write_plan(workspace, "001-first", [(1, ["01-01-demo-ALPHA"])])
+    result, code = _run(workspace, verb="shards", plan_id="001-first", slice="00")
+    assert code == 0
+    assert [shard["id"] for shard in result.data["shards"]] == [
+        "change-conformance-demo-ALPHA",
+        "coupling-demo",
+    ]

@@ -9,6 +9,10 @@ aborting the batch. The group is imported and called directly -- never through
 The core I/O the group stands on (deterministic YAML emission in schema key
 order, front-matter read/write) is covered at the bottom, because waves 2-4
 build their emitters on it.
+
+The eleventh kind, ``slice-report``, and its ``slice`` alias are registered by
+the group rather than restated in ``core``, so their instance and their place in
+the two tables are declared here beside the cases that exercise them.
 """
 
 import pytest
@@ -16,11 +20,37 @@ import pytest
 from conftest import INVALID_INSTANCES, KIND_ALIASES, NOW, VALID_INSTANCES
 from tools import core, validate
 
+#: The eleventh canonical kind and the ninth alias, per SCHEMAS-INTERFACE.md.
+SLICE_REPORT = "slice-report"
+SLICE_ALIAS = "slice"
+
+#: A conforming ``slice-report`` instance: MSHIP's per-slice return.
+SLICE_REPORT_INSTANCE = (
+    "slice-report.json",
+    '{\n'
+    '  "slice": "00",\n'
+    '  "plan_id": "001-demo",\n'
+    '  "outcome": "continue",\n'
+    '  "acceptance": "pass"\n'
+    '}\n',
+)
+
+#: The whole documented surface, once the group has registered the eleventh
+#: kind. Declared here rather than in ``conftest`` because the registration is
+#: this group's, and a table that disagreed with it would be the defect.
+EXPECTED_KINDS = set(VALID_INSTANCES) | {SLICE_REPORT}
+EXPECTED_ALIASES = dict(KIND_ALIASES, **{SLICE_ALIAS: SLICE_REPORT})
+
 
 def _run(workspace, kind, files):
     args = workspace.args(kind=kind, files=[str(item) for item in files])
     result = validate.run(args, workspace.ws)
     return result, core.exit_code(result)
+
+
+def _slice_report(workspace):
+    filename, content = SLICE_REPORT_INSTANCE
+    return workspace.write("instances/%s" % filename, content)
 
 
 # ---------------------------------------------------------------------------
@@ -49,11 +79,53 @@ def test_every_alias_resolves_to_its_canonical_schema(workspace, alias, canonica
     assert core.resolve_kind(alias) == core.resolve_kind(canonical)
 
 
-def test_alias_table_is_exactly_the_eight_documented_aliases():
-    assert core.KIND_ALIASES == KIND_ALIASES
-    assert set(core.CANONICAL_KINDS) == set(VALID_INSTANCES)
-    assert len(core.CANONICAL_KINDS) == 10
-    assert len(core.KIND_ALIASES) == 8
+def test_the_tables_are_exactly_the_eleven_kinds_and_nine_aliases():
+    assert core.KIND_ALIASES == EXPECTED_ALIASES
+    assert set(core.CANONICAL_KINDS) == EXPECTED_KINDS
+    assert len(core.CANONICAL_KINDS) == 11
+    assert len(core.KIND_ALIASES) == 9
+
+
+def test_the_eleventh_kind_resolves_and_validates(workspace):
+    path = _slice_report(workspace)
+    result, code = _run(workspace, SLICE_REPORT, [path])
+    assert code == 0
+    assert result.ok is True
+    assert result.data["lines"] == ["OK    %s (%s)" % (path, SLICE_REPORT)]
+
+
+def test_the_slice_alias_resolves_to_the_slice_report_schema(workspace):
+    path = _slice_report(workspace)
+    result, code = _run(workspace, SLICE_ALIAS, [path])
+    assert code == 0
+    assert result.ok is True
+    # The alias, not the canonical name, is echoed back.
+    assert result.data["lines"] == ["OK    %s (%s)" % (path, SLICE_ALIAS)]
+    assert core.resolve_kind(SLICE_ALIAS) == core.resolve_kind(SLICE_REPORT)
+
+
+def test_the_slice_report_kind_rejects_a_replan_with_no_reason(workspace):
+    """The kind is registered against the real schema, not merely resolvable."""
+    path = workspace.write(
+        "instances/bad-slice-report.json",
+        '{\n'
+        '  "slice": "01",\n'
+        '  "plan_id": "001-demo",\n'
+        '  "outcome": "replan",\n'
+        '  "acceptance": "fail"\n'
+        '}\n',
+    )
+    result, code = _run(workspace, SLICE_ALIAS, [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_registering_the_eleventh_kind_twice_changes_nothing():
+    """The registration is idempotent, so a re-import cannot duplicate it."""
+    before_kinds, before_aliases = core.CANONICAL_KINDS, dict(core.KIND_ALIASES)
+    validate._register_slice_report()
+    assert core.CANONICAL_KINDS == before_kinds
+    assert core.KIND_ALIASES == before_aliases
 
 
 @pytest.mark.parametrize("kind", sorted(VALID_INSTANCES))
