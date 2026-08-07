@@ -40,6 +40,14 @@
             "command": "pytest tests/test_alpha.py -q",
             "description": "ALPHA's own tests pass."
           }
+        ],
+        "increments": [
+          {
+            "kind": "exit-code",
+            "command": "pytest tests/test_alpha.py::test_greeting -q",
+            "task": 1,
+            "description": "The greeting exists and returns, checked before the caller is wired to it."
+          }
         ]
       }
     }
