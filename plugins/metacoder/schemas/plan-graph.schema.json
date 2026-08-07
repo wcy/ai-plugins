@@ -8,8 +8,8 @@
   "required": ["version", "plan_id", "type", "repos", "waves", "stories"],
   "properties": {
     "version": {
-      "enum": [1, 2, 3],
-      "description": "New plans are written with 3. A 1 or 2 graph carries no slices and is read as one implicit slice containing every wave, which is the delivery model it was written for — no pre-existing plan needs migrating. The version, not the presence of the slices key, is the discriminator: sniffing for slices would let a malformed version-3 graph silently degrade to whole-job delivery."
+      "enum": [1, 2, 3, 4],
+      "description": "New plans are written with 4. 4 declares a graph continuously checked: it carries waves[].validation, the barrier check run against the merged integration branch. 3 declares a graph slice-bearing but checked only at its story and slice boundaries — the delivery model it was written for. A 1 or 2 graph carries no slices and is read as one implicit slice containing every wave, which is the delivery model those were written for — no pre-existing plan needs migrating. The version, not the presence of a key, is the discriminator at every step: sniffing for slices would let a malformed version-3 graph silently degrade to whole-job delivery, and making the version-4 keys optional on 3 would let a graph omit the very checks that version exists to require and still validate."
     },
     "plan_id": {
       "type": "string",
@@ -48,6 +48,12 @@
             "type": "array",
             "minItems": 1,
             "items": { "$ref": "#/$defs/storyId" }
+          },
+          "validation": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/validationStep" },
+            "description": "The barrier check: run against the merged integration branch after this wave's greens land and before the next wave is cut from it. Required when version is 4, forbidden below it. This is the only point at which stories built in isolated worktrees are exercised together — mplan guarantees same-wave stories write disjoint paths, which makes the merge conflict-free but says nothing about whether the merged behaviour holds. At least one step must be kind: exit-code, which mc.py checks, since JSON Schema cannot."
           }
         }
       }
@@ -61,18 +67,31 @@
   },
   "if": {
     "required": ["version"],
-    "properties": { "version": { "const": 3 } }
+    "properties": { "version": { "enum": [3, 4] } }
   },
   "then": {
     "required": ["slices"],
     "properties": {
       "stories": { "additionalProperties": { "required": ["slice"] } }
+    },
+    "if": {
+      "required": ["version"],
+      "properties": { "version": { "const": 4 } }
+    },
+    "then": {
+      "properties": { "waves": { "items": { "required": ["validation"] } } }
+    },
+    "else": {
+      "properties": {
+        "waves": { "items": { "properties": { "validation": false } } }
+      }
     }
   },
   "else": {
     "properties": {
       "slices": false,
-      "stories": { "additionalProperties": { "properties": { "slice": false } } }
+      "stories": { "additionalProperties": { "properties": { "slice": false } } },
+      "waves": { "items": { "properties": { "validation": false } } }
     }
   },
   "$defs": {
