@@ -159,6 +159,8 @@ is likewise unchanged: it returns the layer-ordered assignment for one target re
 
 **Prerequisites point backwards on both axes.** A prerequisite never names a later wave, and never names a story in a later **slice** (see *Slices*).
 
+**A wave is also a checkpoint.** Its stories are built in isolated worktrees and merged into the integration branch at the wave barrier, and the graph carries a `validation` block per wave that runs there, against the merged result, before the next wave is cut from it. Authoring it is part of the draft (see *Emit the Plan Graph, Stories, State & Ledger*).
+
 ## Story File Template
 
 Story files are **rendered, not written**: `mc.py plan story-emit` produces each one from `${CLAUDE_PLUGIN_ROOT}/shared/PLAN-STORY-TEMPLATE.md`. This skill never loads that file, and nothing is ever copied out of it by hand.
@@ -236,10 +238,11 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan emit <plan-id> < draft.json
 
 One invocation writes all three artifacts together — `<plan-dir>/plan.yaml`, the initial `<plan-dir>/state.yaml`, and the `context/project/state.yaml` ledger entry (`version: 1`, `status: pending`, other plans' entries never overwritten) — and **validates each against its schema before persisting it**, so an invalid graph or state cannot reach disk. A refusal persists nothing at all: fix the draft and re-run.
 
-The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `version: 3`, `run: 0`, `status: pending`, `waves[]`, each story's `slice` back-reference, `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
+The draft graph, supplied as JSON on stdin, carries only what judgment produced. Everything derived — `run: 0`, `status: pending`, wave *membership*, each story's `slice` back-reference, `parallel_group` and `file`, the `repos` list, the whole of `state.yaml`, and the ledger entry — belongs to the tool:
 
 ```json
 {
+  "version": 4,
   "project_change": "003",
   "slices": [
     {
@@ -250,6 +253,22 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
         {"kind": "exit-code", "command": "pytest tests/e2e/test_retry.py -q", "description": "A failing call succeeds on retry, end to end."}
       ],
       "stories": ["01-01-repo-a-AUTH", "02-01-repo-a-USERS"]
+    }
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "stories": ["01-01-repo-a-AUTH"],
+      "validation": [
+        {"kind": "exit-code", "command": "npm test", "description": "The merged integration branch's whole suite passes before wave 2 is cut from it."}
+      ]
+    },
+    {
+      "wave": 2,
+      "stories": ["02-01-repo-a-USERS"],
+      "validation": [
+        {"kind": "exit-code", "command": "npm run typecheck && npm test -- --run integration", "description": "AUTH's retry and the USERS service that calls it type-check and run together — neither story could exercise the other in its own worktree."}
+      ]
     }
   ],
   "stories": {
@@ -288,8 +307,11 @@ The draft graph, supplied as JSON on stdin, carries only what judgment produced.
 
 What the draft must get right:
 
-- **`slices[]` carries the cut**, in delivery order, each entry taken from the `## Slices` table (or the lifecycle fallback) with its `slice` id, `name`, `behavior`, `acceptance` steps and the `stories` it delivers. Every story id appears in **exactly one** slice's `stories` list; the tool writes each story's own `slice` field from that listing, so a story entry never sets `slice` itself. A draft carrying `slices` is emitted as a **version-3** graph — `version: 3` is supplied by the tool, not by the draft — and every plan generated now carries the cut. (A version-1/2 graph is a plan written before slices existed; it is read as one implicit slice spanning every wave, and nothing needs migrating.)
-- **`plan emit` refuses**, and persists nothing, when slice `00` does not touch every layer the plan touches, when any slice has no `kind: exit-code` acceptance step, or when a story belongs to no slice or to two. These are mechanical consequences of the draft, so they are the tool's to enforce rather than yours to eyeball — but a refusal means the cut or the story-to-slice assignment is wrong, and the fix is in the draft, never in the tool.
+- **`version: 4`** is stated by the draft, and it is the one field of that kind. `plan emit` supplies every other derived value, but it defaults an unversioned draft to `3` — where `waves[].validation` is *forbidden* outright — so a continuously checked plan has to declare the version it is. Version 4 is opt-in for the graphs' sake, not the draft's: the version-3 graphs already on disk keep validating and keep running, read as checked only at their story and slice boundaries, which is the delivery model they were written for. Every plan generated now declares `4`.
+- **`slices[]` carries the cut**, in delivery order, each entry taken from the `## Slices` table (or the lifecycle fallback) with its `slice` id, `name`, `behavior`, `acceptance` steps and the `stories` it delivers. Every story id appears in **exactly one** slice's `stories` list; the tool writes each story's own `slice` field from that listing, so a story entry never sets `slice` itself. Every plan generated now carries the cut. (A version-1/2 graph is a plan written before slices existed; it is read as one implicit slice spanning every wave, and nothing needs migrating.)
+- **`waves[].validation` is mandatory on a version-4 draft** — one array per wave, at least one of its steps `kind: exit-code`. Wave *membership* stays derived: declare each wave's `stories` exactly as the stories' own `wave` fields imply, or the emit is refused for disagreeing with them. The block is in the draft to carry the barrier checks, not to assign the waves.
+- **The barrier check is authored per wave, never copied up from a story.** It runs against the **merged** integration branch — after this wave's greens land, before the next wave is cut from it — which is the only point in a run where more than one story's output is visible at once. Same-wave stories write disjoint paths, so the merge is conflict-free; that says nothing about whether the merged behaviour holds, because disjoint files are not disjoint behaviour. Author it by asking what only the merge can break — a caller and its callee landing in the same wave, a schema and the tool that reads it, a renderer and the template it renders — and write the command that would catch it. Re-running a story's own `post_story` step here proves only what already passed in isolation, which is precisely what no barrier needs to be told.
+- **`plan emit` refuses**, and persists nothing, when slice `00` does not touch every layer the plan touches, when any slice has no `kind: exit-code` acceptance step, when a story belongs to no slice or to two, or when a version-4 wave declares no `kind: exit-code` barrier step. These are mechanical consequences of the draft, so they are the tool's to enforce rather than yours to eyeball — but a refusal means the cut, the story-to-slice assignment or the barrier is wrong, and the fix is in the draft, never in the tool.
 - **Story keys** come from `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-id <file>` — pass the story's intended `PLAN-…-….md` filename and use the id it returns as the key here and in every `prerequisites` reference. Do not compose the key yourself.
 - `project_change` is the value `plan scope` returned — `null` for a full or greenfield plan; `change_file` is `null` there too.
 - `target_paths` and `validation.post_story` are **mandatory** on every story; `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
