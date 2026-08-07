@@ -17,6 +17,12 @@ divergence fails a test instead of being argued:
   ``tmp_path`` is perturbed by one word and the comparison must report the
   mismatch. The real ``plugins/metacoder/shared/STANDARD-SPEC.md`` is never
   written to, and the case asserts that too.
+* **The Delivered-Surface Rule it injects matches §"Delivered-Surface Rule"
+  verbatim**, asserted the same way and with the same negative case -- and
+  additionally asserted to render on **every** story, including one emitted in
+  a repo whose catalog names no E2E module. That last case is the whole
+  difference between the two injections: the E2E rules carry a catalog
+  condition and this one carries none.
 
 The standards stay authoritative on disagreement: ``TOOLS`` is the consumer
 obliged to conform, so a failure here is a defect in the tool, not a cue to
@@ -58,6 +64,7 @@ STANDARD_SPEC = SHARED_DIR / "STANDARD-SPEC.md"
 STANDARD_REQ = SHARED_DIR / "STANDARD-REQ.md"
 
 E2E_HEADING = "## E2E Testing Hard Rules"
+DELIVERED_SURFACE_HEADING = "## Delivered-Surface Rule"
 
 PLAN_ID = "001-retry-policy"
 FIRST_STORY = "01-01-demo-ALPHA"
@@ -549,17 +556,20 @@ def test_the_heading_reader_would_notice_a_missing_section():
 # ---------------------------------------------------------------------------
 
 
-def owning_e2e_block(standard_path):
-    """The lead-in line and the four rules, verbatim, from ``standard_path``.
+def owning_rules_block(standard_path, heading):
+    """The lead-in line and the four rules under ``heading``, verbatim.
 
     Read here with an independent reader: an expectation extracted by the code
-    under test would agree with it no matter what either one said.
+    under test would agree with it no matter what either one said. One reader
+    serves both injected sections, exactly as one reader in the tool produces
+    both -- a second copy here would be the hand-maintained duplicate this
+    suite exists to forbid.
     """
     lines = standard_path.read_text(encoding="utf-8").split("\n")
-    assert E2E_HEADING in lines, "no %r section in %s" % (E2E_HEADING, standard_path)
+    assert heading in lines, "no %r section in %s" % (heading, standard_path)
     lead = None
     bullets = []
-    for line in lines[lines.index(E2E_HEADING) + 1 :]:
+    for line in lines[lines.index(heading) + 1 :]:
         stripped = line.strip()
         if stripped.startswith("## ") or stripped == "---":
             break
@@ -572,6 +582,14 @@ def owning_e2e_block(standard_path):
             lead = line
     assert len(bullets) == 4, "expected four rules, found %d" % len(bullets)
     return "\n".join(([lead, ""] if lead is not None else []) + bullets)
+
+
+def owning_e2e_block(standard_path):
+    return owning_rules_block(standard_path, E2E_HEADING)
+
+
+def owning_delivered_block(standard_path):
+    return owning_rules_block(standard_path, DELIVERED_SURFACE_HEADING)
 
 
 def e2e_mismatches(story_text, standard_path):
@@ -679,6 +697,152 @@ def test_the_owner_still_carries_the_unperturbed_rules(emitted):
     """The perturbation lives and dies in ``tmp_path``; the owner never sees it."""
     assert e2e_mismatches(story_text(emitted), STANDARD_SPEC) == []
     assert "stand-ins" not in STANDARD_SPEC.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 3b. The injected Delivered-Surface Rule matches its owning section, ungated
+# ---------------------------------------------------------------------------
+
+#: A catalog naming no E2E module at all -- the condition under which the E2E
+#: injection is dropped, and the one the delivered-surface injection must
+#: survive. Deliberately a different tree from :data:`CATALOG`, since the point
+#: is a repo that has no E2E spec file for ``catalog-emit`` to find.
+NO_E2E_CATALOG = """\
+version: 1
+repo: demo
+layers:
+  L1-core:
+    modules: [ALPHA]
+modules:
+  ALPHA:
+    layer: L1-core
+    files:
+      - path: context/demo/spec/ALPHA/ALPHA-OVERVIEW.md
+        facet: overview
+"""
+
+
+def delivered_mismatches(story_text, standard_path):
+    """Every way ``story_text``'s injected rule differs from the owning section.
+
+    The empty list is the only conforming answer. The template carries a single
+    delivered-surface marker, in **Post-Story Validation**, so "more than once"
+    is as much a defect as "absent".
+    """
+    block = owning_delivered_block(standard_path)
+    problems = []
+    occurrences = story_text.count(block)
+    if occurrences != 1:
+        problems.append("the owning block appears %d times, not once" % occurrences)
+    post = story_text.split("## Post-Story Validation", 1)[-1].split("## Slice Acceptance", 1)[0]
+    if block not in post:
+        problems.append("absent from Post-Story Validation")
+    for rule in block.split("\n"):
+        if rule.strip().startswith("- ") and story_text.count(rule) != 1:
+            problems.append("rule appears %d times: %s" % (story_text.count(rule), rule.strip()))
+    return problems
+
+
+def emit_story_without_e2e(workspace):
+    """One story rendered in a repo whose catalog names no E2E module."""
+    workspace.write(
+        "context/demo/spec/ALPHA/ALPHA-OVERVIEW.md",
+        "<!-- depends-on: context/demo/spec/ALPHA/ALPHA-OVERVIEW.md -->\n\n# ALPHA-OVERVIEW\n",
+    )
+    workspace.write("context/demo/spec/CATALOG.yaml", NO_E2E_CATALOG)
+    call(
+        workspace,
+        "plan",
+        "emit",
+        plan_id=PLAN_ID,
+        stdin=io.StringIO(json.dumps({"stories": dict([_story(FIRST_STORY, "ALPHA", 1)])})),
+        now=SEED_NOW,
+    )
+    call(workspace, "plan", "story-emit", plan_id=PLAN_ID, story_id=FIRST_STORY)
+    return story_text(workspace, FIRST_STORY)
+
+
+def test_the_injected_delivered_surface_rule_matches_the_owning_section_verbatim(emitted):
+    assert delivered_mismatches(story_text(emitted), STANDARD_SPEC) == []
+
+
+def test_the_delivered_surface_rule_renders_on_every_story(emitted):
+    """Every story, not merely the last one -- there is no wave gate either."""
+    block = owning_delivered_block(STANDARD_SPEC)
+    for story_id in (FIRST_STORY, LAST_STORY):
+        text = story_text(emitted, story_id)
+        assert delivered_mismatches(text, STANDARD_SPEC) == [], story_id
+        post = text.split("## Post-Story Validation", 1)[1].split("## Slice Acceptance", 1)[0]
+        assert block in post, story_id
+        assert "INJECT:DELIVERED-SURFACE-RULE" not in text, story_id
+
+
+def test_the_delivered_surface_rule_renders_where_the_catalog_names_no_e2e_module(workspace):
+    """The ungated claim, in the one condition that would drop a gated rule.
+
+    The E2E rules are absent from this story -- which is what makes the case
+    evidence rather than a coincidence -- and the Delivered-Surface Rule is
+    present anyway.
+    """
+    text = emit_story_without_e2e(workspace)
+
+    assert owning_e2e_block(STANDARD_SPEC) not in text
+    assert delivered_mismatches(text, STANDARD_SPEC) == []
+    assert "INJECT:DELIVERED-SURFACE-RULE" not in text
+    assert "INJECT:E2E-HARD-RULES" not in text
+
+
+def test_the_template_carries_exactly_one_delivered_surface_marker():
+    """One marked point, ungated: "every story" means one copy, not two."""
+    template = (SHARED_DIR / "PLAN-STORY-TEMPLATE.md").read_text(encoding="utf-8")
+    assert template.count("INJECT:DELIVERED-SURFACE-RULE") == 1
+
+
+def test_the_delivered_surface_rule_has_exactly_one_authored_copy():
+    """Nothing under the plugin tree hand-maintains a second copy of the rule."""
+    first_rule = owning_delivered_block(STANDARD_SPEC).split("\n")[-4].strip()
+    carriers = [
+        path
+        for path in sorted(PLUGIN_ROOT.rglob("*.md"))
+        if first_rule in path.read_text(encoding="utf-8")
+    ]
+    assert carriers == [STANDARD_SPEC]
+
+
+def perturbed_delivered_copy(tmp_path):
+    """A copy of the standard with one word of one delivered-surface rule changed."""
+    text = STANDARD_SPEC.read_text(encoding="utf-8")
+    head, marker, tail = text.partition(DELIVERED_SURFACE_HEADING)
+    assert marker, DELIVERED_SURFACE_HEADING
+    assert "Name the surface" in tail.split("\n## ", 1)[0], "the perturbation must land inside the section"
+    copy = tmp_path / "STANDARD-SPEC-delivered-copy.md"
+    copy.write_text(head + marker + tail.replace("Name the surface", "Name the seam", 1), encoding="utf-8")
+    return copy
+
+
+def test_a_perturbed_delivered_surface_section_is_reported_as_a_mismatch(
+    workspace, tmp_path, monkeypatch
+):
+    """The negative case: the comparison must fail when it should.
+
+    The generator is pointed at a *copy* in ``tmp_path``; the real
+    ``STANDARD-SPEC.md`` is read for the expectation and asserted byte-identical
+    afterwards. The E2E half is untouched by the perturbation, which is what
+    shows the two comparisons are independent.
+    """
+    before = STANDARD_SPEC.read_bytes()
+    copy = perturbed_delivered_copy(tmp_path)
+    assert copy.read_bytes() != before
+
+    monkeypatch.setattr(plan, "STANDARD_SPEC", copy)
+    emit_everything(workspace)
+    text = story_text(workspace)
+
+    assert delivered_mismatches(text, copy) == []
+    assert delivered_mismatches(text, STANDARD_SPEC) != []
+    assert "Name the seam" in text
+    assert e2e_mismatches(text, STANDARD_SPEC) == []
+    assert STANDARD_SPEC.read_bytes() == before
 
 
 # ---------------------------------------------------------------------------
