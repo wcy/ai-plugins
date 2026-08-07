@@ -29,11 +29,14 @@ Nine verbs, each a pure function of the workspace bytes plus the injected clock:
 * ``reslice`` -- rewrites the **outstanding** slices from a ``SliceDraft[]``.
 * ``emit`` -- ``plan.yaml``, the initial ``state.yaml``, and the ledger entry.
 * ``story-emit`` -- a story file rendered from ``shared/PLAN-STORY-TEMPLATE.md``
-  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``. Two
-  of its substitutions are slice-scoped: the ``**Slice:**`` header, and the
-  ``## Slice Acceptance`` gate, which fires on the last wave *of the story's own
-  slice* -- one gate per slice, not one per plan. ``total_waves`` stays
-  plan-global, so a story may read ``**Wave:** 2 of 4`` and still carry it.
+  with the E2E Testing Hard Rules injected from ``shared/STANDARD-SPEC.md``, and
+  each ``validation.increments`` step interleaved into
+  ``## Implementation Tasks`` immediately after the task its ``task`` index
+  names, so the list reads work-then-check repeated. Two of its substitutions
+  are slice-scoped: the ``**Slice:**`` header, and the ``## Slice Acceptance``
+  gate, which fires on the last wave *of the story's own slice* -- one gate per
+  slice, not one per plan. ``total_waves`` stays plan-global, so a story may read
+  ``**Wave:** 2 of 4`` and still carry it.
 * ``shards`` -- the ``ShardSpec[]`` conformance shard list ``mverify`` fans out
   over: change-conformance by ``(repo, module)``, then cross-repo by shared
   TAG, then coupling. ``--slice`` restricts it to what that slice shipped.
@@ -75,7 +78,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tools import change, core
 
@@ -193,6 +196,18 @@ COMPLIANCE_LINE = "**Compliance Status:**"
 
 E2E_SECTION_HEADING = "## E2E Testing Hard Rules"
 
+#: The section a story's ``validation.increments`` are interleaved into, and the
+#: form each one renders as beneath the task it names -- both declared by
+#: ``PLAN-STORY-TEMPLATE.md`` §"Implementation Tasks", which tells the agent that
+#: reads the story to run the check under a task before starting the next one.
+TASKS_HEADING = "## Implementation Tasks"
+CHECK_PREFIX = "- *Check:*"
+
+#: A top-level ordered-list item in that section -- one rendered task. Position
+#: is the identity, not the printed digit: ``task: 1`` is the first task in the
+#: list, exactly as plan-graph.schema.json words it.
+_TASK_ITEM_RE = re.compile(r"^([0-9]+\.[ \t]+)\S")
+
 _COMMENT_INLINE_RE = re.compile(r"<!--.*?-->")
 
 
@@ -239,6 +254,13 @@ notes:
   Rules are injected verbatim from shared/STANDARD-SPEC.md at both
   INJECT:E2E-HARD-RULES markers, gated exactly as the markers are (the repo's
   CATALOG.yaml must name an E2E module or an E2E test-facet file).
+
+  A version-4 story's validation.increments are interleaved into ## Implemen-
+  tation Tasks: each step renders as a `- *Check:*` line immediately beneath
+  the task its `task` index names, so the list reads work-then-check repeated
+  rather than work followed by one closing check. A `task` the rendered list
+  does not reach is placed after the last task and reported as a warning --
+  never a refusal, since this verb is called once per story in a fan-out.
 """
 
 
@@ -1206,6 +1228,9 @@ def _normalize_graph(
     normalized: Dict[str, Any] = {}
     for story_id, raw in stories.items():
         normalized[story_id] = _normalize_story(story_id, raw, waves)
+    refusals = _story_increment_checks(graph["version"], normalized)
+    if refusals:
+        return graph, refusals
     graph["stories"] = normalized
     graph["waves"] = waves
     if "repos" not in graph:
@@ -1523,6 +1548,46 @@ def _wave_barrier_checks(version: Any, waves: Sequence[Dict[str, Any]]) -> List[
     return diagnostics
 
 
+def _story_increment_checks(version: Any, stories: Dict[str, Any]) -> List[core.Diagnostic]:
+    """Every version-4 story carries a per-increment check that actually runs.
+
+    The story-level counterpart of ``_wave_barrier_checks``, and refused for the
+    same reason: ``plan-graph.schema.json`` requires ``validation.increments`` on
+    a version-4 story and can go no further, since "at least one item has this
+    ``kind``" is a cross-field count JSON Schema cannot state. A story whose
+    increments are prose alone produces a plan that *looks* checked during the
+    work and is not, and the omission is invisible in every artifact downstream
+    of the emit -- including the rendered story, where the interleave would put
+    a check line no agent can run.
+
+    A story declaring no ``increments`` at all and one declaring only prose are
+    the same defect and are reported as one: both leave the story's own work
+    unchecked until its closing gate.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for story_id in sorted(stories):
+        story = stories[story_id]
+        validation = story.get("validation") if isinstance(story, dict) else None
+        steps = validation.get("increments") if isinstance(validation, dict) else None
+        if isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("kind") == EXIT_CODE_KIND for step in steps
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "story %r has no `kind: %s` validation.increments step; a story "
+                "whose per-increment checks are prose alone cannot be "
+                "demonstrated to run during the work it checks"
+                % (story_id, EXIT_CODE_KIND),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
+
+
 def _normalize_story(story_id: str, raw: Any, waves: List[Dict[str, Any]]) -> Any:
     if not isinstance(raw, dict):
         return raw  # left as-is; the schema refuses it
@@ -1809,7 +1874,7 @@ def _story_emit(args, ws, now) -> core.Result:
 
     rules = _e2e_rules()
     body = _template_body()
-    rendered = _render_story(body, context, rules)
+    rendered = _render_story(body, context, rules, diagnostics, graph_rel)
 
     name = str(story.get("file") or "%s%s%s" % (STORY_FILE_PREFIX, story_id, STORY_FILE_SUFFIX))
     if Path(name).name != name:
@@ -1974,7 +2039,16 @@ def _story_context(
         "change_file": story.get("change_file"),
         "target_paths": [item for item in story.get("target_paths", []) if isinstance(item, str)],
         "e2e": _catalog_covers_e2e(catalog),
+        # Empty on every graph below version 4, where the key does not exist --
+        # which is what leaves a legacy task list rendered exactly as before.
+        "increments": _story_increments(story),
     }
+
+
+def _story_increments(story: Dict[str, Any]) -> List[Any]:
+    validation = story.get("validation")
+    steps = validation.get("increments") if isinstance(validation, dict) else None
+    return list(steps) if isinstance(steps, list) else []
 
 
 def _story_filename(graph: Dict[str, Any], story_id: str) -> str:
@@ -2076,7 +2150,13 @@ def _e2e_rules() -> str:
     return "\n".join(block)
 
 
-def _render_story(body: str, context: Dict[str, Any], rules: str) -> str:
+def _render_story(
+    body: str,
+    context: Dict[str, Any],
+    rules: str,
+    diagnostics: Optional[List[core.Diagnostic]] = None,
+    graph_rel: Optional[str] = None,
+) -> str:
     """Gate the template's conditional blocks, substitute, and clean up."""
     lines = body.split("\n")
     kept: List[str] = []
@@ -2115,6 +2195,15 @@ def _render_story(body: str, context: Dict[str, Any], rules: str) -> str:
         index += 1
     text = _substitute("\n".join(kept), context)
     text = _strip_guidance_comments(text)
+
+    def note(message: str) -> None:
+        if diagnostics is not None:
+            diagnostics.append(core.warning(core.E_INVALID_STATE, message, file=graph_rel))
+
+    # After the substitution pass on purpose, for the reason the ``**Slice:**``
+    # header is: an increment's own command must never re-enter the fixed-order
+    # sequence of replacements and be rewritten after the fact.
+    text = _interleave_increments(text, context["increments"], note)
     return _tidy(text)
 
 
@@ -2169,6 +2258,120 @@ def _substitute(text: str, context: Dict[str, Any]) -> str:
     for needle, value in replacements:
         text = text.replace(needle, value)
     return text
+
+
+def _interleave_increments(
+    text: str,
+    increments: Sequence[Any],
+    note: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Place each ``validation.increments`` step after the task its index names.
+
+    The rendered ``## Implementation Tasks`` list therefore reads
+    work-then-check repeated rather than work followed by a single closing
+    check, which is the whole of what makes the per-increment claim visible to
+    the agent that reads the story -- true of the graph is not the same as
+    stated in the file the agent is handed.
+
+    A graph carrying no ``increments`` -- every version below 4 -- is returned
+    untouched, so a legacy render is byte-identical.
+    """
+    steps = [step for step in increments if isinstance(step, dict)]
+    if not steps:
+        return text
+    lines = text.split("\n")
+    span = _tasks_span(lines)
+    if span is None:
+        return text
+    tasks = _task_positions(lines, span)
+    if not tasks:
+        return text
+    pending: Dict[int, List[str]] = {}
+    for order, step in enumerate(steps, start=1):
+        position = _increment_task(step, len(tasks), order, note)
+        anchor, indent = tasks[position]
+        boundary = tasks[position + 1][0] if position + 1 < len(tasks) else span[1]
+        end = anchor + 1
+        while end < boundary and lines[end].strip():
+            end += 1
+        pending.setdefault(end, []).append(indent + _check_line(step))
+    rebuilt: List[str] = []
+    for index, line in enumerate(lines):
+        rebuilt.extend(pending.pop(index, []))
+        rebuilt.append(line)
+    for index in sorted(pending):
+        rebuilt.extend(pending[index])
+    return "\n".join(rebuilt)
+
+
+def _tasks_span(lines: Sequence[str]) -> Optional[Tuple[int, int]]:
+    """The half-open line range holding the task section's content."""
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == TASKS_HEADING:
+            start = index + 1
+            break
+    if start is None:
+        return None
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("## ") or stripped == "---":
+            return start, index
+    return start, len(lines)
+
+
+def _task_positions(lines: Sequence[str], span: Tuple[int, int]) -> List[Tuple[int, str]]:
+    """``(line index, continuation indent)`` for each task, in rendered order."""
+    positions: List[Tuple[int, str]] = []
+    for index in range(span[0], span[1]):
+        match = _TASK_ITEM_RE.match(lines[index])
+        if match is not None:
+            positions.append((index, " " * len(match.group(1))))
+    return positions
+
+
+def _increment_task(
+    step: Dict[str, Any], count: int, order: int, note: Optional[Callable[[str], None]]
+) -> int:
+    """The 0-based task an increment is placed after.
+
+    An index the rendered list does not reach falls back to the last task and
+    emits a ``warning`` -- consistent with every other graph-level defect this
+    verb reports rather than refuses, since ``story-emit`` is called once per
+    story in a fan-out and a defect in one story's graph entry must not become a
+    rendering outage. Dropping the step instead was the alternative rejected:
+    the check would then exist in the graph and nowhere the agent can read it,
+    which is the failure the interleave exists to prevent.
+    """
+    task = step.get("task")
+    if isinstance(task, bool) or not isinstance(task, int):
+        if note is not None:
+            note(
+                "increment %d names no task; it is placed after the last of the "
+                "%d rendered tasks" % (order, count)
+            )
+        return count - 1
+    if task < 1 or task > count:
+        if note is not None:
+            note(
+                "increment %d names task %d, but the story renders %d tasks; it "
+                "is placed after the last" % (order, task, count)
+            )
+        return count - 1
+    return task - 1
+
+
+def _check_line(step: Dict[str, Any]) -> str:
+    """One increment as the template's ``- *Check:*`` line."""
+    description = str(step.get("description") or "").strip()
+    command = step.get("command")
+    if step.get("kind") == EXIT_CODE_KIND and isinstance(command, str) and command.strip():
+        body = "`%s`" % (command.strip(),)
+        if description:
+            body = "%s — %s" % (body, description)
+    else:
+        body = description
+    return ("%s %s" % (CHECK_PREFIX, body)).rstrip()
 
 
 def _file_list(names: List[str], empty: str) -> str:
