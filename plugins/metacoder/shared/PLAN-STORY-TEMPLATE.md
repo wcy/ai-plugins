@@ -97,14 +97,19 @@ Load these files before implementing. This is the **complete** context — do no
 <!-- Full plan: include all applicable tasks.
      Incremental plan: include only tasks for the facets listed in the change document. -->
 
-Implement in this order:
+Implement in this order. **Run the check under a task before starting the next one.**
+Each task carries the `validation.increments` step whose `task` index names it, rendered
+beneath it as a `- *Check:*` line. A non-zero result is fixed where it appeared, not carried
+into the next task. `## Post-Story Validation` below closes the story; it is not the only gate.
+
 1. **Types & Data Model** — Export all types from the module's DATAMODEL spec (if it exists)
 2. **Interface Exports** — Implement all functions/classes from the module's INTERFACE spec (if it exists)
 3. **Internal Logic** — Wire up internals per the module's IMPLEMENTATION spec (if it exists)
-4. **Unit Tests** — Write tests per the module's TESTING spec (if it exists)
 
 <!-- Adapt the task list to this module's actual CATALOG.yaml facets — include tasks
-     only for facets that exist. -->
+     only for facets that exist. Testing is not a task of its own: a task's check is where
+     the work that task did is confirmed, and the module's TESTING spec is what those
+     checks are drawn from. -->
 
 ---
 
