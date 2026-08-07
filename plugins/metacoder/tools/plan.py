@@ -146,6 +146,13 @@ SLICE_DRAFT_FIELDS = ("slice", "name", "behavior", "acceptance", "stories")
 #: "at least one item has this value", so it is checked here.
 EXIT_CODE_KIND = "exit-code"
 
+#: The ``surface`` that same step must carry on a version-4 slice: the interface
+#: the behaviour is delivered on, rather than a component beneath it.
+#: ``validationStep.surface`` defaults to ``internal``, so a step that does not
+#: say ``delivered`` has not claimed it -- which is what stops every step
+#: written before the key existed from silently satisfying the obligation.
+DELIVERED_SURFACE = "delivered"
+
 #: ``plan_id`` -- ``<NNN>-<slug>``, per plan-graph.schema.json.
 PLAN_ID_PATTERN = r"^[0-9]{3}-[a-z0-9-]+$"
 _PLAN_ID_RE = re.compile(PLAN_ID_PATTERN)
@@ -194,7 +201,15 @@ FINAL_WAVE_GATE = "<!-- Include the section below only in stories belonging to t
 INJECT_MARKER = "<!-- INJECT:E2E-HARD-RULES"
 COMPLIANCE_LINE = "**Compliance Status:**"
 
+#: The second injection point. Matched *inside* the comment rather than at its
+#: start, because the template's marker deliberately does not open the line: a
+#: comment beginning ``<!-- WORD:`` reads as front-matter to
+#: :func:`_strip_guidance_comments` and would be emitted verbatim instead of
+#: being replaced.
+DELIVERED_SURFACE_MARKER = "INJECT:DELIVERED-SURFACE-RULE"
+
 E2E_SECTION_HEADING = "## E2E Testing Hard Rules"
+DELIVERED_SURFACE_SECTION_HEADING = "## Delivered-Surface Rule"
 
 #: The section a story's ``validation.increments`` are interleaved into, and the
 #: form each one renders as beneath the task it names -- both declared by
@@ -253,7 +268,11 @@ notes:
   the rest are left in place for mplan's judgment. The four E2E Testing Hard
   Rules are injected verbatim from shared/STANDARD-SPEC.md at both
   INJECT:E2E-HARD-RULES markers, gated exactly as the markers are (the repo's
-  CATALOG.yaml must name an E2E module or an E2E test-facet file).
+  CATALOG.yaml must name an E2E module or an E2E test-facet file). The four
+  Delivered-Surface Rules are injected from that same file at their own
+  INJECT:DELIVERED-SURFACE-RULE marker and are ungated: every module has a
+  surface its behaviour is delivered on, so there is no catalog condition
+  under which the rule does not apply.
 
   A version-4 story's validation.increments are interleaved into ## Implemen-
   tation Tasks: each step renders as a `- *Check:*` line immediately beneath
@@ -1252,6 +1271,9 @@ def _normalize_graph(
     slices, refusals = _normalize_slices(raw_slices, normalized)
     if refusals:
         return graph, refusals
+    refusals = _slice_surface_checks(graph["version"], slices)
+    if refusals:
+        return graph, refusals
     refusals = _slice_zero_spans_every_layer(slices, normalized, ws)
     if refusals:
         return graph, refusals
@@ -1542,6 +1564,55 @@ def _wave_barrier_checks(version: Any, waves: Sequence[Dict[str, Any]]) -> List[
                 "wave %s has no `kind: %s` validation step; a wave whose barrier "
                 "check is prose alone cannot be demonstrated to run against the "
                 "merged integration branch" % (entry.get("wave"), EXIT_CODE_KIND),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
+
+
+def _slice_surface_checks(
+    version: Any, slices: Sequence[Dict[str, Any]]
+) -> List[core.Diagnostic]:
+    """Every version-4 slice is demonstrated through its delivered surface.
+
+    ``STANDARD-SPEC.md`` §"Delivered-Surface Rule" is unconditional, and this is
+    where a plan is made to satisfy it mechanically: at least one acceptance
+    step of every slice must be **both** ``kind: exit-code`` and
+    ``surface: delivered``. Neither half suffices alone -- a prose step naming
+    the delivered surface cannot be demonstrated to run, and a runnable step
+    beneath the surface is evidence about internals rather than about the
+    behaviour that was delivered -- and JSON Schema can state neither, since
+    both are cross-field counts over an array.
+
+    It is a refusal rather than a warning for the same reason the
+    prose-acceptance rule is: a slice checked only beneath its surface produces
+    a plan that *looks* demonstrated and is not, and the omission is invisible
+    in every artifact downstream of the emit.
+
+    Gated on the version like the wave and story checks, and for the reason
+    ``surface`` defaults to ``internal``: an unannotated step is exactly what a
+    version-3 acceptance always was, so applying the rule below 4 would refuse
+    every graph written before the key existed.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for entry in slices:
+        acceptance = entry.get("acceptance")
+        if isinstance(acceptance, list) and any(
+            isinstance(step, dict)
+            and step.get("kind") == EXIT_CODE_KIND
+            and step.get("surface") == DELIVERED_SURFACE
+            for step in acceptance
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "slice %r has no `kind: %s` acceptance step carrying `surface: "
+                "%s`; a slice demonstrated only beneath the surface its "
+                "behaviour is delivered on has not been demonstrated to work"
+                % (entry.get("slice"), EXIT_CODE_KIND, DELIVERED_SURFACE),
                 file="<stdin>",
             )
         )
@@ -1873,8 +1944,9 @@ def _story_emit(args, ws, now) -> core.Result:
     context = _story_context(graph, story_id, story, repo, catalog, diagnostics, graph_rel)
 
     rules = _e2e_rules()
+    delivered = _delivered_surface_rules()
     body = _template_body()
-    rendered = _render_story(body, context, rules, diagnostics, graph_rel)
+    rendered = _render_story(body, context, rules, delivered, diagnostics, graph_rel)
 
     name = str(story.get("file") or "%s%s%s" % (STORY_FILE_PREFIX, story_id, STORY_FILE_SUFFIX))
     if Path(name).name != name:
@@ -2109,24 +2181,22 @@ def _template_body() -> str:
     return text[start + len(TEMPLATE_BEGIN) : end].strip("\n")
 
 
-def _e2e_rules() -> str:
-    """The E2E Testing Hard Rules, read verbatim from their owning section.
+def _standard_rules(heading: str) -> str:
+    """The four rules under ``heading``, read verbatim from their owning section.
 
-    ``STANDARD-SPEC.md`` §"E2E Testing Hard Rules" owns the four rules; this
-    returns the section's lead-in line and the four bullets exactly as written
-    there, so the delivered copy is generated rather than maintained by hand.
+    One reader for both injections: ``STANDARD-SPEC.md`` owns each set of rules,
+    and this returns the section's lead-in line and its four bullets exactly as
+    written there, so every delivered copy is generated rather than maintained
+    by hand. A second reader would be a second way to read one convention, and
+    the two could disagree about the same section.
     """
     display = "shared/STANDARD-SPEC.md"
     text = core.read_text(STANDARD_SPEC, display)
     lines = text.split("\n")
     try:
-        start = next(
-            index for index, line in enumerate(lines) if line.strip() == E2E_SECTION_HEADING
-        )
+        start = next(index for index, line in enumerate(lines) if line.strip() == heading)
     except StopIteration:
-        raise core.fail(
-            core.E_NOT_FOUND, "no section %r" % (E2E_SECTION_HEADING,), file=display
-        )
+        raise core.fail(core.E_NOT_FOUND, "no section %r" % (heading,), file=display)
     lead: Optional[str] = None
     bullets: List[str] = []
     for line in lines[start + 1 :]:
@@ -2143,21 +2213,42 @@ def _e2e_rules() -> str:
     if len(bullets) != 4:
         raise core.fail(
             core.E_PARSE,
-            "expected four rules under %r, found %d" % (E2E_SECTION_HEADING, len(bullets)),
+            "expected four rules under %r, found %d" % (heading, len(bullets)),
             file=display,
         )
     block = bullets if lead is None else [lead, ""] + bullets
     return "\n".join(block)
 
 
+def _e2e_rules() -> str:
+    """The E2E Testing Hard Rules, from §"E2E Testing Hard Rules"."""
+    return _standard_rules(E2E_SECTION_HEADING)
+
+
+def _delivered_surface_rules() -> str:
+    """The Delivered-Surface Rule, from §"Delivered-Surface Rule".
+
+    Injected at its own marker and **ungated**: unlike the E2E rules there is no
+    catalog condition under which it does not apply, because every module has a
+    surface its behaviour is delivered on.
+    """
+    return _standard_rules(DELIVERED_SURFACE_SECTION_HEADING)
+
+
 def _render_story(
     body: str,
     context: Dict[str, Any],
     rules: str,
+    delivered: str,
     diagnostics: Optional[List[core.Diagnostic]] = None,
     graph_rel: Optional[str] = None,
 ) -> str:
-    """Gate the template's conditional blocks, substitute, and clean up."""
+    """Gate the template's conditional blocks, substitute, and clean up.
+
+    ``rules`` is injected at each ``INJECT:E2E-HARD-RULES`` marker under the
+    catalog condition those markers carry; ``delivered`` is injected at the
+    ``INJECT:DELIVERED-SURFACE-RULE`` marker under no condition at all.
+    """
     lines = body.split("\n")
     kept: List[str] = []
     index = 0
@@ -2179,6 +2270,13 @@ def _render_story(
         if stripped.startswith(INJECT_MARKER):
             if context["e2e"]:
                 kept.extend(rules.split("\n"))
+            index += 1
+            continue
+        if stripped.startswith("<!--") and DELIVERED_SURFACE_MARKER in stripped:
+            # Ungated on purpose. The E2E branch above asks the catalog first;
+            # this one has nothing to ask, which is the difference the two
+            # markers exist to express.
+            kept.extend(delivered.split("\n"))
             index += 1
             continue
         if stripped.startswith(FINAL_WAVE_GATE):

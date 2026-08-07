@@ -1900,6 +1900,19 @@ INCREMENT_STEP = {
     "description": "the first increment holds before the second is started",
 }
 
+#: The acceptance step a version-4 *slice* must carry: runnable **and** reaching
+#: the surface the behaviour is delivered on. ``surface`` defaults to
+#: ``internal``, so :data:`EXIT_STEP` -- runnable but unannotated -- does not
+#: satisfy it, which is what stops every pre-existing step from silently doing
+#: so. Gated on the same version as the other two, so a draft declaring 4 to
+#: exercise either of them must carry this too.
+DELIVERED_STEP = {
+    "kind": "exit-code",
+    "command": "mc.py status",
+    "surface": "delivered",
+    "description": "the behaviour runs through the command line it is delivered on",
+}
+
 
 def _wave(number, stories, validation=None):
     entry = {"wave": number, "stories": list(stories)}
@@ -1917,7 +1930,13 @@ def _barrier_draft(validation, version=4, **fields):
     refusal is gated on, so the same shape can be put to ``emit`` on both sides
     of the gate.
     """
-    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    slices = [
+        _slice(
+            "00",
+            ["01-01-demo-ALPHA", "02-01-demo-BETA"],
+            acceptance=[DELIVERED_STEP] if version == 4 else None,
+        )
+    ]
     draft = _sliced_draft(slices, version=version, **fields)
     draft["waves"] = [
         _wave(1, ["01-01-demo-ALPHA"], validation.get(1)),
@@ -2092,6 +2111,123 @@ def test_the_increment_refusal_does_not_fire_on_a_version_three_draft(workspace)
     graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
     assert graph["version"] == 3
     assert "increments" not in graph["stories"]["01-01-demo-ALPHA"]["validation"]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+# ---------------------------------------------------------------------------
+# plan emit -- the version-4 delivered-surface acceptance, in both directions
+# ---------------------------------------------------------------------------
+
+
+def _surface_draft(acceptance, version=4, second=None):
+    """A barrier draft whose slice ``00`` carries ``acceptance``.
+
+    ``second`` adds a second slice holding ``02-01-demo-BETA`` with its own
+    acceptance, which is how a case can show *which* slice a refusal names. No
+    catalog is written for those cases, so the walking-skeleton rule -- which
+    would fire first on a slice ``00`` that no longer spans both layers -- has
+    no layer to compare against and stays out of the way.
+    """
+    barriers = {1: [BARRIER_STEP], 2: [BARRIER_STEP]} if version == 4 else {}
+    draft = _barrier_draft(barriers, version=version)
+    draft["slices"][0]["acceptance"] = [dict(step) for step in acceptance]
+    if second is not None:
+        draft["slices"][0]["stories"] = ["01-01-demo-ALPHA"]
+        draft["slices"].append(
+            _slice("01", ["02-01-demo-BETA"], acceptance=[dict(step) for step in second])
+        )
+    return draft
+
+
+def test_emit_refuses_a_version_four_slice_whose_acceptance_reaches_no_delivered_surface(workspace):
+    """Runnable is not enough: an unannotated step is ``internal`` by default.
+
+    This is the whole reason the schema defaults ``surface`` to ``internal`` --
+    a default of ``delivered`` would let every step written before the key
+    existed satisfy the obligation without anyone having reached the surface.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending slice and what it is missing.
+    assert "00" in result.diagnostics[0].message
+    assert "delivered" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_slice_whose_steps_are_explicitly_internal(workspace):
+    """The annotated case is the same defect as the unannotated one."""
+    _add_catalog(workspace)
+    internal = dict(EXIT_STEP, surface="internal")
+    result, code = _emit(workspace, "001-first", _surface_draft([internal, PROSE_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_slice_whose_delivered_step_is_prose(workspace):
+    """Both halves are required of one step: naming the surface is not running it.
+
+    A prose step may well describe the delivered surface, and a runnable step
+    beneath it may well run -- but the obligation is a demonstration *through*
+    the surface, which neither of them is.
+    """
+    _add_catalog(workspace)
+    prose_at_surface = dict(PROSE_STEP, surface="delivered")
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP, prose_at_surface]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_the_delivered_surface_refusal_names_the_slice_that_lacks_it(workspace):
+    """One finding per offending slice, and none for the conforming one."""
+    result, code = _emit(
+        workspace, "001-first", _surface_draft([DELIVERED_STEP], second=[EXIT_STEP])
+    )
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "'01'" in result.diagnostics[0].message
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_slice_reaches_its_delivered_surface(workspace):
+    _add_catalog(workspace)
+    acceptance = [EXIT_STEP, DELIVERED_STEP]
+    result, code = _emit(workspace, "001-first", _surface_draft(acceptance))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 4
+    # Carried through verbatim -- ``surface`` is the draft's assertion, never
+    # derived and never rewritten.
+    assert graph["slices"][0]["acceptance"] == acceptance
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_the_delivered_surface_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    This is the draft the cases above are refused for -- a slice whose only
+    runnable acceptance step is internal by default -- offered at version 3,
+    where the delivered-surface obligation does not apply. It emits, which is
+    the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _surface_draft([EXIT_STEP], version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert graph["slices"][0]["acceptance"] == [EXIT_STEP]
     assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
 
 
