@@ -140,8 +140,10 @@ for (const wave of WAVES) {
     results = mergeAttempts(results, retried)
   }
 
-  // BARRIER — a merge agent applies the discretion merge + validation-gated integration,
-  // persists two-level state, and returns the wave outcome (merged / halt / deferred breaks).
+  // BARRIER — a merge agent applies the discretion merge, then runs this wave's own
+  // `validation` steps against the merged integration branch (after the merge, before the
+  // next wave is cut from it), persists two-level state, and returns the wave outcome
+  // (merged / halt / deferred breaks). A failed check is an unmergeable wave: no advance.
   const barrier = await agent(barrierPrompt(wave, results), {
     label: `barrier:w${wave.wave}`, phase: `Wave ${wave.wave}`, schema: BARRIER_SCHEMA,
   })
@@ -163,7 +165,7 @@ const sweep = await agent(mverifySweepPrompt(SWEEP_DISCRIMINATOR, SLICE), { labe
 return { done: true, slice: SLICE.slice, acceptance, sweep }   // the session persists both after this returns
 ```
 
-In the skeleton, `STORY_REPORT_SCHEMA` is the parsed `${CLAUDE_PLUGIN_ROOT}/schemas/story-report.schema.json`; `BARRIER_SCHEMA` is a small inline shape you define for the barrier agent's return (`{ halt: bool, reason, merged: [...], deferred_breaks: [...], spec_defects: [...] }`); `ACCEPTANCE_SCHEMA` is likewise a small inline shape (`{ result: 'pass'|'fail'|'unconfirmed'|'not-run', steps: [...] }`); `SWEEP_DISCRIMINATOR` is the explicit sweep-mode value `/mverify` is invoked with; and `storyPrompt`/`barrierPrompt`/`sliceAcceptancePrompt`/`storyOf`/`mergeAttempts` are illustrative helpers you build from `plan.yaml` + `plan slices` + Step 0's resolution. Adapt freely — the **contract** is: waves in order, one agent per story at full concurrency (each creating its own worktree), a barrier that validates/merges/persists, bounded retry 3 per run, Slice Acceptance on the slice's last wave, then the sweep. `return { … }` ends the `Workflow`; the acceptance and sweep results are persisted **after** that return, by the `mexecute` session, not by the script (see Slice Acceptance and Step 3).
+In the skeleton, `STORY_REPORT_SCHEMA` is the parsed `${CLAUDE_PLUGIN_ROOT}/schemas/story-report.schema.json`; `BARRIER_SCHEMA` is a small inline shape you define for the barrier agent's return (`{ halt: bool, reason, merged: [...], deferred_breaks: [...], spec_defects: [...] }`); `ACCEPTANCE_SCHEMA` is likewise a small inline shape (`{ result: 'pass'|'fail'|'unconfirmed'|'not-run', steps: [...] }`); `SWEEP_DISCRIMINATOR` is the explicit sweep-mode value `/mverify` is invoked with; and `storyPrompt`/`barrierPrompt`/`sliceAcceptancePrompt`/`storyOf`/`mergeAttempts` are illustrative helpers you build from `plan.yaml` + `plan slices` + Step 0's resolution. Adapt freely — the **contract** is: waves in order, one agent per story at full concurrency (each creating its own worktree), a barrier that merges, then checks the merged branch before the next wave is cut, then persists, bounded retry 3 per run, Slice Acceptance on the slice's last wave, then the sweep. `return { … }` ends the `Workflow`; the acceptance and sweep results are persisted **after** that return, by the `mexecute` session, not by the script (see Slice Acceptance and Step 3).
 
 **With no `--slice`, wrap the whole loop above in an outer loop over the slices in order** — each slice's waves, its barrier, its acceptance, then the next slice's. There is still no gate between them; the sweep runs once at the end of the run.
 
@@ -178,13 +180,15 @@ It returns `integration` (the branch to cut from and merge back into), `story` (
 The compute-heavy parts are **agents** because a Workflow script itself has no filesystem/git access — it only orchestrates. Concretely:
 
 - **Story agent** (worktree-isolated). Its prompt names exactly one story and carries the three names above. It: (a) **creates its own worktree** with `git worktree add` inside `repos/<repo>/`, on the `story` branch cut from that repo's `integration` branch (the merged tip of the previous wave), at `worktree_path`; (b) loads **only** its `PLAN-*.md`, that story's Context Files, and the repo `CATALOG.yaml` — nothing else; (c) implements the story in `repos/<repo>/` (its single target repo); (d) runs the story's **Post-Story Validation** from `plan.yaml` (`kind: exit-code` commands must exit 0; `prose` steps it interprets); (e) returns the `story-report.schema.json` shape — status, branch, worktree path, files changed, validation result, any `breaking_contract_change`, any `contract_revisions` it built against, and any `spec_defect`. `agent()`'s `isolation: 'worktree'` option is **unparameterized** — it selects neither repo nor branch — so it is **not** the mechanism of story isolation; real `git worktree` commands, run by the story agent itself, are.
-- **Barrier/merge agent** (one per wave, at the barrier). It applies the **merge/salvage discretion** (below), merges greens into the integration branch with git, records each story through `mc.py state set-story` (Step 4) — including each merged story's `contract_revisions` — removes merged worktrees with `git worktree remove`, keeps failed ones, and returns whether to `halt`.
+- **Barrier/merge agent** (one per wave, at the barrier). It applies the **merge/salvage discretion** (below), merges greens into the integration branch with git, then **runs that wave's own `validation` steps — the barrier check — against the merged integration branch**, records each story through `mc.py state set-story` (Step 4) — including each merged story's `contract_revisions` — removes merged worktrees with `git worktree remove`, keeps failed ones, and returns whether to `halt`. The check runs **after the merge and before the next wave is cut** from that branch; a wave whose barrier check fails does not advance and is reported as an **unmergeable wave** (see below). `barrierPrompt` therefore carries the wave's `validation` steps from `plan.yaml` verbatim, alongside its story results.
 - **Slice-acceptance agent** (the slice's last wave only): runs the slice's `acceptance` steps from the plan graph. See **Slice Acceptance** below.
 - **mverify sweep agent** (Step 3): invokes `/mverify` across every repo the slice touched, with the explicit sweep discriminator.
 
-**If the `Workflow` tool is unavailable** in the environment, emulate the same structure by hand: for each wave in order, dispatch the story agents concurrently (`Agent` calls, one message — each story agent creates its own worktree with `git worktree add`), then run the **retry loop to exhaustion**, then the barrier/merge + state persistence yourself, then advance; on the slice's last wave, run Slice Acceptance and record it. What matters is the model — waves in order, worktree-per-story, barrier discretion, retry 3 per run, slice acceptance, sweep — not the tool. The `mc.py` calls are identical either way.
+**If the `Workflow` tool is unavailable** in the environment, emulate the same structure by hand: for each wave in order, dispatch the story agents concurrently (`Agent` calls, one message — each story agent creates its own worktree with `git worktree add`), then run the **retry loop to exhaustion**, then the barrier/merge yourself, then run that wave's `validation` steps against the merged integration branch — the same ordering the Workflow path uses: after the merge, before you cut the next wave — then state persistence, then advance; on the slice's last wave, run Slice Acceptance and record it. What matters is the model — waves in order, worktree-per-story, barrier discretion and the merged-branch check that follows it, retry 3 per run, slice acceptance, sweep — not the tool. The `mc.py` calls are identical either way.
 
 ## The Barrier: Merge / Salvage Discretion
+
+The barrier is two steps, and their order is fixed: **the per-story merge discretion below, then the check against the merged result.**
 
 At each wave barrier, wait for all stories (including retries), then decide **per story** — this is **agent discretion, not a strict green-only gate**, and it is yours, not the tool's:
 
@@ -194,6 +198,18 @@ At each wave barrier, wait for all stories (including retries), then decide **pe
 - **Mergeable** — independently, conflict-free.
 
 Same-wave stories target **disjoint modules by construction** (mplan guarantees module-disjoint `target_paths`), so merges should be **conflict-free**. An unexpected merge conflict signals a **planning error** — the agent **reports it and halts the wave** rather than blindly auto-resolving; it may salvage if it can do so sensibly, but it never guesses at a resolution.
+
+### The Barrier Checks the Merged Result
+
+Merging the greens is not the end of the barrier. Once they have landed on the integration branch, run **the wave's own `validation` steps, taken from `plan.yaml`'s `waves[]` entry, against that merged integration branch**: every `kind: exit-code` step must exit 0, and a `kind: prose` step you cannot honestly confirm is a fail, not a pass.
+
+**The ordering is fixed: after the merge, and before the next wave is cut** from that branch. Both halves carry weight — before the merge there is nothing to check, and once the next wave has been cut its worktrees are already built on the branch the check was meant to clear.
+
+This is the only check in the whole run that sees more than one story's output at once, and that is exactly why it exists. `mplan` guarantees same-wave stories write **disjoint paths**, which is what makes the merge conflict-free — and says nothing at all about whether the merged *behaviour* holds. **Disjoint files are not disjoint behaviour.** A story that passes its own Post-Story Validation alone and breaks against its wave-mates was previously invisible until the slice's acceptance ran, a whole slice later.
+
+**A failing barrier check is an unmergeable wave** — halt condition 2, which already exists. It is **not a fourth halt condition**: the list below stays at three, and an unmergeable wave is simply now reached two ways, by a same-wave merge conflict you cannot sensibly resolve *or* by the merged branch failing the wave's own check. Either way the wave **does not advance**, and the report names the failing step.
+
+A graph below version 4 carries no `waves[].validation` at all, so there is nothing for the barrier to run and it behaves exactly as it always did.
 
 ### The Barrier Records What Each Merged Story Was Built Against
 
@@ -249,12 +265,12 @@ Up to **3 attempts per failed story, per run** (`RETRY_MAX = 3`). `retries` rese
 These are the **only** reasons a run stops early, and calling one is your judgment. Everything else — including conformance drift — defers to the run report. **All three are terminating**: the run halts, reports, and ends. There is no mid-run pause and no between-wave gate — the user acts on the report and resumes with a **fresh `mexecute` invocation**, which takes a new `run` number and a fresh per-run retry budget.
 
 1. **Retry exhausted** — a story fails all 3 attempts (this run).
-2. **Unmergeable wave** — a same-wave conflict the agent judges it cannot sensibly resolve or salvage (it reports rather than auto-resolving).
+2. **Unmergeable wave** — reached two ways, and they count as one condition: a same-wave conflict the agent judges it cannot sensibly resolve or salvage (it reports rather than auto-resolving), **or the wave's barrier check failing against the merged integration branch**. Both say the same thing about the merged result — it is not fit to cut the next wave from — so the wave does not advance and the report names the conflict or the failing step.
 3. **Significant breaking contract change** — a shared-interface break surfaced during implementation whose blast radius **cascades beyond the current story** (forces a shared-spec revision or changes across consuming repos). The run **halts, reports the break, and ends**; it does not wait in-place for a decision.
 
 A breaking contract change whose blast radius is **contained** — it would only break code in the affected story — is **not** a halt: that story fails Post-Story Validation (so its worktree never merges), the failure is recorded as a `deferred_break` through `mc.py state set-story --deferred-break` (Step 4), and the **run continues**, folding it into the final report.
 
-**Three, and only three.** A `spec_defect` is not a fourth (see above), and neither is conformance drift, a failed Slice Acceptance, or a contained break: those are results the run reports, not reasons it stops early.
+**Three, and only three.** A `spec_defect` is not a fourth (see above), and neither is conformance drift, a failed Slice Acceptance, or a contained break: those are results the run reports, not reasons it stops early. A failed **barrier check** is not a fourth either — it *is* condition 2, an unmergeable wave, and it adds nothing to this list.
 
 **No human review between waves.** `mexecute` always runs every wave of the slice through; there is no between-wave gate and no mid-run prompt. Gating between **slices** belongs to `mship`, not here: a slice-scoped run simply ends at its slice boundary and returns, and that boundary is what gives `mship` somewhere to decide.
 
@@ -315,7 +331,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state conformance <plan-id> --status <
 
 ## What mexecute does / does NOT do
 
-- **Does:** write code (the only skill that does), in `repos/<repo>/`; run the Workflow; run every git command the run needs — branch, `git worktree add`, merge, `git worktree remove`; validate, merge, retry, run the slice's acceptance, sweep; own both state files during the run.
+- **Does:** write code (the only skill that does), in `repos/<repo>/`; run the Workflow; run every git command the run needs — branch, `git worktree add`, merge, `git worktree remove`; validate, merge, check each wave's merged result at its barrier, retry, run the slice's acceptance, sweep; own both state files during the run.
 - **Does NOT:** brainstorm or design (that's `mspec`); decide plan structure (that's `mplan`, read from `plan.yaml`); rewrite specs — **including a `spec_defect` it reported**, which it hands upward rather than acting on; decide which slice runs next, or whether to re-plan (that's `mship`); touch more than one repo per story; merge into a repo's live working branch; advance a wave on red; halt on conformance drift; ask `mc.py` to run git, or compose a name or a verdict `mc.py` owns.
 
 ## Asking Questions
