@@ -2014,6 +2014,233 @@ def test_a_sliced_draft_declaring_no_version_is_still_emitted_at_three(workspace
 
 
 # ---------------------------------------------------------------------------
+# plan emit -- the version-4 story increment check, in both directions
+# ---------------------------------------------------------------------------
+
+
+def _increment(task, command="pytest tests/test_alpha.py -q", description="the increment holds"):
+    """One ``validation.increments`` step; ``task=None`` names no task at all."""
+    step = {"kind": "exit-code", "command": command, "description": description}
+    if task is not None:
+        step["task"] = task
+    return step
+
+
+def _increment_draft(increments, story_id="01-01-demo-ALPHA", version=4):
+    """A version-4 barrier draft whose named story carries ``increments``.
+
+    ``increments=None`` drops the key entirely -- the other way a story arrives
+    with no runnable per-increment check. Below version 4 the waves declare no
+    barrier at all, since the schema forbids the key there.
+    """
+    barriers = {1: [BARRIER_STEP], 2: [BARRIER_STEP]} if version == 4 else {}
+    draft = _barrier_draft(barriers, version=version)
+    validation = draft["stories"][story_id]["validation"]
+    if increments is None:
+        validation.pop("increments", None)
+    else:
+        validation["increments"] = [dict(step) for step in increments]
+    return draft
+
+
+def test_emit_refuses_a_version_four_story_whose_increments_are_prose_alone(workspace):
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft([PROSE_STEP, PROSE_STEP]))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending story, not merely the draft.
+    assert "01-01-demo-ALPHA" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_story_carrying_no_increments_at_all(workspace):
+    """The absent array and the unrunnable one are one refusal, not two."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "01-01-demo-ALPHA" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_stories_keep_their_increments(workspace):
+    _add_catalog(workspace)
+    steps = [_increment(1), _increment(2, command="pytest tests/ -q")]
+    result, code = _emit(workspace, "001-first", _increment_draft(steps))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["stories"]["01-01-demo-ALPHA"]["validation"]["increments"] == steps
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_the_increment_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    A version-3 story carries no ``increments`` at all -- the schema forbids the
+    key there -- which is exactly the shape refused above at version 4. It
+    emits, which is the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert "increments" not in graph["stories"]["01-01-demo-ALPHA"]["validation"]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+# ---------------------------------------------------------------------------
+# story-emit -- the increments are interleaved into the task list
+# ---------------------------------------------------------------------------
+
+_TASK_RE = re.compile(r"^[0-9]+\. ")
+_CHECK_PREFIX = "- *Check:*"
+
+
+def _emit_increment_story(workspace, increments, story_id="01-01-demo-ALPHA", plan_id="001-first"):
+    """Emit a version-4 plan carrying ``increments``, then render that story."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, plan_id, _increment_draft(increments, story_id=story_id))
+    assert code == 0, [d.render() for d in result.diagnostics]
+    return _render_one(workspace, plan_id, story_id)
+
+
+def _task_section(text):
+    """The rendered ``## Implementation Tasks`` section, heading excluded."""
+    section = text.split("## Implementation Tasks", 1)[1]
+    return re.split(r"\n## |\n---", section, maxsplit=1)[0]
+
+
+def _task_sequence(text):
+    """``(kind, line)`` for every task line and check line, in rendered order."""
+    sequence = []
+    for line in _task_section(text).split("\n"):
+        stripped = line.strip()
+        if _TASK_RE.match(stripped):
+            sequence.append(("task", line))
+        elif stripped.startswith(_CHECK_PREFIX):
+            sequence.append(("check", line))
+    return sequence
+
+
+def test_story_emit_places_each_increment_after_the_task_it_names(workspace):
+    """Work-then-check repeated, not work-work-work then one check."""
+    steps = [_increment(1, command="first"), _increment(3, command="third")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == [
+        "task",
+        "check",
+        "task",
+        "task",
+        "check",
+    ]
+    assert "`first`" in sequence[1][1]
+    assert "`third`" in sequence[4][1]
+    # Rendered beneath its task, indented to the list item's content column.
+    assert sequence[1][1] == "   - *Check:* `first` — the increment holds"
+
+
+def test_two_increments_naming_one_task_keep_their_graph_order(workspace):
+    steps = [_increment(2, command="earlier"), _increment(2, command="later")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "task", "check", "check", "task"]
+    assert "`earlier`" in sequence[2][1]
+    assert "`later`" in sequence[3][1]
+
+
+def test_a_prose_increment_renders_its_description_with_no_command(workspace):
+    result, text = _emit_increment_story(workspace, [_increment(1), dict(PROSE_STEP, task=2)])
+
+    assert result.ok and not result.diagnostics
+    sequence = _task_sequence(text)
+    assert sequence[3][1] == "   - *Check:* someone looks at it"
+
+
+def test_an_increment_naming_a_task_beyond_the_list_appends_after_the_last(workspace):
+    """A graph-level defect story-emit reports rather than refuses."""
+    steps = [_increment(1, command="first"), _increment(9, command="stray")]
+    result, text = _emit_increment_story(workspace, steps)
+
+    assert result.ok
+    assert [d.severity for d in result.diagnostics] == ["warning"]
+    assert "9" in result.diagnostics[0].message
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == [
+        "task",
+        "check",
+        "task",
+        "task",
+        "check",
+    ]
+    assert "`stray`" in sequence[4][1]
+
+
+def test_an_increment_naming_no_task_appends_after_the_last_with_one_warning(workspace):
+    result, text = _emit_increment_story(workspace, [_increment(None, command="stray")])
+
+    assert result.ok
+    assert [d.severity for d in result.diagnostics] == ["warning"]
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "task", "task", "check"]
+
+
+def test_the_interleave_is_reached_through_the_command_line(workspace):
+    """The delivered surface -- an exit code and a file mc.py itself wrote.
+
+    Every other case here calls the group in process, which cannot catch a
+    render wired wrong at the CLI seam; TOOLS-TESTING.md §"Delivered Surface"
+    is why one of them goes through the subprocess.
+    """
+    _add_catalog(workspace)
+    steps = [_increment(1, command="first"), _increment(3, command="third")]
+    result, code = _emit(workspace, "001-first", _increment_draft(steps))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    completed = workspace.run_cli(
+        "--workspace",
+        workspace.root,
+        "--now",
+        NOW,
+        "plan",
+        "story-emit",
+        "001-first",
+        "01-01-demo-ALPHA",
+    )
+    assert completed.returncode == 0, completed.stderr
+    text = workspace.path(
+        "context/project/plans/001-first/PLAN-01-01-demo-ALPHA.md"
+    ).read_text(encoding="utf-8")
+    sequence = _task_sequence(text)
+    assert [kind for kind, _line in sequence] == ["task", "check", "task", "task", "check"]
+    assert "`first`" in sequence[1][1] and "`third`" in sequence[4][1]
+
+
+def test_a_graph_carrying_no_increments_renders_the_task_list_untouched(workspace):
+    """The version-3 render is unchanged: no check line, no warning, no reflow."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _increment_draft(None, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+    result, text = _render_one(workspace, "001-first", "01-01-demo-ALPHA")
+
+    assert result.ok and not result.diagnostics
+    assert [kind for kind, _line in _task_sequence(text)] == ["task", "task", "task"]
+    # The template's own prose names the form; no *line* is one.
+    assert [line for line in text.split("\n") if line.strip().startswith(_CHECK_PREFIX)] == []
+
+
+# ---------------------------------------------------------------------------
 # plan reslice -- the loop's backward edge, and what it will not rewrite
 # ---------------------------------------------------------------------------
 
