@@ -163,9 +163,9 @@ is likewise unchanged: it returns the layer-ordered assignment for one target re
 
 Story files are **rendered, not written**: `mc.py plan story-emit` produces each one from `${CLAUDE_PLUGIN_ROOT}/shared/PLAN-STORY-TEMPLATE.md`. This skill never loads that file, and nothing is ever copied out of it by hand.
 
-The renderer substitutes everything the plan graph answers — repo, module, layer, wave numbers, prerequisites, parallel group, change file, target-path rows — and gates the conditional sections (`## Change Scope` for incremental plans only, `**Compliance Status:**` for update sub-mode, `## Final Validation` for last-wave stories only). It leaves in place only the placeholders judgment must fill: the Context Files lists, the change-scope narrative, and the module's implementation tasks and acceptance criteria.
+The renderer substitutes everything the plan graph answers — repo, module, layer, wave numbers, prerequisites, parallel group, change file, target-path rows — and gates the conditional sections (`## Change Scope` for incremental plans only, `**Compliance Status:**` for update sub-mode, `## Slice Acceptance` for the last-wave stories of each slice). It leaves in place only the placeholders judgment must fill: the Context Files lists, the change-scope narrative, and the module's implementation tasks and acceptance criteria.
 
-**E2E Hard Rules.** `STANDARD-SPEC.md` §"E2E Testing Hard Rules" **owns** the four rules. They are **injected at render time**, generated from that owning section on every emit and never hand-copied, into **both** placements in the story file — `## Post-Story Validation` **and** `## Final Validation (last wave only)` — each block gated on the repo's `CATALOG.yaml` naming a module whose TESTING facet covers E2E, and each annotated with `STANDARD-SPEC.md` as their owner. Both placements are required: the owning rule covers module-level and project-level E2E, while Final Validation reaches last-wave stories only. This is the sanctioned exception to the no-duplication rule, and only because the copy is generated: a story agent's context is its own story, its Context Files, and the repo `CATALOG.yaml`, so the rules must physically reach the story file even though there is exactly one authored source.
+**E2E Hard Rules.** `STANDARD-SPEC.md` §"E2E Testing Hard Rules" **owns** the four rules. They are **injected at render time**, generated from that owning section on every emit and never hand-copied, into **both** placements in the story file — `## Post-Story Validation` **and** `## Slice Acceptance` — each block gated on the repo's `CATALOG.yaml` naming a module whose TESTING facet covers E2E, and each annotated with `STANDARD-SPEC.md` as their owner. Both placements are required: the owning rule covers module-level and project-level E2E, while Slice Acceptance reaches the slice's last-wave stories only. This is the sanctioned exception to the no-duplication rule, and only because the copy is generated: a story agent's context is its own story, its Context Files, and the repo `CATALOG.yaml`, so the rules must physically reach the story file even though there is exactly one authored source.
 
 Each story file must stay **small and focused** — as small as the work allows, with no hard line limit (see *Context Size Budget*).
 
@@ -184,7 +184,7 @@ Each story file must stay **small and focused** — as small as the work allows,
    - Acceptance criteria derived from `*-TESTING.md` specs (if the module has a testing facet)
    - Prerequisite stories from earlier waves — and never from a later slice
    - Implementation tasks adapted to the facets that actually exist for this module
-   - The source paths the story writes, and its Post-Story Validation steps (and, for last-wave stories, its Final Validation steps)
+   - The source paths the story writes, and its Post-Story Validation steps (and, for each slice's last-wave stories, its Slice Acceptance steps)
 6. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
 7. Verify: every spec file in every in-scope catalog is referenced in exactly one story; every story belongs to exactly one slice; only INTERFACE cross-references
 
@@ -220,7 +220,7 @@ Applies when doing a full plan (000-initial) but source code already exists. Aft
    - Context files (same derivation as full plan, but scoped to affected modules)
    - Implementation tasks limited to the facets mentioned in the change file
    - Acceptance criteria from the repo change file's **Validation Checklist** plus relevant TESTING spec criteria
-   - The source paths the story writes, and its Post-Story Validation steps (and, for last-wave stories, its Final Validation steps, referencing the repo change file's **Validation Checklist**)
+   - The source paths the story writes, and its Post-Story Validation steps (and, for each slice's last-wave stories, its Slice Acceptance steps, referencing the repo change file's **Validation Checklist**)
 8. Emit the graph and render the story files (see *Emit the Plan Graph, Stories, State & Ledger*)
 9. Verify: every entry in every referenced repo change file's **Affected Code Paths** is covered by a story; no story touches modules not listed in those change files; every module the `## Slices` table names has a story, and every story sits in exactly one slice
 
@@ -293,7 +293,7 @@ What the draft must get right:
 - **Story keys** come from `python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-id <file>` — pass the story's intended `PLAN-…-….md` filename and use the id it returns as the key here and in every `prerequisites` reference. Do not compose the key yourself.
 - `project_change` is the value `plan scope` returned — `null` for a full or greenfield plan; `change_file` is `null` there too.
 - `target_paths` and `validation.post_story` are **mandatory** on every story; `validation.final` appears only on last-wave stories. A Verify story that writes no source files emits `target_paths: []`.
-- **Lift validation into the graph.** Translate each story's Post-Story / Final Validation into `validation.post_story[]` / `validation.final[]` steps. Prefer **`kind: exit-code`** with a runnable `command` (build/type-check/test) so `mexecute` can gate mechanically; use `kind: prose` only where a step is genuinely agent-interpreted.
+- **Lift validation into the graph.** Translate each story's Post-Story Validation / Slice Acceptance into `validation.post_story[]` / `validation.final[]` steps. Prefer **`kind: exit-code`** with a runnable `command` (build/type-check/test) so `mexecute` can gate mechanically; use `kind: prose` only where a step is genuinely agent-interpreted.
 - All three schemas are `additionalProperties: false` at **every** level. A story entry may carry no field beyond the ones `plan-graph.schema.json` defines, so anything else an agent needs to know belongs in the story file, never in the graph.
 
 ### 2. Story files
@@ -304,7 +304,7 @@ One invocation per story, once the graph is on disk:
 python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py plan story-emit <plan-id> <story-id>
 ```
 
-It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects the E2E Hard Rules into both `## Post-Story Validation` and `## Final Validation (last wave only)` (see *E2E Hard Rules* above).
+It writes `<plan-dir>/PLAN-{WW}-{SS}-{REPO}-{MODULE}.md` from the shared template, gates the conditional sections from the graph, and injects the E2E Hard Rules into both `## Post-Story Validation` and `## Slice Acceptance` (see *E2E Hard Rules* above).
 
 Then edit each rendered file to fill in only what the graph could not answer: the four **Context Files** sub-lists, the **Change Scope** narrative (incremental plans), the **Implementation Tasks** and **Acceptance Criteria** for this module, and — update sub-mode only — the `**Compliance Status:**` header field. Leave everything the renderer produced as it stands — never edit, reformat, or re-copy the injected E2E rules.
 
@@ -360,7 +360,7 @@ Before finalizing the plan, verify:
 5. **Acceptance criteria are testable** — Each criterion can pass/fail unambiguously
 6. **Context lists are minimal** — Only files from `depends_on` fields, not wildcards
 7. **Files are self-contained** — An agent can implement a story by loading only the listed context files
-8. **Slice acceptance is per slice** — every slice carries its own end-to-end acceptance, and the Final Validation section lands on the last wave *of that slice*, not once per plan. Delivery advances a slice at a time, so a plan with a single terminal validation proves nothing until the last one lands
+8. **Slice acceptance is per slice** — every slice carries its own end-to-end acceptance, and the Slice Acceptance section lands on the last wave *of that slice*, not once per plan. Delivery advances a slice at a time, so a plan with a single terminal validation proves nothing until the last one lands
 9. **Graph agrees with the story files** — every `PLAN-*.md` has exactly one `plan.yaml` story entry and vice versa; each story's `wave`/`prerequisites`/`parallel_group` in `plan.yaml` matches its story-file header; every id in `waves[]`, `prerequisites`, and `parallel_group` resolves to a real story; no prerequisite points to a later wave
 10. **Single-repo stories** — every `plan.yaml` story names exactly one `repo`; same-wave siblings' `target_paths` are disjoint (module-disjoint by construction), tested pairwise on non-empty lists. A story with `target_paths: []` — a Verify story that writes no source files — is an explicit **Verify-story exemption** from this disjointness test, not a trivial pass via an empty intersection.
 11. **Schemas pass** — re-check the three emitted artifacts explicitly, since step 10's fixes may have touched them:

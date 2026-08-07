@@ -1053,6 +1053,193 @@ def test_the_slice_acceptance_section_is_gated_on_the_slice_s_last_wave(workspac
     assert "\n".join(_e2e_rules_from_standard()) in earlier
 
 
+def test_a_legacy_graph_renders_its_synthesized_slice_in_the_header(workspace):
+    """``00 — whole plan`` on every story, with neither placeholder surviving."""
+    _, last = _emit_story(workspace, story_id="02-01-demo-BETA")
+    _, earlier = _emit_story(workspace, story_id="01-01-demo-ALPHA")
+    for text in (last, earlier):
+        assert "**Slice:** 00 — whole plan" in text
+        assert "{NN}" not in text
+        assert "{slice name}" not in text
+
+
+# ---------------------------------------------------------------------------
+# story-emit: the gate is per slice, not per plan
+# ---------------------------------------------------------------------------
+
+#: A four-wave version-3 plan whose two slices do **not** share a last wave:
+#: slice ``00`` spans waves 1-2 and slice ``01`` waves 3-4. A plan-scoped gate
+#: renders ``## Slice Acceptance`` once, on wave 4 — which is the defect. The
+#: single-slice plan cannot show it, which is why the fixture is multi-slice.
+_SPLIT_WAVES = [
+    (1, ["01-01-demo-ALPHA"]),
+    (2, ["02-01-demo-BETA"]),
+    (3, ["03-01-demo-GAMMA"]),
+    (4, ["04-01-demo-DELTA"]),
+]
+
+_SPLIT_STORIES = [story_id for _wave, ids in _SPLIT_WAVES for story_id in ids]
+
+
+def _write_split_slice_plan(workspace, plan_id="004-two-slices", names=None):
+    names = names or {}
+    _add_catalog(workspace)
+    _write_sliced_plan(
+        workspace,
+        plan_id,
+        _SPLIT_WAVES,
+        [
+            _slice("00", _SPLIT_STORIES[:2], name=names.get("00")),
+            _slice("01", _SPLIT_STORIES[2:], name=names.get("01")),
+        ],
+    )
+    return plan_id
+
+
+def _render_one(workspace, plan_id, story_id):
+    result, code = _run(workspace, verb="story-emit", plan_id=plan_id, story_id=story_id)
+    assert code == 0, result.diagnostics
+    text = workspace.path(
+        "context/project/plans/%s/PLAN-%s.md" % (plan_id, story_id)
+    ).read_text()
+    return result, text
+
+
+def _edit_graph(workspace, plan_id, mutate):
+    """Hand-edit the graph on disk — what ``story-emit`` may actually be handed."""
+    relative = "context/project/plans/%s/plan.yaml" % plan_id
+    graph = core.load_yaml(workspace.path(relative))
+    mutate(graph)
+    workspace.write(relative, core.dump_yaml(graph))
+
+
+def test_slice_acceptance_gates_on_each_slices_own_last_wave(workspace):
+    """The assertion whose absence let the plan-scoped gate ship.
+
+    Slice ``00`` ends at wave 2 while the plan ends at wave 4, so a gate that
+    reads ``max(waves in the graph)`` puts no acceptance section anywhere in
+    slice ``00`` and one on the plan's last story only.
+    """
+    plan_id = _write_split_slice_plan(workspace)
+    gated = {}
+    for story_id in _SPLIT_STORIES:
+        _result, text = _render_one(workspace, plan_id, story_id)
+        gated[story_id] = "## Slice Acceptance" in text
+    assert gated == {
+        "01-01-demo-ALPHA": False,
+        "02-01-demo-BETA": True,  # slice 00's last wave, not the plan's
+        "03-01-demo-GAMMA": False,
+        "04-01-demo-DELTA": True,
+    }
+
+
+def test_total_waves_stays_plan_global_while_the_gate_narrows(workspace):
+    plan_id = _write_split_slice_plan(workspace)
+    result, text = _render_one(workspace, plan_id, "02-01-demo-BETA")
+    assert "**Wave:** 2 of 4" in text
+    assert "## Slice Acceptance" in text
+    assert result.data["last_wave"] is True
+    assert result.data["slice"] == "00"
+
+
+def test_story_emit_publishes_the_slice_the_gate_was_resolved_against(workspace):
+    plan_id = _write_split_slice_plan(workspace)
+    resolved = {
+        story_id: _render_one(workspace, plan_id, story_id)[0].data["slice"]
+        for story_id in _SPLIT_STORIES
+    }
+    assert resolved == {
+        "01-01-demo-ALPHA": "00",
+        "02-01-demo-BETA": "00",
+        "03-01-demo-GAMMA": "01",
+        "04-01-demo-DELTA": "01",
+    }
+
+
+def test_the_slice_header_is_filled_from_the_storys_own_slice(workspace):
+    plan_id = _write_split_slice_plan(workspace)
+    _result, first = _render_one(workspace, plan_id, "01-01-demo-ALPHA")
+    _result, later = _render_one(workspace, plan_id, "03-01-demo-GAMMA")
+    assert "**Slice:** 00 — slice 00" in first
+    assert "**Slice:** 01 — slice 01" in later
+    for text in (first, later):
+        assert "{NN}" not in text
+        assert "{slice name}" not in text
+
+
+def test_a_slice_name_holding_a_literal_repo_placeholder_is_not_rewritten(workspace):
+    """The substitution runs after the ``{repo}`` pass, so it is never re-scanned."""
+    plan_id = _write_split_slice_plan(workspace, names={"00": "the {repo} skeleton"})
+    _result, text = _render_one(workspace, plan_id, "01-01-demo-ALPHA")
+    assert "**Slice:** 00 — the {repo} skeleton" in text
+
+
+# ---------------------------------------------------------------------------
+# story-emit: degenerate slice membership renders rather than refuses
+# ---------------------------------------------------------------------------
+
+
+def test_a_story_slice_key_that_disagrees_warns_and_follows_the_membership_list(workspace):
+    """``slices[].stories`` is the authority; the story's own key is a claim."""
+    plan_id = _write_split_slice_plan(workspace)
+    _edit_graph(
+        workspace,
+        plan_id,
+        lambda graph: graph["stories"]["01-01-demo-ALPHA"].update({"slice": "01"}),
+    )
+    result, text = _render_one(workspace, plan_id, "01-01-demo-ALPHA")
+    assert [item.severity for item in result.diagnostics] == ["warning"]
+    assert result.ok
+    assert result.data["slice"] == "00"
+    assert "**Slice:** 00 — slice 00" in text
+    # Resolved against slice 00, whose last wave is 2 — not against slice 01.
+    assert "## Slice Acceptance" not in text
+
+
+def test_a_story_in_no_slice_falls_back_to_the_plans_last_wave_with_a_warning(workspace):
+    plan_id = _write_split_slice_plan(workspace)
+
+    def orphan(graph):
+        for entry in graph["slices"]:
+            entry["stories"] = [
+                story_id
+                for story_id in entry["stories"]
+                if story_id not in {"02-01-demo-BETA", "04-01-demo-DELTA"}
+            ]
+
+    _edit_graph(workspace, plan_id, orphan)
+    middle, middle_text = _render_one(workspace, plan_id, "02-01-demo-BETA")
+    final, final_text = _render_one(workspace, plan_id, "04-01-demo-DELTA")
+
+    for result in (middle, final):
+        assert result.ok
+        assert [item.severity for item in result.diagnostics] == ["warning"]
+    # The plan's last wave is 4: the wave-2 orphan is not gated, the wave-4 one is.
+    assert middle.data["last_wave"] is False
+    assert final.data["last_wave"] is True
+    assert "## Slice Acceptance" not in middle_text
+    assert "## Slice Acceptance" in final_text
+    # Belonging to no slice, each renders as the whole plan rather than braces.
+    for text in (middle_text, final_text):
+        assert "**Slice:** 00 — whole plan" in text
+        assert "{NN}" not in text
+
+
+def test_a_story_listed_by_two_slices_takes_the_first_listed(workspace):
+    plan_id = _write_split_slice_plan(workspace)
+    _edit_graph(
+        workspace,
+        plan_id,
+        lambda graph: graph["slices"][1]["stories"].insert(0, "01-01-demo-ALPHA"),
+    )
+    result, text = _render_one(workspace, plan_id, "01-01-demo-ALPHA")
+    assert result.ok
+    assert [item.severity for item in result.diagnostics] == ["warning"]
+    # Declared order decides — not wave order, not the later listing.
+    assert result.data["slice"] == "00"
+    assert "**Slice:** 00 — slice 00" in text
+
+
 def test_story_emit_fills_the_placeholders_the_graph_answers(workspace):
     _, text = _emit_story(workspace)
     assert text.startswith("<!-- depends-on: context/demo/spec/CATALOG.yaml -->\n")
