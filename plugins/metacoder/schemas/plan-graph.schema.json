@@ -164,6 +164,11 @@
           "description": "Required when kind is exit-code: a shell command run relative to repos/<repo>/ that must exit 0."
         },
         "description": { "type": "string", "minLength": 1 },
+        "surface": {
+          "enum": ["delivered", "internal"],
+          "default": "internal",
+          "description": "Whether the step exercises the behaviour through the interface it is delivered on, or through a component beneath it. The default is internal because that is what an unannotated step in a version-3 graph actually was, and because a default of delivered would let every pre-existing step silently satisfy the obligation that at least one exit-code acceptance step of every slice reach the delivered surface — which mc.py checks, since JSON Schema cannot."
+        },
         "task": {
           "type": "integer",
           "minimum": 1,
