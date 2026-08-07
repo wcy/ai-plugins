@@ -1877,6 +1877,129 @@ def test_the_layer_rule_does_not_fire_when_no_catalog_names_a_layer(workspace):
 
 
 # ---------------------------------------------------------------------------
+# plan emit -- the version-4 wave barrier, in both directions
+# ---------------------------------------------------------------------------
+
+#: The barrier check a version-4 wave must carry: a step that actually runs.
+#: JSON Schema requires the ``validation`` array on a version-4 wave but cannot
+#: say "at least one of these has kind: exit-code", so ``emit`` says it instead.
+BARRIER_STEP = {
+    "kind": "exit-code",
+    "command": "pytest tests/ -q",
+    "description": "the merged integration branch still passes",
+}
+
+
+def _wave(number, stories, validation=None):
+    entry = {"wave": number, "stories": list(stories)}
+    if validation is not None:
+        entry["validation"] = list(validation)
+    return entry
+
+
+def _barrier_draft(validation, version=4, **fields):
+    """A one-slice, two-wave draft whose waves are declared, not derived.
+
+    ``validation`` maps wave number -> the ``validation`` list that wave
+    declares; a wave the map omits declares none at all, which is the other way
+    a draft arrives with no runnable barrier check. ``version`` is what the
+    refusal is gated on, so the same shape can be put to ``emit`` on both sides
+    of the gate.
+    """
+    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    draft = _sliced_draft(slices, version=version, **fields)
+    draft["waves"] = [
+        _wave(1, ["01-01-demo-ALPHA"], validation.get(1)),
+        _wave(2, ["02-01-demo-BETA"], validation.get(2)),
+    ]
+    return draft
+
+
+def _nothing_persisted(workspace, plan_id="001-first"):
+    """Neither the plan directory nor the ledger exists -- asserted, not assumed."""
+    return (
+        not workspace.path("context/project/plans/%s" % plan_id).exists()
+        and not workspace.path("context/project/state.yaml").exists()
+    )
+
+
+def test_emit_refuses_a_version_four_wave_whose_barrier_check_is_prose_alone(workspace):
+    _add_catalog(workspace)
+    draft = _barrier_draft({1: [BARRIER_STEP], 2: [PROSE_STEP, PROSE_STEP]})
+    result, code = _emit(workspace, "001-first", draft)
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    # The diagnostic names the offending wave, not merely the draft.
+    assert "wave 2" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_refuses_a_version_four_wave_carrying_no_validation_at_all(workspace):
+    """The absent array and the unrunnable one are one refusal, not two."""
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _barrier_draft({1: [BARRIER_STEP]}))
+
+    assert code == 1 and not result.ok
+    assert [d.code for d in result.diagnostics] == [core.E_INVALID_STATE]
+    assert "wave 2" in result.diagnostics[0].message
+    assert result.data["written"] == []
+    assert _nothing_persisted(workspace)
+
+
+def test_emit_writes_a_version_four_graph_whose_waves_keep_their_barrier_checks(workspace):
+    _add_catalog(workspace)
+    draft = _barrier_draft({1: [BARRIER_STEP], 2: [BARRIER_STEP]})
+    result, code = _emit(workspace, "001-first", draft)
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 4
+    assert [entry["validation"] for entry in graph["waves"]] == [
+        [BARRIER_STEP],
+        [BARRIER_STEP],
+    ]
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+    # A version-4 graph is slice-bearing exactly as a version-3 one is: the
+    # version is the discriminator everywhere, and 4 is not read as legacy.
+    state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
+    assert state["slices"] == [{"slice": "00", "status": "pending"}]
+    ledger = core.load_yaml(workspace.path("context/project/state.yaml"))
+    assert ledger["plans"]["001-first"]["slices_total"] == 1
+
+
+def test_the_wave_barrier_refusal_does_not_fire_on_a_version_three_draft(workspace):
+    """The gate is the version, not the shape.
+
+    This is the draft the two tests above are refused for -- waves carrying no
+    runnable barrier check -- offered at version 3, where the schema forbids
+    ``waves[].validation`` outright and the barrier model does not apply. It
+    emits, which is the other direction of the same gate.
+    """
+    _add_catalog(workspace)
+    result, code = _emit(workspace, "001-first", _barrier_draft({}, version=3))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+    assert [entry for entry in graph["waves"] if "validation" in entry] == []
+    assert _validates(workspace, "context/project/plans/001-first/plan.yaml", "plan-graph") == []
+
+
+def test_a_sliced_draft_declaring_no_version_is_still_emitted_at_three(workspace):
+    """Version 4 is opt-in: nothing is upgraded by the refusal existing."""
+    _add_catalog(workspace)
+    slices = [_slice("00", ["01-01-demo-ALPHA", "02-01-demo-BETA"])]
+    result, code = _emit(workspace, "001-first", _sliced_draft(slices))
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    graph = core.load_yaml(workspace.path("context/project/plans/001-first/plan.yaml"))
+    assert graph["version"] == 3
+
+
+# ---------------------------------------------------------------------------
 # plan reslice -- the loop's backward edge, and what it will not rewrite
 # ---------------------------------------------------------------------------
 

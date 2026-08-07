@@ -103,6 +103,18 @@ PLAN_GRAPH_VERSION = 2
 PLAN_STATE_VERSION = 2
 PLAN_GRAPH_SLICE_VERSION = 3
 PLAN_STATE_SLICE_VERSION = 3
+
+#: The version that declares a graph *continuously checked*: its waves carry
+#: ``validation``, the barrier check run against the merged integration branch.
+PLAN_GRAPH_BARRIER_VERSION = 4
+
+#: Every graph version that carries ``slices``. The **version** is the
+#: discriminator at every step, never the presence of a key, so a version added
+#: above 3 has to be added here too or it silently degrades to whole-job
+#: delivery -- which is the failure the version-as-discriminator rule exists to
+#: prevent. ``state.yaml`` has its own version line and stays at 3: what changed
+#: in 4 is the graph's shape, not the state file's.
+PLAN_GRAPH_SLICE_VERSIONS = (PLAN_GRAPH_SLICE_VERSION, PLAN_GRAPH_BARRIER_VERSION)
 LEDGER_VERSION = 1
 
 #: ``sliceId`` -- ``^[0-9]{2}$``, per plan-graph.schema.json.
@@ -126,8 +138,9 @@ SLICE_PENDING = "pending"
 #: is written by ``state set-slice`` and never supplied by a draft.
 SLICE_DRAFT_FIELDS = ("slice", "name", "behavior", "acceptance", "stories")
 
-#: The acceptance kind at least one step of every slice must be. JSON Schema
-#: cannot express "at least one item has this value", so it is checked here.
+#: The kind at least one step of every slice's acceptance -- and, on a version-4
+#: graph, of every wave's ``validation`` -- must be. JSON Schema cannot express
+#: "at least one item has this value", so it is checked here.
 EXIT_CODE_KIND = "exit-code"
 
 #: ``plan_id`` -- ``<NNN>-<slug>``, per plan-graph.schema.json.
@@ -775,7 +788,7 @@ def graph_slices(graph: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool]:
     for ``slices`` would let a malformed version-3 graph silently degrade to
     whole-job delivery.
     """
-    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION:
+    if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS:
         declared = graph.get("slices")
         entries = [entry for entry in declared if isinstance(entry, dict)] if isinstance(declared, list) else []
         return entries, False
@@ -1186,6 +1199,9 @@ def _normalize_graph(
     waves, refusals = _reconcile_waves(draft.get("waves"), wave_members)
     if refusals:
         return graph, refusals
+    refusals = _wave_barrier_checks(graph["version"], waves)
+    if refusals:
+        return graph, refusals
 
     normalized: Dict[str, Any] = {}
     for story_id, raw in stories.items():
@@ -1426,6 +1442,7 @@ def _reconcile_waves(
     if not isinstance(declared, list):
         return derived, []
     ordering: Dict[int, List[str]] = {}
+    barriers: Dict[int, Any] = {}
     for entry in declared:
         if not isinstance(entry, dict):
             continue
@@ -1434,6 +1451,12 @@ def _reconcile_waves(
         if isinstance(wave, bool) or not isinstance(wave, int) or not isinstance(stories, list):
             continue
         ordering[wave] = [story for story in stories if isinstance(story, str)]
+        if "validation" in entry:
+            # Carried through, never derived: the barrier check is an assertion
+            # about what must hold once the wave is merged, which the stories
+            # cannot supply. Carrying it on a version below 4 is what lets the
+            # schema *refuse* it there rather than have it silently dropped.
+            barriers[wave] = entry["validation"]
     if not ordering:
         return derived, []
     if sorted(ordering) != sorted(members):
@@ -1455,7 +1478,49 @@ def _reconcile_waves(
                     file="<stdin>",
                 )
             ]
-    return [{"wave": wave, "stories": list(ordering[wave])} for wave in sorted(ordering)], []
+    reconciled: List[Dict[str, Any]] = []
+    for wave in sorted(ordering):
+        entry = {"wave": wave, "stories": list(ordering[wave])}
+        if wave in barriers:
+            entry["validation"] = barriers[wave]
+        reconciled.append(entry)
+    return reconciled, []
+
+
+def _wave_barrier_checks(version: Any, waves: Sequence[Dict[str, Any]]) -> List[core.Diagnostic]:
+    """Every version-4 wave carries a barrier check that actually runs.
+
+    ``plan-graph.schema.json`` requires the ``validation`` array on a version-4
+    wave and can go no further: "at least one item has this ``kind``" is a
+    cross-field count JSON Schema cannot state, so ``emit`` states it. It is a
+    refusal rather than a warning for the same reason the prose-acceptance rule
+    is -- a wave with no runnable barrier produces a plan that *looks* checked
+    and is not, and the omission is invisible in every artifact downstream of
+    the emit.
+
+    A wave declaring no ``validation`` at all and one declaring only prose are
+    the same defect and are reported as one, since both leave the merged branch
+    unexercised.
+    """
+    if version != PLAN_GRAPH_BARRIER_VERSION:
+        return []
+    diagnostics: List[core.Diagnostic] = []
+    for entry in waves:
+        steps = entry.get("validation")
+        if isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("kind") == EXIT_CODE_KIND for step in steps
+        ):
+            continue
+        diagnostics.append(
+            core.error(
+                core.E_INVALID_STATE,
+                "wave %s has no `kind: %s` validation step; a wave whose barrier "
+                "check is prose alone cannot be demonstrated to run against the "
+                "merged integration branch" % (entry.get("wave"), EXIT_CODE_KIND),
+                file="<stdin>",
+            )
+        )
+    return diagnostics
 
 
 def _normalize_story(story_id: str, raw: Any, waves: List[Dict[str, Any]]) -> Any:
@@ -1488,7 +1553,7 @@ def _derive_plan_state(graph: Dict[str, Any], now: str) -> Dict[str, Any]:
         entry["retries"] = 0
         stories[story_id] = entry
     declared = graph.get("slices")
-    sliced = graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list)
+    sliced = graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS and isinstance(declared, list)
     state: Dict[str, Any] = {
         "version": PLAN_STATE_SLICE_VERSION if sliced else PLAN_STATE_VERSION,
         "plan_id": graph.get("plan_id"),
@@ -1530,7 +1595,7 @@ def _derive_ledger(ledger: Dict[str, Any], graph: Dict[str, Any], now: str) -> D
         "updated": now,
     }
     declared = graph.get("slices")
-    if graph.get("version") == PLAN_GRAPH_SLICE_VERSION and isinstance(declared, list):
+    if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS and isinstance(declared, list):
         # Seeded here and thereafter maintained only by `state set-slice`, which
         # is the single writer of these two counters. A pre-slice plan carries
         # neither, and is read as pre-slice rather than as zero progress.
@@ -1584,7 +1649,14 @@ def _reslice(args, ws, now) -> core.Result:
         return core.Result(command=command, data=nothing, diagnostics=refusals)
 
     rewritten = dict(graph)
-    rewritten["version"] = PLAN_GRAPH_SLICE_VERSION
+    # A legacy graph is upgraded to the first slice-bearing version; one already
+    # at or above it keeps its own, so reslicing a version-4 graph does not
+    # quietly strip the barrier checks its waves are required to carry.
+    rewritten["version"] = (
+        graph.get("version")
+        if graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS
+        else PLAN_GRAPH_SLICE_VERSION
+    )
     rewritten["slices"] = slices
     rewritten["stories"] = {story_id: dict(story) if isinstance(story, dict) else story
                             for story_id, story in stories.items()}
