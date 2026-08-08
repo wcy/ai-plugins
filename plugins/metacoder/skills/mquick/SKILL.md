@@ -68,6 +68,14 @@ Then **resume the run from the answer**: `mship` continues the loop from that sa
 
 Report each slice's acceptance with the value `mship` recorded — `pass`, `fail`, or **`unconfirmed`**. `unconfirmed` is deliberately distinct from both, and it means a prose acceptance step nobody judged. Name every `unconfirmed` slice individually and never present one as demonstrated, delivered-and-proven, or folded into a passing count. The exit-code steps of such a slice still ran and are still reported; `unconfirmed` covers its prose steps alone.
 
+### Outstanding work is relayed in two groups, never one
+
+Phase E names items routed to a skill and items routed `human` **separately**. An item a later run
+will pick up and an item waiting on a person are different states: no run can clear the second, so
+listing it among work that drains reads as queued when nothing will move it until somebody acts.
+`check handoff` draws the same line — `human` entries carry their own code and their own group — and
+this report matches it rather than re-flattening what the check separated.
+
 ### Non-halting — folded into this report
 
 - **Contained breaking change** (would only break code in the affected story) — **does not** halt; deferred here as a `deferred_break`.

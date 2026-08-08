@@ -169,6 +169,10 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
 | `{stop, "acceptance-failed"}` | `/mfix` | `logic` | the acceptance step that failed — its `description`, and for an `exit-code` step the `command` and the code it exited — and what would have to be true for it to pass |
 | `{stop, "budget"}` | `/mspec` | `architecture` | this slice's `cost_usd`, the median it was compared against, how many completed slices formed the sample, and that what needs settling is the size of the remaining cut |
 
+**A stop whose resolution no agent can perform routes `human`, whichever row it came from.** An unmergeable wave needing a person to reconcile it by hand, a halt waiting on a credential or an install — the row above names the skill that would act *if a skill could*, and `human` overrides it when none can. Routing such a stop to a skill files an item that skill will pick up and fail to close on every pass, which is the defect `human` exists to remove.
+
+**The closing report names human-routed items separately from the rest.** Outstanding work a later run will pick up and outstanding work waiting on a person are different states, and presenting them in one list reads as queued when the second is not — nothing will move it until somebody acts.
+
 **`--run` routes to a skill that can actually act on the stop**, which is why a halt splits by its cause: only `mspec` can change a contract, and re-delivering work that merely failed to land is the loop's own job re-entered. **`--kind` follows the cause too** — a stop is not a category of its own. **`--origin` is the plan id**, so a reader can open the run that raised the item. **`--priority` is `high` on every stop**: the run ended on it and nothing downstream proceeds until it is settled. The remaining three ratings are judgements about the work the entry names, and the standard's warning applies — they annotate an item, and nothing in the loop is ordered, deferred or gated on them.
 
 **`--context` is written for a cleared context.** The reader was not here, has not seen the run, and cannot be sent to a transcript: name the slice, what it was measured against, and what closing it requires, in that order.
