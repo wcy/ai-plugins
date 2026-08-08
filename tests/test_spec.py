@@ -20,7 +20,7 @@ through ``argv``.
 import pytest
 
 from conftest import NOW
-from tools import core, req, spec
+from tools import core, spec
 
 FRONT_MATTER = "<!-- requirements: demo -->\n<!-- updated: 2026-01-01 -->\n"
 
@@ -138,6 +138,17 @@ def emitted(workspace, target="demo"):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("verb", ["mode", "catalog-emit"])
+@pytest.mark.parametrize("target", ["../escape", "/etc", "demo/../..", "bad target", ""])
+def test_a_bad_target_is_rejected_never_sanitized(workspace, verb, target):
+    before = tree_snapshot(workspace)
+    result, code = run(workspace, verb, target)
+    assert code == 2
+    assert [item.code for item in result.diagnostics] == [core.E_BAD_IDENT]
+    assert result.data is None
+    assert tree_snapshot(workspace) == before
+
+
 def test_mode_is_create_when_no_spec_tree_exists(workspace):
     result, code = run(workspace, "mode", "demo")
     assert code == 0
@@ -160,47 +171,10 @@ def test_mode_is_update_on_a_populated_tree(demo):
     assert run(demo, "mode", "demo")[0].data["mode"] == "UPDATE"
 
 
-def test_mode_returns_exactly_the_specmode_shape(demo):
-    data = run(demo, "mode", "demo")[0].data
-    assert list(data) == ["target", "mode", "spec_dir", "requirements"]
-    assert list(data["requirements"]) == ["path", "exists", "entries", "gate_passes"]
-    assert data["target"] == "demo"
-    assert data["requirements"]["path"] == "context/demo/requirements/REQUIREMENTS.md"
 
 
-@pytest.mark.parametrize("build", ["empty", "partial", "populated"])
-def test_the_gate_result_is_independent_of_the_mode(workspace, build):
-    if build == "partial":
-        spec_file(workspace, "demo", "ALPHA", "ALPHA-OVERVIEW.md")
-    elif build == "populated":
-        for filename in DEMO_TREE["ALPHA"]:
-            spec_file(workspace, "demo", "ALPHA", filename)
-        catalog_file(workspace, "demo", DEMO_CATALOG)
-
-    # No requirements yet: the gate fails whatever the mode is.
-    without = run(workspace, "mode", "demo")[0].data
-    assert without["mode"] == ("CREATE" if build == "empty" else "UPDATE")
-    assert without["requirements"]["exists"] is False
-    assert without["requirements"]["gate_passes"] is False
-
-    # The very same tree, now with requirements: the mode does not move.
-    requirements_file(workspace, "demo")
-    with_requirements = run(workspace, "mode", "demo")[0].data
-    assert with_requirements["mode"] == without["mode"]
-    assert with_requirements["requirements"]["gate_passes"] is True
-    assert with_requirements["requirements"]["entries"] == ["REQ-001"]
 
 
-def test_bare_req_ids_reported_by_the_gate_still_resolve(demo):
-    """A `REQ-<NNN>` written before mnemonics existed stays conforming: the
-    gate's `entries` list carries it verbatim, and it still resolves through
-    `parse_req_id` -- bare references remain valid, never dangling."""
-    entries = run(demo, "mode", "demo")[0].data["requirements"]["entries"]
-    assert entries == ["REQ-001"]
-    parsed = req.parse_req_id(entries[0])
-    assert parsed.number == "001"
-    assert parsed.mnemonic is None
-    assert parsed.tier == "self"
 
 
 def test_mode_writes_nothing(workspace):
@@ -215,55 +189,12 @@ def test_mode_writes_nothing(workspace):
 # ---------------------------------------------------------------------------
 
 
-def test_layers_returns_modules_in_layer_order(workspace):
-    # Declared deliberately out of order, and with a two-digit layer that a
-    # lexical sort would place before L2.
-    catalog_file(
-        workspace,
-        "demo",
-        "version: 1\n"
-        "repo: demo\n"
-        "layers:\n"
-        "  L10-late:\n"
-        "    modules: [OMEGA]\n"
-        "  L2-services:\n"
-        "    modules: [BETA, GAMMA]\n"
-        "  L0-foundation:\n"
-        "    modules: [COMMON]\n"
-        "  LS-shared:\n"
-        "    modules: [EVENT-BUS]\n"
-        "modules: {}\n",
-    )
-    result, code = run(workspace, "layers", "demo")
-    assert code == 0
-    assert [item["layer"] for item in result.data["layers"]] == [
-        "LS-shared",
-        "L0-foundation",
-        "L2-services",
-        "L10-late",
-    ]
-    # Within a layer the catalog's own order is kept -- it is authored, not derived.
-    assert result.data["modules"] == ["EVENT-BUS", "COMMON", "BETA", "GAMMA", "OMEGA"]
 
 
-def test_layers_on_the_populated_fixture(demo):
-    result, _code = run(demo, "layers", "demo")
-    assert result.data["modules"] == ["COMMON", "ALPHA"]
-    assert result.data["path"] == "context/demo/spec/CATALOG.yaml"
 
 
-def test_layers_reports_a_missing_catalog(workspace):
-    result, code = run(workspace, "layers", "demo")
-    assert code == 1
-    assert [item.code for item in result.diagnostics] == [core.E_NOT_FOUND]
-    assert result.data["layers"] == []
 
 
-def test_layers_reports_a_catalog_with_no_layers(workspace):
-    catalog_file(workspace, "demo", "version: 1\nrepo: demo\nmodules: {}\n")
-    result, code = run(workspace, "layers", "demo")
-    assert code == 1
-    assert [item.code for item in result.diagnostics] == [core.E_INVALID_STATE]
 
 
 # ---------------------------------------------------------------------------
@@ -335,39 +266,8 @@ def test_emit_is_idempotent_with_the_same_now(demo):
     assert b"generated: '%s'" % NOW.encode("utf-8") in first
 
 
-def test_emit_preserves_the_five_non_derivable_fields(demo):
-    original = core.load_yaml(demo.path("context/demo/spec/CATALOG.yaml"))
-    run(demo, "catalog-emit", "demo")
-    document = emitted(demo)
-
-    assert document["layers"] == original["layers"]
-    assert document["shared_interfaces"] == original["shared_interfaces"]
-    assert document["modules"]["ALPHA"]["layer"] == "L1-core"
-    assert document["modules"]["COMMON"]["layer"] == "L0-foundation"
-    # Order preserved too: `requirements` and `exports` are lists, not sets.
-    assert document["modules"]["ALPHA"]["requirements"] == ["REQ-002", "project:REQ-009"]
-    assert document["modules"]["COMMON"]["requirements"] == ["REQ-001"]
-    interface = [
-        item
-        for item in document["modules"]["ALPHA"]["files"]
-        if item["facet"] == "interface"
-    ][0]
-    assert interface["exports"] == ["alphaClient", "AlphaOptions"]
-    # And nothing else grew an `exports` key.
-    assert [item["path"] for item in document["modules"]["ALPHA"]["files"] if "exports" in item] == [
-        "context/demo/spec/ALPHA/ALPHA-INTERFACE.md"
-    ]
 
 
-def test_emit_survives_a_second_round_trip_without_losing_them(demo):
-    """The preserved fields must come back from the emission, not just the fixture."""
-    run(demo, "catalog-emit", "demo")
-    first = emitted(demo)
-    run(demo, "catalog-emit", "demo")
-    second = emitted(demo)
-    assert first == second
-    assert second["modules"]["ALPHA"]["requirements"] == ["REQ-002", "project:REQ-009"]
-    assert second["shared_interfaces"] == ["EVENT-BUS"]
 
 
 def test_emit_keeps_the_existing_module_order_and_appends_new_ones(demo):
@@ -578,98 +478,24 @@ def _set_depth(workspace, target, module, value):
     return run(workspace, "depth", target, module=module, set=value)
 
 
-def test_depth_reports_full_for_a_module_with_no_field(demo):
-    """Absence is not a third state: a catalog written before depth existed
-    describes fully-described modules, which is exactly what they were."""
-    result, code = run(demo, "depth", "demo", module="ALPHA", set=None)
-    assert code == 0 and result.ok
-    assert result.data["depth"] == "full"
-    assert result.data["declared"] is None
 
 
-def test_depth_reports_what_the_catalog_declares(demo):
-    _set_depth(demo, "demo", "ALPHA", "contract")
-    result, _code = run(demo, "depth", "demo", module="ALPHA", set=None)
-    assert result.data["depth"] == "contract"
-    assert result.data["declared"] == "contract"
 
 
-def test_reporting_depth_writes_nothing(demo):
-    before = tree_snapshot(demo)
-    digest = demo.path("context/demo/spec/CATALOG.yaml").read_bytes()
-    run(demo, "depth", "demo", module="ALPHA", set=None)
-    assert tree_snapshot(demo) == before
-    assert demo.path("context/demo/spec/CATALOG.yaml").read_bytes() == digest
 
 
-def test_set_contract_is_accepted_whatever_is_on_disk(demo):
-    """Claiming *less* coverage than exists harms nothing, so it is never refused."""
-    result, code = _set_depth(demo, "demo", "ALPHA", "contract")
-    assert code == 0 and result.ok
-    assert result.data["depth"] == "contract"
-    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
 
 
-def test_set_contract_is_accepted_for_a_module_missing_every_deepening_facet(demo):
-    spec_file(demo, "demo", "ZETA", "ZETA-OVERVIEW.md")
-    catalog = core.load_yaml(demo.path("context/demo/spec/CATALOG.yaml"))
-    catalog["layers"]["L1-core"]["modules"].append("ZETA")
-    catalog["modules"]["ZETA"] = {
-        "layer": "L1-core",
-        "files": [{"path": "context/demo/spec/ZETA/ZETA-OVERVIEW.md", "facet": "overview"}],
-    }
-    catalog_file(demo, "demo", core.dump_yaml(catalog))
-
-    result, code = _set_depth(demo, "demo", "ZETA", "contract")
-    assert code == 0 and result.ok
-    assert emitted(demo)["modules"]["ZETA"]["depth"] == "contract"
 
 
-@pytest.mark.parametrize(
-    "absent", ["ALPHA-DEPENDENCIES.md", "ALPHA-IMPLEMENTATION.md", "ALPHA-TESTING.md"]
-)
-def test_set_full_is_refused_while_any_deepening_facet_is_missing(demo, absent):
-    """The one refusal keeping the field from claiming coverage that is not there."""
-    demo.path("context/demo/spec/ALPHA/%s" % absent).unlink()
-    digest = demo.path("context/demo/spec/CATALOG.yaml").read_bytes()
-
-    result, code = _set_depth(demo, "demo", "ALPHA", "full")
-    assert code == 1 and not result.ok
-    assert [item.code for item in result.diagnostics] == [core.E_INVALID_STATE]
-    assert absent in result.diagnostics[0].message
-    assert demo.path("context/demo/spec/CATALOG.yaml").read_bytes() == digest
 
 
-def test_set_full_is_accepted_once_all_three_exist(demo):
-    _set_depth(demo, "demo", "ALPHA", "contract")
-    result, code = _set_depth(demo, "demo", "ALPHA", "full")
-    assert code == 0 and result.ok
-    assert result.data["depth"] == "full"
-    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "full"
 
 
-def test_depth_survives_a_catalog_emission(demo):
-    """`depth` joins the preserved-not-derived set, so re-emitting keeps it."""
-    _set_depth(demo, "demo", "ALPHA", "contract")
-    run(demo, "catalog-emit", "demo")
-    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
-    run(demo, "catalog-emit", "demo")
-    assert emitted(demo)["modules"]["ALPHA"]["depth"] == "contract"
 
 
-def test_catalog_emit_never_derives_a_depth_of_its_own(demo):
-    """A module whose IMPLEMENTATION is simply unwritten must not read as a
-    deliberate `contract` declaration -- deriving it would turn an oversight
-    into an assertion."""
-    demo.path("context/demo/spec/ALPHA/ALPHA-IMPLEMENTATION.md").unlink()
-    run(demo, "catalog-emit", "demo")
-    assert "depth" not in emitted(demo)["modules"]["ALPHA"]
 
 
-def test_depth_reports_a_module_the_catalog_does_not_declare(demo):
-    result, code = run(demo, "depth", "demo", module="NOPE", set=None)
-    assert code == 1 and not result.ok
-    assert [item.code for item in result.diagnostics] == [core.E_NOT_FOUND]
 
 
 def test_depth_refuses_a_level_outside_the_two(demo):
@@ -896,15 +722,6 @@ def test_stale_does_not_change_what_plain_consumers_answers(workspace):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("verb", ["mode", "layers", "catalog-emit"])
-@pytest.mark.parametrize("target", ["../escape", "/etc", "demo/../..", "bad target", ""])
-def test_a_bad_target_is_rejected_never_sanitized(workspace, verb, target):
-    before = tree_snapshot(workspace)
-    result, code = run(workspace, verb, target)
-    assert code == 2
-    assert [item.code for item in result.diagnostics] == [core.E_BAD_IDENT]
-    assert result.data is None
-    assert tree_snapshot(workspace) == before
 
 
 def test_a_bad_interface_tag_is_rejected(workspace):

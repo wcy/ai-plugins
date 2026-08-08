@@ -1,5 +1,21 @@
 # metacoder
 
+> **v2 rebuild in progress — this document still describes v1.**
+>
+> `../../REDESIGN.md` is the authority on where this is going and why: ten skills reduce to five,
+> the runtime instruction set drops from ~88k to ~24k tokens, the spec becomes a two-facet
+> *execution* artifact, and a slice's acceptance must be demonstrated red-before-green.
+>
+> **Landed (build step 1).** The tool surface is reduced from ~45 verbs to 31 — the `req`, `todo`
+> and `status` groups are gone, along with `spec depth`, `spec layers`, `state sweep` and
+> `check requirements|todo|handoff`. Twelve schemas become seven. `state set-slice` gained
+> `--armed` / `--confirmed` and their three refusals. The `mreq`, `mmigrate` and `mquick` skills
+> are removed, as are `STANDARD-REQ.md`, `STANDARD-TODO.md` and `CHATFORM.md`.
+>
+> **Not yet done (build steps 2–6).** The remaining `SKILL.md` files and both standards still carry
+> their v1 text and still document verbs that no longer exist. `tests/test_budget.py` holds each to
+> a byte budget and `tests/test_conformance.py` carries one `xfail` naming exactly this gap.
+
 A Claude Code plugin providing a structured spec-to-ship workflow for a **multi-repo workspace** that keeps codebases **coherent and consistent** — internally (code implements its spec; specs obey one standard) and across repos (a shared contract layer + change cascade + cross-repo conformance). Brainstorm and write specs per repository (and a shared cross-repo interface layer), generate modular implementation plans, deliver them **one slice at a time** as worktree-isolated waves, and verify conformance — manually gatekept or fully autonomous.
 
 ## Getting Started

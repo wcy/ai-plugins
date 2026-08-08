@@ -51,18 +51,10 @@ REPORT_REL = "context/project/out/%s/mverify-report.json" % PLAN_ID
 BRANCH = "mexec/%s/%s/r1/1" % (PLAN_ID, LAST_STORY)
 WORKTREE = "repos/demo/%s-r1-1" % LAST_STORY
 
-TODO_REL = "context/project/TODO.md"
-TODO_TITLE = "check handoff reports no per-repo counts"
-TODO_CONTEXT = (
-    "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos, "
-    "but TOOLS-INTERFACE.md documents a per-repo breakdown."
-)
 
 PENDING_CHANGE = "context/demo/changes/CHANGE-001-alpha-retry.md"
 APPLIED_CHANGE = "context/demo/changes/CHANGE-002-beta-timeout.md"
 NEW_CHANGE = "context/demo/changes/CHANGE-009-emitted-here.md"
-REQ_CHANGE_OPEN = "context/demo/requirements/changes/REQ-CHANGE-001-tightened-scope.md"
-REQ_CHANGE_NEW = "context/demo/requirements/changes/REQ-CHANGE-002-emitted-here.md"
 
 
 # ---------------------------------------------------------------------------
@@ -101,24 +93,6 @@ COMMANDS = cli_commands()
 # The synthetic workspace every case runs against
 # ---------------------------------------------------------------------------
 
-REQUIREMENTS = """\
-<!-- requirements: demo -->
-<!-- updated: 2026-01-01 -->
-
-# Requirements — demo
-
-### REQ-001: The mechanical steps are performed by the tool
-
-**Need:** A run should not spend model effort reproducing a computable result.
-**Rationale:** Cheaper, and the same every time.
-**Status:** active
-
-### REQ-002: The same request produces the same run
-
-**Need:** Two runs over the same inputs should agree byte for byte.
-**Rationale:** A step that varies cannot be reviewed.
-**Status:** active
-"""
 
 CATALOG = """\
 version: 1
@@ -135,13 +109,11 @@ layers:
 modules:
   COMMON:
     layer: L0-foundation
-    requirements: [REQ-001]
     files:
       - path: context/demo/spec/COMMON/COMMON-OVERVIEW.md
         facet: overview
   ALPHA:
     layer: L1-core
-    requirements: [REQ-002]
     files:
       - path: context/demo/spec/ALPHA/ALPHA-OVERVIEW.md
         facet: overview
@@ -215,22 +187,9 @@ def _index(number, slug, status, refs):
     )
 
 
-def _req_change(number, slug, status):
-    return (
-        "context/demo/requirements/changes/REQ-CHANGE-%s-%s.md" % (number, slug),
-        "<!-- req-change: %s -->\n"
-        "<!-- tier: demo -->\n"
-        "<!-- status: %s -->\n"
-        "<!-- date: 2026-01-01 -->\n"
-        "\n# REQ-CHANGE-%s: %s\n" % (number, status, number, slug),
-    )
-
-
 def layout():
     """Every file the fixture writes, as ``(path, text)`` pairs."""
     return [
-        ("context/demo/requirements/REQUIREMENTS.md", REQUIREMENTS),
-        _req_change("001", "tightened-scope", "open"),
         (COMMON_OVERVIEW, "\n# COMMON-OVERVIEW\n\nThe root file: exempt from depends-on.\n"),
         (
             SHARED_INTERFACE,
@@ -325,34 +284,9 @@ def workspace(tmp_path):
         ws, "--workspace", ws.root, "--now", SEED_NOW, "state", "run-increment", PLAN_ID
     )
     assert completed.returncode == 0, completed.stderr.decode()
-    # One deferral already on the list, filed through the verb that files them.
-    # `todo remove` and `todo list` need an entry to act on, and hand-writing it
-    # would put a second implementation of `todo add` in the fixture.
-    completed = run(ws, *todo_add_argv(ws, SEED_NOW, TODO_TITLE))
-    assert completed.returncode == 0, completed.stderr.decode()
     return ws
 
 
-def todo_add_argv(workspace, now, title, **overrides):
-    """A conforming ``todo add`` invocation, as argv."""
-    fields = {
-        "--run": "/mfix",
-        "--kind": "spec-drift",
-        "--origin": "CHANGE-001",
-        "--priority": "low",
-        "--risk-if-unfixed": "low",
-        "--regression-risk": "low",
-        "--cost": "low",
-        "--context": TODO_CONTEXT,
-    }
-    fields.update(overrides)
-    argv = ["--workspace", workspace.root, "--now", now, "todo", "add", "--title", title]
-    for flag, value in fields.items():
-        argv.extend([flag, value])
-    return argv
-
-
-# ---------------------------------------------------------------------------
 # One case per verb. Only the arguments are authored -- the list is derived.
 # ---------------------------------------------------------------------------
 
@@ -400,41 +334,13 @@ def cases():
         "spec.mode": Case(
             "spec", "mode", "demo", stdout=["mode: UPDATE", "context/demo/spec"]
         ),
-        "spec.layers": Case(
-            "spec", "layers", "demo", stdout=["L1-core", "ALPHA", "BETA"]
-        ),
         "spec.catalog-emit": Case(
             "spec", "catalog-emit", "demo", stdout=[CATALOG_REL, "written: true"]
         ),
         "spec.consumers": Case(
             "spec", "consumers", "EVENT-BUS", stdout=["interface: EVENT-BUS", "- demo"]
         ),
-        "spec.depth": Case("spec", "depth", "demo", "ALPHA", stdout=["depth: full"]),
         "spec.revision": Case("spec", "revision", "EVENT-BUS", stdout=["revision: 1"]),
-        "req.next": Case("req", "next", "demo", stdout=["next: REQ-003"]),
-        "req.mnemonic": Case(
-            "req", "mnemonic", "Recover a specification from code",
-            stdout=["candidate: recover-specification-code"],
-        ),
-        "req.gate": Case(
-            "req", "gate", "demo", stdout=["exists: true", "REQ-001", "REQ-002"]
-        ),
-        "req.change-resolve": Case(
-            "req", "change-resolve", "demo", "--slug", "narrowed-scope",
-            stdout=["action: continue", "number: 001", "tightened-scope"],
-        ),
-        "req.change-emit": Case(
-            "req", "change-emit", REQ_CHANGE_NEW, "--tier", "demo", "--status", "open",
-            stdout=[REQ_CHANGE_NEW],
-        ),
-        "req.change-close": Case(
-            "req", "change-close", REQ_CHANGE_OPEN, "--change", "002",
-            stdout=[REQ_CHANGE_OPEN, "status: closed", "spec-change: CHANGE-002"],
-        ),
-        "req.change-list": Case(
-            "req", "change-list", "demo", "--open",
-            stdout=["tier: demo", "open: true", "number: 001"],
-        ),
         "plan.scope": Case(
             "plan", "scope", stdout=["type: incremental", "plan_id: %s" % PLAN_ID]
         ),
@@ -498,10 +404,6 @@ def cases():
         ),
         # `--filed 0` on purpose: the declaration a run makes when it left
         # nothing behind, which must still reach stdout as a written block.
-        "state.sweep": Case(
-            "state", "sweep", PLAN_ID, "--filed", "0",
-            stdout=["filed: 0", "state.yaml"],
-        ),
         "worktree.names": Case(
             "worktree", "names", PLAN_ID, LAST_STORY, "--run", "1", "--attempt", "1",
             stdout=["mexec/%s/integration" % PLAN_ID, BRANCH, WORKTREE],
@@ -510,53 +412,22 @@ def cases():
             "worktree", "reconcile", PLAN_ID, "--list-from", LISTING_REL,
             stdout=["verdict: orphan", "verdict: keep"],
         ),
-        "todo.add": Case(
-            "todo", "add", "--title", "a second deferral",
-            "--run", "/mspec", "--kind", "architecture", "--origin", "CHANGE-001",
-            "--priority", "high", "--risk-if-unfixed", "high",
-            "--regression-risk", "medium", "--cost", "medium",
-            "--context", "plugins/metacoder/tools/todo.py has no rule for this yet.",
-            stdout=[TODO_REL, "title: a second deferral", "created: false"],
-        ),
-        "todo.edit": Case(
-            "todo", "edit", TODO_TITLE, "--priority", "high",
-            stdout=["Priority", TODO_TITLE],
-        ),
-        "todo.remove": Case(
-            "todo", "remove", TODO_TITLE,
-            stdout=[TODO_REL, "title: %s" % TODO_TITLE, "removed: 1"],
-        ),
-        "todo.list": Case(
-            "todo", "list", "--run", "/mfix",
-            stdout=[TODO_REL, "run: /mfix", "count: 1", TODO_TITLE],
-        ),
         "check.depends-on": Case(
             "check", "depends-on", "demo", stdout=["check: depends-on", "findings"]
         ),
         "check.coupling": Case(
             "check", "coupling", "demo", stdout=["check: coupling", "findings"]
         ),
-        "check.requirements": Case(
-            "check", "requirements", "demo", stdout=["check: requirements", "findings"]
-        ),
         "check.catalog": Case(
             "check", "catalog", "demo", stdout=["check: catalog", "findings"]
-        ),
-        "check.todo": Case("check", "todo", stdout=["check: todo", "findings"]),
-        # The fixture carries one open deferral, so the folded-in finding is
-        # part of what this verb must put on stdout: the entry, the skill it is
-        # routed to, and the code that tells it from a stage-chain finding.
-        "check.handoff": Case(
-            "check", "handoff",
-            stdout=["check: handoff", "findings", TODO_TITLE, "/mfix", "W_TODO_OPEN"],
         ),
         "check.all": Case(
             "check", "all", "demo",
             stdout=[
-                "check: depends-on", "check: coupling", "check: catalog", "check: todo"
+                "check: depends-on", "check: coupling", "check: catalog"
             ],
         ),
-        "status": Case("status", stdout=["stages:", "changes:", "plans:"]),
+
     }
 
 
@@ -746,89 +617,14 @@ def _empty_workspace(tmp_path):
     return ws
 
 
-@pytest.mark.parametrize(
-    "flag,value",
-    [
-        ("--run", "/mnope"),
-        ("--kind", "typo"),
-        ("--priority", "urgent"),
-        ("--risk-if-unfixed", "none"),
-        ("--regression-risk", "unknown"),
-        ("--cost", "cheap"),
-        ("--origin", "CHANGE-404"),
-    ],
-)
-def test_a_refused_todo_add_exits_one_and_leaves_no_list_behind(tmp_path, flag, value):
-    """Exit ``1``, and **no ``TODO.md``** -- not even an empty one."""
-    ws = _empty_workspace(tmp_path)
-    completed = run(ws, *todo_add_argv(ws, NOW, "rejected", **{flag: value}))
-    out, err = decoded(completed)
-
-    assert completed.returncode == 1, out + err
-    assert not ws.path(TODO_REL).exists()
-    assert not ws.path("context/project").exists()
-    assert "Traceback" not in err
 
 
-def test_a_missing_todo_add_flag_is_a_usage_error(tmp_path):
-    """Exit ``2``: a required field the caller never supplied."""
-    ws = _empty_workspace(tmp_path)
-    argv = todo_add_argv(ws, NOW, "rejected")
-    index = argv.index("--cost")
-    completed = run(ws, *(argv[:index] + argv[index + 2 :]))
-
-    assert completed.returncode == 2
-    assert not ws.path(TODO_REL).exists()
 
 
-def test_todo_remove_refuses_a_title_matching_no_entry(workspace):
-    """Exit ``1``: a silent no-op removal reads exactly like a successful one."""
-    before = workspace.path(TODO_REL).read_text(encoding="utf-8")
-    completed = run(
-        workspace,
-        "--workspace", workspace.root, "--now", NOW, "todo", "remove", "never filed",
-    )
-    out, err = decoded(completed)
-
-    assert completed.returncode == 1
-    assert "never filed" in out + err
-    assert workspace.path(TODO_REL).read_text(encoding="utf-8") == before
-    assert "Traceback" not in err
 
 
-def test_a_todo_finding_exits_one_through_check_todo(workspace):
-    """Exit ``1``: the checker sees a defect only a hand edit can introduce."""
-    path = workspace.path(TODO_REL)
-    path.write_text(
-        path.read_text(encoding="utf-8").replace("**Kind:** spec-drift", "**Kind:** typo"),
-        encoding="utf-8",
-    )
-    completed = run(
-        workspace, "--workspace", workspace.root, "--now", NOW, "check", "todo"
-    )
-    out, err = decoded(completed)
-
-    assert completed.returncode == 1
-    assert "E_TODO_ENUM" in out + err
-    assert "Traceback" not in err
 
 
-def test_check_all_carries_a_todo_finding_into_its_exit_code(workspace):
-    """``check all`` gained a check, and the check it gained can fail the run."""
-    path = workspace.path(TODO_REL)
-    path.write_text(
-        path.read_text(encoding="utf-8").replace(
-            "**Origin:** CHANGE-001", "**Origin:** CHANGE-404"
-        ),
-        encoding="utf-8",
-    )
-    completed = run(
-        workspace, "--workspace", workspace.root, "--now", NOW, "check", "all", "demo"
-    )
-    out, err = decoded(completed)
-
-    assert completed.returncode == 1
-    assert "E_TODO_ORIGIN" in out + err
 
 
 # ---------------------------------------------------------------------------
@@ -850,72 +646,14 @@ def _handoff(workspace):
     return completed.returncode, out, err
 
 
-def test_check_handoff_names_every_open_entry_and_its_routed_skill(workspace):
-    """The fixture's entry plus a second one routed elsewhere, both on stdout."""
-    second = "a second deferral"
-    completed = run(workspace, *todo_add_argv(workspace, NOW, second, **{"--run": "/mspec"}))
-    assert completed.returncode == 0, completed.stderr.decode()
-
-    code, out, err = _handoff(workspace)
-
-    assert code == 0, out + err
-    for fragment in (TODO_TITLE, "/mfix", second, "/mspec", "W_TODO_OPEN"):
-        assert fragment in out, "%r missing from stdout:\n%s" % (fragment, out)
-    assert TODO_REL in out
-    assert "Traceback" not in err
 
 
-def test_an_open_entry_does_not_change_check_handoffs_exit_code(workspace):
-    """Exit ``0`` with the entry present and exit ``0`` once it is removed --
-    the same code, so the entry is what changed and the verdict is not."""
-    with_entry, out_with, _err = _handoff(workspace)
-
-    removed = run(
-        workspace, "--workspace", workspace.root, "--now", NOW, "todo", "remove", TODO_TITLE
-    )
-    assert removed.returncode == 0, removed.stderr.decode()
-    without_entry, out_without, _err = _handoff(workspace)
-
-    assert (with_entry, without_entry) == (0, 0)
-    assert TODO_TITLE in out_with and TODO_TITLE not in out_without
-    assert "W_TODO_OPEN" not in out_without
 
 
-def test_an_open_entry_does_not_mask_a_stage_finding_at_the_command_line(workspace):
-    """Exit ``1`` is still exit ``1``: the warning never softens a real defect."""
-    path, text = _change("003", "stranded", "applied")
-    workspace.write(path, text)
-
-    code, out, err = _handoff(workspace)
-
-    assert code == 1, out + err
-    assert "CHANGE-003-stranded.md" in out + err
-    assert TODO_TITLE in out  # and the deferral is reported alongside it
-    assert "Traceback" not in err
 
 
-def test_check_all_reports_the_open_entry_and_still_exits_zero(workspace):
-    """The verb that runs every check inherits the folding and its severity."""
-    completed = run(
-        workspace, "--workspace", workspace.root, "--now", NOW, "check", "all", "demo"
-    )
-    out, err = decoded(completed)
-
-    assert completed.returncode == 0, out + err
-    assert TODO_TITLE in out and "W_TODO_OPEN" in out
-    assert "Traceback" not in err
 
 
-def test_the_list_the_cli_writes_validates_against_its_schema(workspace):
-    """The delivered artifact, checked through the delivered validator."""
-    completed = run(
-        workspace,
-        "--workspace", workspace.root, "--now", NOW, "validate", "todo", TODO_REL,
-    )
-    out, _err = decoded(completed)
-
-    assert completed.returncode == 0
-    assert "OK" in out and TODO_REL in out
 
 
 def test_every_non_zero_case_here_is_really_non_zero(workspace):

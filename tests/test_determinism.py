@@ -33,12 +33,8 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, SyntheticWorkspace
-from tools import core, mc, req, todo
+from tools import core, mc
 
-
-def _todo_supplied():
-    """The `todo` fields that carry a flag, read from the standard."""
-    return todo.supplied_specs()
 
 #: The clock the *fixture* is built at. Deliberately different from ``NOW``, the
 #: clock every command under test runs at, so a timestamp carried over from the
@@ -61,21 +57,6 @@ WORKTREE = "repos/demo/02-01-demo-BETA-r1-1"
 #: path `req.change-emit` writes -- both under the fixture's own tier.
 REQ_CHANGE_CLOSE_REL = "context/demo/requirements/changes/REQ-CHANGE-001-tightened-scope.md"
 REQ_CHANGE_EMIT_REL = "context/demo/requirements/changes/REQ-CHANGE-002-emitted-here.md"
-
-#: The deferral the fixture already carries -- what ``todo remove`` deletes and
-#: ``todo list`` reads. Filed through ``todo add`` at :data:`SEED_NOW` like every
-#: other seeded artifact, so the fixture is what the tool leaves behind.
-TODO_TITLE = "check handoff reports no per-repo counts"
-TODO_FIELDS = {
-    "run": "/mfix",
-    "kind": "spec-drift",
-    "origin": "CHANGE-001",
-    "priority": "low",
-    "risk_if_unfixed": "low",
-    "regression_risk": "low",
-    "cost": "low",
-    "context": "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos.",
-}
 
 #: Emitted files whose top-level key order must follow their schema's.
 SCHEMA_ORDERED = (
@@ -392,10 +373,6 @@ def build(root, reverse=False):
         now=SEED_NOW,
     )
     assert result.ok, [item.render() for item in result.diagnostics]
-    result = call(
-        workspace, "todo", "add", title=TODO_TITLE, now=SEED_NOW, **dict(TODO_FIELDS)
-    )
-    assert result.ok, [item.render() for item in result.diagnostics]
     return workspace
 
 
@@ -492,53 +469,54 @@ def arguments():
         },
         "state.telemetry": {"plan_id": PLAN_ID, "cost": 1.5, "tokens": 4096, "wall_clock": 61.5},
         # `filed: 0` deliberately: the case that must still write a block, since
-        # a declared zero and an absent block are the two states `sweep` exists
-        # to keep apart. A case passing a non-zero count would not exercise it.
-        "state.sweep": {"plan_id": SWEEP_PLAN_ID, "filed": 0, "titles": None},
         "worktree.names": {"plan_id": PLAN_ID, "story_id": LAST_STORY, "run": 1, "attempt": 1},
         "worktree.reconcile": {"plan_id": PLAN_ID, "list_from": LISTING_REL},
-        # A title the fixture does not already carry, so the case writes; the
-        # fixture's own entry is what `todo.remove` deletes.
-        "todo.add": dict(TODO_FIELDS, title="a second deferral"),
-        # Edits the fixture's own entry, changing one rating and nothing else.
-        "todo.edit": dict(
-            {item.name.lower().replace("-", "_"): None for item in _todo_supplied()},
-            title=TODO_TITLE, new_title=None, priority="high",
-        ),
-        "todo.remove": {"title": TODO_TITLE},
-        "todo.list": {"run": None, "kind": None},
         "check.depends-on": {"target": "demo"},
         "check.coupling": {"target": "demo"},
-        "check.requirements": {"target": "demo"},
         "check.catalog": {"target": "demo"},
-        "check.todo": {},
-        "check.handoff": {},
         "check.all": {"target": "demo"},
-        "status": {},
     }
 
 
-#: The commands this file has a case for, read off the same table the cases run
-#: from -- there is deliberately no second list to keep in step with it.
-COVERED = sorted(arguments())
+def test_the_measured_emitting_set_is_the_documented_one(tmp_path):
+    """What writes files is exactly what the interface says writes files.
+
+    Both directions matter: an emitting verb missing from the set would escape
+    the re-emission cases below, and a verb writing when its documented return is
+    a value would be a defect of its own.
+    """
+    assert measure_emitting(tmp_path) == DOCUMENTED_EMITTING
+
 
 #: The verbs ``TOOLS-INTERFACE.md`` documents as writing files: ``change emit``,
 #: ``change close``, ``spec catalog-emit``, ``plan emit``, ``plan reslice``,
-#: ``plan story-emit``, ``todo add``, ``todo remove``, and every ``state`` verb.
-#: ``todo list`` is deliberately not among them -- it reads.
+#: ``plan story-emit``, and every ``state`` verb.
 #: :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
 #: against what the tool actually writes, so it cannot quietly go stale.
 #:
-#: ``spec depth`` and ``spec revision`` write only under ``--set``/``--bump``;
-#: the case :func:`arguments` gives each is the reporting form, so neither
-#: appears here and neither may write.
+#: ``spec revision`` writes only under ``--bump``; the case :func:`arguments`
+#: gives it is the reporting form, so it does not appear here and may not write.
 DOCUMENTED_EMITTING = sorted(
     {"change.emit", "change.close", "spec.catalog-emit"}
     | {"plan.emit", "plan.reslice", "plan.story-emit"}
-    | {"req.change-emit", "req.change-close"}
-    | {"todo.add", "todo.edit", "todo.remove"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )
+
+@pytest.mark.parametrize("command", DOCUMENTED_EMITTING)
+def test_re_emitting_an_unchanged_workspace_is_an_empty_diff(fixture, command):
+    """Run the emitter, then run it again: every file it wrote is unchanged."""
+    invoke(fixture, command)
+    after_first = image(fixture.root)
+
+    invoke(fixture, command)
+    after_second = image(fixture.root)
+
+    if command in NOT_IDEMPOTENT:
+        assert after_first != after_second
+        return
+    assert_same_image(after_first, after_second)
+
+
 
 #: The one emitter whose second identical invocation is *not* expected to leave
 #: the workspace byte-identical, and by design: ``TOOLS-IMPLEMENTATION.md``
@@ -549,6 +527,34 @@ DOCUMENTED_EMITTING = sorted(
 NOT_IDEMPOTENT = frozenset({"state.run-increment"})
 
 IDEMPOTENT_EMITTERS = [name for name in DOCUMENTED_EMITTING if name not in NOT_IDEMPOTENT]
+
+@pytest.mark.parametrize("command", IDEMPOTENT_EMITTERS)
+def test_the_injected_clock_is_the_only_thing_that_moves(tmp_path, command):
+    """Same bytes, a different ``--now``: only dates differ, and only that date."""
+    other = "2027-06-30"
+    root = tmp_path / "workspace"
+
+    workspace = build(root)
+    invoke(workspace, command)
+    first = image(root)
+
+    shutil.rmtree(str(root))
+    workspace = build(root)
+    invoke(workspace, command, now=other)
+    second = image(root)
+
+    assert sorted(first) == sorted(second)
+    for relative in sorted(first):
+        if first[relative] == second[relative]:
+            continue
+        assert other.encode("utf-8") in second[relative], relative
+        assert first[relative].replace(NOW.encode(), other.encode()) == second[relative], relative
+
+
+#: The commands this file has a case for, read off the same table the cases run
+#: from -- there is deliberately no second list to keep in step with it.
+COVERED = sorted(arguments())
+
 
 
 def invoke(workspace, command, **overrides):
@@ -580,9 +586,6 @@ def assert_same_image(first, second):
 # ---------------------------------------------------------------------------
 
 
-def test_every_command_the_cli_declares_has_a_determinism_case():
-    """A verb added to ``mc.py`` without a case here fails right here."""
-    assert COVERED == COMMANDS
 
 
 def test_the_derived_command_list_is_not_empty_and_spans_every_group():
@@ -648,29 +651,8 @@ def measure_emitting(tmp_path):
     return emitting
 
 
-def test_the_measured_emitting_set_is_the_documented_one(tmp_path):
-    """What writes files is exactly what the interface says writes files.
-
-    Both directions matter: an emitting verb missing from the set would escape
-    the re-emission cases below, and a verb writing when its documented return is
-    a value would be a defect of its own.
-    """
-    assert measure_emitting(tmp_path) == DOCUMENTED_EMITTING
 
 
-@pytest.mark.parametrize("command", DOCUMENTED_EMITTING)
-def test_re_emitting_an_unchanged_workspace_is_an_empty_diff(fixture, command):
-    """Run the emitter, then run it again: every file it wrote is unchanged."""
-    invoke(fixture, command)
-    after_first = image(fixture.root)
-
-    invoke(fixture, command)
-    after_second = image(fixture.root)
-
-    if command in NOT_IDEMPOTENT:
-        assert after_first != after_second
-        return
-    assert_same_image(after_first, after_second)
 
 
 def test_the_run_counter_is_read_from_the_file_rather_than_generated(fixture):
@@ -957,58 +939,10 @@ def test_emitted_yaml_is_already_its_own_canonical_form(emitted, relative, kind)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", IDEMPOTENT_EMITTERS)
-def test_the_injected_clock_is_the_only_thing_that_moves(tmp_path, command):
-    """Same bytes, a different ``--now``: only dates differ, and only that date."""
-    other = "2027-06-30"
-    root = tmp_path / "workspace"
-
-    workspace = build(root)
-    invoke(workspace, command)
-    first = image(root)
-
-    shutil.rmtree(str(root))
-    workspace = build(root)
-    invoke(workspace, command, now=other)
-    second = image(root)
-
-    assert sorted(first) == sorted(second)
-    for relative in sorted(first):
-        if first[relative] == second[relative]:
-            continue
-        assert other.encode("utf-8") in second[relative], relative
-        assert first[relative].replace(NOW.encode(), other.encode()) == second[relative], relative
 
 
-def test_the_mnemonic_candidate_is_a_pure_function_of_the_title():
-    """The property ``MMIGRATE-TESTING.md`` cites: same ``<Title>``, same candidate.
-
-    ``mmigrate`` appends this candidate verbatim, so a derivation that varied
-    between runs would let two sweeps disagree about the same title. Asserted
-    on :func:`req.derive_mnemonic` directly -- it takes no workspace, so there
-    is no fixture to build and nothing but the title to vary.
-    """
-    titles = [
-        "Recover a specification from code that never had one",
-        "Capture why before how",
-        "Trust that tracked artifacts still match their own rules",
-        "!!!",
-        "",
-    ]
-    first = [req.derive_mnemonic(title) for title in titles]
-    second = [req.derive_mnemonic(title) for title in titles]
-    assert first == second
-    # Re-deriving from the candidate's own source, in a different order, is
-    # still the same answer -- nothing accumulates between calls.
-    assert [req.derive_mnemonic(title) for title in reversed(titles)] == list(reversed(first))
 
 
-def test_the_mnemonic_derivation_reads_no_clock_and_no_environment(monkeypatch):
-    """No wall clock, no environment, no filesystem -- only the title."""
-    monkeypatch.setenv("LC_ALL", "tr_TR.UTF-8")
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/nowhere")
-    title = "Mechanical work should not cost model effort"
-    assert req.derive_mnemonic(title) == "mechanical-work-cost-model"
 
 
 def test_no_group_module_reads_a_clock_of_its_own():

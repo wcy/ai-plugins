@@ -8,13 +8,15 @@
                                                [--deferred-break <json>]
                                                [--contract-revisions <json>]
     mc.py state set-slice <plan-id> <slice> --status <s> [--acceptance <r>]
-                                            [--outcome <o>]
+                                            [--outcome <o>] [--armed <code>]
+                                            [--confirmed <code>]
     mc.py state conformance <plan-id> --status <s> --report <path> --findings <n>
                                       [--deferred <n>]
     mc.py state telemetry <plan-id> [--cost <usd>] [--tokens <n>]
                                     [--wall-clock <s>]
 
 Six verbs over exactly two files -- ``context/project/plans/<plan-id>/state.yaml``
+(counting from ``run-increment`` through ``telemetry``)
 and the ledger ``context/project/state.yaml`` -- and one shared write path
 underneath all of them:
 
@@ -45,6 +47,14 @@ Three consequences worth stating outright:
   acceptance failed is ``failed``, and no function of story statuses can say so.
   Acceptance is the slice's actual completion criterion, so the status is an
   input.
+* ``set-slice`` refuses ``--armed 0``, refuses ``--confirmed`` on a slice that
+  was never armed, and refuses ``--confirmed <non-zero>`` together with
+  ``--acceptance pass``. The slice's delivered-surface command is run twice --
+  once before its stories and once after its last barrier -- and only a recorded
+  red followed by a recorded green demonstrates the slice. An acceptance that
+  passes before any work either does not reach the behaviour the slice delivers
+  or the slice delivers nothing; a green with no red before it is evidence the
+  command *can* pass, not that this slice made it pass.
 
 **State is written only through this group, without exception.**
 ``--integration-branches``, ``--validation``, ``--worktree-removed`` and
@@ -312,6 +322,20 @@ def register(subparsers) -> None:
         metavar="<o>",
         help="mship's decision at this slice boundary",
     )
+    set_slice.add_argument(
+        "--armed",
+        default=None,
+        type=int,
+        metavar="<exit-code>",
+        help="exit code of the slice's delivered-surface acceptance, run BEFORE its stories; 0 is refused",
+    )
+    set_slice.add_argument(
+        "--confirmed",
+        default=None,
+        type=int,
+        metavar="<exit-code>",
+        help="exit code of the same command after the slice's last barrier; non-zero with --acceptance pass is refused",
+    )
 
     conformance = verbs.add_parser(
         "conformance",
@@ -350,22 +374,6 @@ def register(subparsers) -> None:
     telemetry.add_argument("--tokens", default=None, type=int, metavar="<n>")
     telemetry.add_argument("--wall-clock", default=None, type=float, metavar="<s>")
 
-    sweep = verbs.add_parser(
-        "sweep",
-        help="write the end-of-run deferral declaration",
-        description=(
-            "Write state.yaml's sweep block: how many entries this run's closing sweep filed, "
-            "and their titles. --filed 0 is a legal and meaningful call -- a plan with no sweep "
-            "block never declared, a plan with filed: 0 declared it left nothing behind, and "
-            "check handoff reports the first but not the second."
-        ),
-    )
-    sweep.add_argument("plan_id", metavar="<plan-id>")
-    # --filed is required and has no default: the entire point of the block is
-    # that its presence is a claim somebody made, so a call that omits the count
-    # would record a declaration nobody actually stated.
-    sweep.add_argument("--filed", required=True, type=int, metavar="<n>")
-    sweep.add_argument("--titles", default=None, metavar="<json>")
 
 
 def run(args, ws) -> core.Result:
@@ -959,6 +967,8 @@ def _set_slice(args, ws, now) -> core.Result:
     status = args.status
     acceptance = getattr(args, "acceptance", None)
     outcome = getattr(args, "outcome", None)
+    armed = getattr(args, "armed", None)
+    confirmed = getattr(args, "confirmed", None)
 
     state = _load_state(ws, plan_id)
     ledger = _load_ledger(ws)
@@ -981,6 +991,60 @@ def _set_slice(args, ws, now) -> core.Result:
     if recorded is None:
         recorded = {"slice": slice_id}
         slices.append(recorded)
+    # The three acceptance refusals. They run before anything is mutated, so a
+    # refusal leaves both files byte-identical.
+    #
+    # An acceptance that already passes before the slice's stories run has
+    # demonstrated nothing: either it does not reach the behaviour the slice
+    # delivers, or the slice delivers nothing. Both are defects in the cut, and
+    # both are cheapest to find here -- before the slice is built rather than
+    # after it reports success. This is what turns `surface: delivered` from an
+    # assertion the draft makes into a measurement the run took.
+    if armed is not None and armed == 0:
+        return _refused(
+            command,
+            {"plan_id": plan_id, "slice": slice_id},
+            [
+                core.error(
+                    core.E_ACCEPTANCE_NOT_RED,
+                    "slice %s's acceptance exited 0 before the slice ran; an acceptance "
+                    "that already passes demonstrates nothing. Either the command does "
+                    "not reach the behaviour this slice delivers, or the slice delivers "
+                    "nothing -- recut it or rewrite the acceptance." % slice_id,
+                    file=state.relative,
+                )
+            ],
+        )
+    if confirmed is not None:
+        if recorded.get("armed") is None:
+            return _refused(
+                command,
+                {"plan_id": plan_id, "slice": slice_id},
+                [
+                    core.error(
+                        core.E_NOT_ARMED,
+                        "slice %s was never armed, so a green here proves nothing: "
+                        "without the recorded red there is no evidence the command "
+                        "ever failed for want of this slice's work. Arm it before the "
+                        "slice runs." % slice_id,
+                        file=state.relative,
+                    )
+                ],
+            )
+        if acceptance == "pass" and confirmed != 0:
+            return _refused(
+                command,
+                {"plan_id": plan_id, "slice": slice_id},
+                [
+                    core.error(
+                        core.E_ACCEPTANCE_NOT_GREEN,
+                        "slice %s's acceptance exited %d; --acceptance pass claims it "
+                        "exited 0." % (slice_id, confirmed),
+                        file=state.relative,
+                    )
+                ],
+            )
+
     # Status is an input, never derived from the slice's stories: a slice whose
     # stories all merged but whose acceptance failed is `failed`.
     recorded["status"] = status
@@ -988,6 +1052,10 @@ def _set_slice(args, ws, now) -> core.Result:
         recorded["acceptance"] = acceptance
     if outcome is not None:
         recorded["outcome"] = outcome
+    if armed is not None:
+        recorded["armed"] = armed
+    if confirmed is not None:
+        recorded["confirmed"] = confirmed
 
     total = len(
         [candidate for candidate in slices if isinstance(candidate, dict) and candidate.get("slice")]
@@ -1081,39 +1149,6 @@ def _telemetry(args, ws, now) -> core.Result:
     return core.Result(command=command, data=data)
 
 
-def _sweep(args, ws, now) -> core.Result:
-    """Write the ``sweep`` block -- the run's end-of-run deferral declaration.
-
-    **``--filed 0`` is not a no-op and is never optimised into one.** A plan
-    carrying no ``sweep`` key never declared; a plan carrying ``filed: 0``
-    declared that it left nothing behind. Only the second is a claim somebody
-    made, and collapsing them would remove the whole value of the block --
-    ``check handoff`` reports the absence precisely because silence and a
-    declared zero are different states.
-
-    The verb records what the sweep *filed*; it files nothing itself. The
-    entries reach ``context/project/TODO.md`` through ``todo add`` like every
-    other entry, and ``titles`` names them so a reader gets from a finished plan
-    to the work it left behind without re-reading the run.
-    """
-    command = "%s.sweep" % COMMAND
-    plan_id = _check_plan_id(args.plan_id)
-    state = _load_state(ws, plan_id)
-    titles = getattr(args, "titles", None)
-    block: Dict[str, Any] = {"filed": getattr(args, "filed", 0)}
-    if titles is not None:
-        block["titles"] = _json_string_array(titles, "--titles")
-    state.data["sweep"] = block
-    state.data["updated"] = now
-
-    data = {"plan_id": plan_id, "sweep": block}
-    written, diagnostics = _commit([state])
-    if diagnostics:
-        return _refused(command, data, diagnostics)
-    data["written"] = written
-    return core.Result(command=command, data=data)
-
-
 _VERBS = {
     "run-increment": _run_increment,
     "set-plan": _set_plan,
@@ -1121,5 +1156,4 @@ _VERBS = {
     "set-slice": _set_slice,
     "conformance": _conformance,
     "telemetry": _telemetry,
-    "sweep": _sweep,
 }

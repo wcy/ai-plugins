@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import change, check, core, req, spec, status, todo
+from tools import change, check, core, spec
 
 TARGET = "demo"
 
@@ -443,87 +443,18 @@ def test_coupling_reports_a_dependency_with_no_declaration(workspace):
 # ---------------------------------------------------------------------------
 
 
-def test_requirements_reports_nothing_on_a_clean_tree(workspace):
-    _tree(workspace)
-    result, code = _check(workspace, "requirements", TARGET)
-    assert result.data["findings"] == []
-    assert code == 0
 
 
-def test_requirements_reports_a_reference_to_an_absent_entry(workspace):
-    _tree(workspace, catalog=_catalog_text(modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002", "REQ-009")))))
-
-    findings = _findings(workspace, "requirements", TARGET)
-    assert _codes(findings) == [core.E_MISSING_REQUIREMENT]
-    assert "REQ-009" in findings[0]["message"]
-    assert findings[0]["file"] == "context/%s/spec/CATALOG.yaml" % TARGET
 
 
-def test_requirements_reports_an_entry_no_module_references(workspace):
-    _tree(workspace, requirements=_requirements_text(("REQ-001", "REQ-002", "REQ-003")))
-
-    findings = _findings(workspace, "requirements", TARGET)
-    assert _codes(findings) == [core.E_ORPHAN_REQUIREMENT]
-    assert "REQ-003" in findings[0]["message"]
-    assert findings[0]["file"] == "context/%s/requirements/REQUIREMENTS.md" % TARGET
-    assert findings[0]["line"] > 0
 
 
-def test_requirements_reports_a_stale_mnemonic_as_a_warning(workspace):
-    """A reference whose mnemonic disagrees with the entry heading still
-    resolves -- it names a live requirement, not a dangling one."""
-    _tree(
-        workspace,
-        catalog=_catalog_text(
-            modules=(("ALPHA", ("REQ-001-different-name",)), ("BETA", ("REQ-002",)))
-        ),
-        requirements=_requirements_text(("REQ-001-original-name", "REQ-002")),
-    )
-
-    findings = _findings(workspace, "requirements", TARGET)
-    assert _codes(findings) == [check.W_STALE_REQ_MNEMONIC]
-    assert findings[0]["severity"] == "warning"
-    assert "REQ-001" in findings[0]["message"]
-    # A stale mnemonic is not a dangling reference: no orphan/missing finding.
-    assert core.E_MISSING_REQUIREMENT not in _codes(findings)
-    assert core.E_ORPHAN_REQUIREMENT not in _codes(findings)
 
 
-def test_requirements_does_not_report_a_reference_that_agrees_with_the_heading(workspace):
-    _tree(
-        workspace,
-        catalog=_catalog_text(
-            modules=(("ALPHA", ("REQ-001-same-name",)), ("BETA", ("REQ-002",)))
-        ),
-        requirements=_requirements_text(("REQ-001-same-name", "REQ-002")),
-    )
-    assert _findings(workspace, "requirements", TARGET) == []
 
 
-def test_requirements_does_not_report_a_bare_reference_as_stale(workspace):
-    """A bare reference to a mnemonic-bearing entry stays conforming."""
-    _tree(
-        workspace,
-        catalog=_catalog_text(modules=(("ALPHA", ("REQ-001",)), ("BETA", ("REQ-002",)))),
-        requirements=_requirements_text(("REQ-001-has-a-mnemonic", "REQ-002")),
-    )
-    assert _findings(workspace, "requirements", TARGET) == []
 
 
-def test_requirements_reports_an_unparseable_reference(workspace):
-    """An unparseable reference is an error, never a silent skip."""
-    _tree(
-        workspace,
-        catalog=_catalog_text(modules=(("ALPHA", ("REQ-01", "REQ-001")),)),
-        requirements=_requirements_text(("REQ-001",)),
-    )
-
-    findings = _findings(workspace, "requirements", TARGET)
-    assert _codes(findings) == [req.E_BAD_REQ_REF]
-    assert findings[0]["severity"] == "error"
-    assert "REQ-01" in findings[0]["message"]
-    # The one valid reference in the same module still covers its entry.
-    assert core.E_ORPHAN_REQUIREMENT not in _codes(findings)
 
 
 # ---------------------------------------------------------------------------
@@ -889,410 +820,34 @@ def test_catalog_exports_findings_are_errors(workspace):
 
 
 # ---------------------------------------------------------------------------
-# check todo
-#
-# Same two shapes as every other check: a fixture built to contain exactly one
-# defect, and a clean fixture that reports nothing. The list is written by
-# ``todo add`` wherever the entry is meant to be conforming -- a fixture
-# hand-writing the *good* case would be a second implementation of the emitter
-# and could drift from it -- and hand-edited only to introduce the one defect
-# under test, which is the state a checker exists for.
-# ---------------------------------------------------------------------------
-
-TODO_REL = todo.TODO_REL
-
-#: A conforming ``todo add`` call, keyed by argparse destination.
-_TODO_FIELDS = {
-    "run": "/mfix",
-    "kind": "spec-drift",
-    "origin": "CHANGE-001",
-    "priority": "medium",
-    "risk_if_unfixed": "low",
-    "regression_risk": "low",
-    "cost": "low",
-    "context": "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos.",
-}
-
-
-def _todo_origin(workspace):
-    """A change document a conforming ``Origin`` resolves to."""
-    workspace.write(
-        "context/%s/changes/CHANGE-001-demo.md" % TARGET,
-        _change_text("001", "demo", "pending"),
-    )
-
-
-def _todo_add(workspace, title="a deferral", **overrides):
-    """Write one entry through the emitter, so the fixture is what it produces."""
-    fields = dict(_TODO_FIELDS)
-    fields.update(overrides)
-    result = todo.run(workspace.args(verb="add", title=title, **fields), workspace.ws)
-    assert core.exit_code(result) == 0, [item.render() for item in result.diagnostics]
-    return result
-
-
-def _todo_edit(workspace, old, new):
-    """The one hand edit a test introduces, applied to the emitted list."""
-    path = workspace.path(TODO_REL)
-    text = path.read_text(encoding="utf-8")
-    assert old in text, old
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return path
-
-
-def test_todo_reports_nothing_on_a_workspace_with_no_list(workspace):
-    """Nothing deferred is not a defect, and must not read as one."""
-    result, code = _check(workspace, "todo")
-    assert result.data["findings"] == []
-    assert result.data["target"] is None
-    assert code == 0
-
-
-def test_todo_reports_nothing_on_a_conforming_list(workspace):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    result, code = _check(workspace, "todo")
-    assert result.data["findings"] == []
-    assert code == 0
-
-
-def test_todo_reports_a_missing_required_field(workspace):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, "**Cost:** low\n", "")
-
-    findings = _findings(workspace, "todo")
-    assert _codes(findings) == [todo.E_TODO_FIELD]
-    assert "Cost" in findings[0]["message"]
-    assert findings[0]["file"] == TODO_REL
-
-
-@pytest.mark.parametrize(
-    "old,new",
-    [
-        ("**Run:** /mfix", "**Run:** /mnope"),
-        ("**Kind:** spec-drift", "**Kind:** typo"),
-        ("**Priority:** medium", "**Priority:** urgent"),
-        ("**Risk-if-unfixed:** low", "**Risk-if-unfixed:** none"),
-        ("**Regression-risk:** low", "**Regression-risk:** unknown"),
-        ("**Cost:** low", "**Cost:** cheap"),
-    ],
-)
-def test_todo_reports_a_value_outside_its_enum(workspace, old, new):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, old, new)
-
-    findings = _findings(workspace, "todo")
-    assert _codes(findings) == [todo.E_TODO_ENUM]
-
-
-def test_todo_reports_an_origin_that_resolves_to_nothing(workspace):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
-
-    findings = _findings(workspace, "todo")
-    assert _codes(findings) == [todo.E_TODO_ORIGIN]
-    assert "CHANGE-404" in findings[0]["message"]
-
-
-@pytest.mark.parametrize(
-    "context",
-    ["needs more thought", "fix later", "this one is important and someone should do it"],
-)
-def test_todo_reports_a_context_too_thin_to_start_from(workspace, context):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, _TODO_FIELDS["context"], context)
-
-    findings = _findings(workspace, "todo")
-    assert _codes(findings) == [check.E_TODO_CONTEXT]
-
-
-@pytest.mark.parametrize(
-    "context",
-    [
-        "plugins/metacoder/tools/check.py aggregates across repos",
-        "the rule lives in `context_names_something` and has no test",
-        "CHANGE-029 left this open",
-        "TOOLS publishes it but the catalog does not",
-        "020-deferred-work-todo shipped without it",
-    ],
-)
-def test_a_context_naming_a_file_artifact_or_identifier_is_accepted(workspace, context):
-    """The rule is deliberately weak: it catches the empty gesture only."""
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, _TODO_FIELDS["context"], context)
-
-    assert _findings(workspace, "todo") == []
-
-
-def test_a_sentence_abbreviation_is_not_mistaken_for_a_filename(workspace):
-    """``e.g.``/``i.e.``/``etc.`` must not satisfy the rule on their own."""
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, _TODO_FIELDS["context"], "it is broken, e.g. sometimes, etc.")
-
-    assert _codes(_findings(workspace, "todo")) == [check.E_TODO_CONTEXT]
-
-
-def test_todo_reports_every_violation_the_emitter_would_have_refused(workspace):
-    """The checker's codes are the emitter's codes, not a parallel vocabulary."""
-    assert (check.E_TODO_FIELD, check.E_TODO_ENUM, check.E_TODO_ORIGIN) == (
-        todo.E_TODO_FIELD,
-        todo.E_TODO_ENUM,
-        todo.E_TODO_ORIGIN,
-    )
-
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
-    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
-    _todo_edit(workspace, "**Cost:** low\n", "")
-
-    findings = _findings(workspace, "todo")
-    # Field order is the standard's, so the report is stable between runs.
-    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ORIGIN, todo.E_TODO_FIELD]
-
-
-def test_todo_reports_each_entry_in_document_order(workspace):
-    """Two defective entries, reported in the order the file writes them."""
-    _todo_origin(workspace)
-    _todo_add(workspace, title="first")
-    _todo_add(workspace, title="second", kind="architecture")
-    # `_todo_edit` replaces the first occurrence only, and the second entry is
-    # given a `Kind` of its own, so each edit lands on the entry named beside it.
-    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
-    _todo_edit(workspace, "**Kind:** architecture", "**Kind:** typo")
-
-    findings = _findings(workspace, "todo")
-    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ENUM]
-    assert "'first'" in findings[0]["message"] and "Run" in findings[0]["message"]
-    assert "'second'" in findings[1]["message"] and "Kind" in findings[1]["message"]
-    assert findings[0]["line"] < findings[1]["line"]
-
-
-def test_a_todo_finding_carries_the_entrys_line(workspace):
-    _todo_origin(workspace)
-    _todo_add(workspace, title="first")
-    _todo_add(workspace, title="second")
-    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
-
-    findings = _findings(workspace, "todo")
-    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
-    assert lines[findings[0]["line"] - 1] == "## first"
-
-
-def test_todo_findings_set_exit_1(workspace):
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
-    assert _check(workspace, "todo")[1] == 1
-
-
-def test_todo_takes_no_target(workspace):
-    """One list at one tier: a target would imply a per-repo list, and there is none."""
-    result, code = _check(workspace, "todo", "../escape")
-    assert code == 0
-    assert result.data["target"] is None
-
-
-# ---------------------------------------------------------------------------
 # check handoff
 # ---------------------------------------------------------------------------
 
 
-def test_handoff_reports_nothing_on_a_complete_chain(workspace):
-    _chain(workspace)
-    result, code = _check(workspace, "handoff")
-    assert result.data["findings"] == []
-    assert result.data["target"] is None
-    assert result.diagnostics == []
-    assert code == 0
 
 
-def test_handoff_strands_an_applied_change_with_no_index(workspace):
-    """``stranded`` is the general rule, not its ``pending`` example.
-
-    An ``applied`` repo change is complete; if no project index references it,
-    no plan can ever reach it and it is stranded exactly as a ``pending`` one
-    is. This is the defect REQ-019 exists to surface.
-    """
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding["code"] == core.E_HANDOFF
-    assert finding["state"] == "stranded"
-    assert finding["from_stage"] == "mspec"
-    assert finding["to_stage"] == "mplan"
-    assert finding["artifact"] == "context/%s/changes/CHANGE-002-orphaned.md" % TARGET
 
 
-def test_handoff_strands_a_pending_change_with_no_index(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-fresh.md" % TARGET,
-        _change_text("002", "fresh", "pending"),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["state"] == "stranded"
-    assert "CHANGE-002-fresh.md" in findings[0]["artifact"]
 
 
-def test_handoff_does_not_strand_a_pending_change_marked_plan_not_required(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-fresh.md" % TARGET,
-        _change_text("002", "fresh", "pending", plan="not-required"),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert findings == []
 
 
-def test_handoff_strands_an_index_with_no_plan(workspace):
-    _chain(workspace)
-    change_path = "context/%s/changes/CHANGE-002-next.md" % TARGET
-    workspace.write(change_path, _change_text("002", "next", "pending"))
-    workspace.write(
-        "context/project/changes/PROJECT-CHANGE-002-next.md",
-        _index_text("002", "next", "pending", [change_path]),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["artifact"] == "context/project/changes/PROJECT-CHANGE-002-next.md"
-    assert findings[0]["state"] == "stranded"
-    assert findings[0]["to_stage"] == "mplan"
 
 
-def test_handoff_does_not_strand_an_index_with_no_plan_marked_plan_not_required(workspace):
-    _chain(workspace)
-    change_path = "context/%s/changes/CHANGE-002-next.md" % TARGET
-    workspace.write(change_path, _change_text("002", "next", "pending"))
-    workspace.write(
-        "context/project/changes/PROJECT-CHANGE-002-next.md",
-        _index_text("002", "next", "pending", [change_path], plan="not-required"),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert findings == []
 
 
-def test_handoff_reports_an_index_naming_no_change(workspace):
-    """``incomplete``: the successor's input is present but partial."""
-    _chain(workspace)
-    workspace.write("context/project/plans/002-empty/plan.yaml", _graph_text("002-empty", project_change="002"))
-    workspace.write("context/project/plans/002-empty/state.yaml", _plan_state_text("002-empty"))
-    workspace.write(
-        "context/project/changes/PROJECT-CHANGE-002-empty.md",
-        _index_text("002", "empty", "pending", []),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["state"] == "incomplete"
-    assert findings[0]["artifact"] == "context/project/changes/PROJECT-CHANGE-002-empty.md"
 
 
-def test_handoff_strands_a_plan_with_no_recorded_run(workspace):
-    _chain(workspace)
-    workspace.write("context/project/plans/002-next/plan.yaml", _graph_text("002-next"))
-    workspace.write(
-        "context/project/plans/002-next/state.yaml",
-        _plan_state_text("002-next", run=0, statusname="pending", stories=(("01-01-demo-ALPHA", "pending"),)),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["state"] == "stranded"
-    assert findings[0]["from_stage"] == "mplan"
-    assert findings[0]["to_stage"] == "mexecute"
-    assert findings[0]["artifact"] == "context/project/plans/002-next"
 
 
-def test_handoff_reports_a_plan_directory_with_no_graph(workspace):
-    _chain(workspace)
-    workspace.write("context/project/plans/002-partial/state.yaml", _plan_state_text("002-partial"))
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["state"] == "incomplete"
-    assert findings[0]["artifact"] == "context/project/plans/002-partial/plan.yaml"
 
 
-def test_handoff_strands_drift_no_change_followed(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/project/plans/001-demo/state.yaml",
-        _plan_state_text("001-demo", conformance=("drift", 3)),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["from_stage"] == "mverify"
-    assert findings[0]["to_stage"] == "mfix"
-    assert findings[0]["state"] == "stranded"
-    assert "3 finding" in findings[0]["message"]
 
 
-def test_handoff_accepts_drift_a_later_change_answers(workspace):
-    """Drift followed by a new index is consumed, not stranded."""
-    _chain(workspace)
-    workspace.write(
-        "context/project/plans/001-demo/state.yaml",
-        _plan_state_text("001-demo", conformance=("drift", 3)),
-    )
-    change_path = "context/%s/changes/CHANGE-002-fix.md" % TARGET
-    workspace.write(change_path, _change_text("002", "fix", "pending"))
-    workspace.write(
-        "context/project/changes/PROJECT-CHANGE-002-fix.md",
-        _index_text("002", "fix", "pending", [change_path]),
-    )
-    workspace.write("context/project/plans/002-fix/plan.yaml", _graph_text("002-fix", project_change="002"))
-    workspace.write("context/project/plans/002-fix/state.yaml", _plan_state_text("002-fix"))
-
-    assert _findings(workspace, "handoff") == []
 
 
-def test_handoff_reports_an_ownership_violation(workspace):
-    """A conformance report is mverify's; a plan directory is not its tree."""
-    _chain(workspace)
-    workspace.write(
-        "context/project/plans/001-demo/mverify-report.json",
-        '{\n  "scope": {"kind": "aggregate"},\n  "findings": [],\n  "clean": true\n}\n',
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["code"] == check.E_OWNERSHIP
-    assert findings[0]["artifact"] == "context/project/plans/001-demo/mverify-report.json"
-    # Named in stage-chain order, which is what keeps both enums satisfiable.
-    assert (findings[0]["from_stage"], findings[0]["to_stage"]) == ("mplan", "mverify")
 
 
-def test_handoff_reports_a_requirement_no_module_covers(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/REQUIREMENTS.md" % TARGET,
-        _requirements_text(("REQ-001", "REQ-002", "REQ-004")),
-    )
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["artifact"] == "REQ-004"
-    assert findings[0]["from_stage"] == "mreq"
-    assert findings[0]["to_stage"] == "mspec"
 
 
 def _req_change_text(number, tier, statusname, spec_change=None):
@@ -1307,87 +862,16 @@ def _req_change_text(number, tier, statusname, spec_change=None):
     )
 
 
-def test_handoff_reports_an_open_req_change_as_a_warning_and_leaves_exit_0(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
-        _req_change_text("001", TARGET, "open"),
-    )
-
-    result, code = _check(workspace, "handoff")
-    findings = result.data["findings"]
-    assert len(findings) == 1
-    assert findings[0]["code"] == core.E_HANDOFF
-    assert findings[0]["from_stage"] == "mreq"
-    assert findings[0]["to_stage"] == "mspec"
-    assert findings[0]["state"] == "stranded"
-    assert findings[0]["severity"] == "warning"
-    assert code == 0
 
 
-def test_handoff_does_not_report_a_closed_req_change(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
-        _req_change_text("001", TARGET, "closed", spec_change="CHANGE-001"),
-    )
-    assert _findings(workspace, "handoff") == []
 
 
-def test_handoff_exempts_an_open_req_change_carrying_spec_change_not_required(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-no-delta.md" % TARGET,
-        _req_change_text("001", TARGET, "open", spec_change="not-required"),
-    )
-    assert _findings(workspace, "handoff") == []
 
 
-def test_handoff_reports_every_other_finding_at_error_with_exit_1(workspace):
-    """An open REQ-CHANGE (warning) alongside a real defect (error) still
-    exits 1 -- the warning never masks a genuine finding."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
-        _req_change_text("001", TARGET, "open"),
-    )
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    result, code = _check(workspace, "handoff")
-    findings = result.data["findings"]
-    assert sorted(item["severity"] for item in findings) == ["error", "warning"]
-    assert code == 1
 
 
-def test_handoff_charges_a_req_change_write_to_no_stage(workspace):
-    """`req change-close`'s write is tool-owned -- charged to no stage, so a
-    closed REQ-CHANGE record never trips the ownership rule."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-002-closed-by-tool.md" % TARGET,
-        _req_change_text("002", TARGET, "closed", spec_change="CHANGE-001"),
-    )
-    findings = _findings(workspace, "handoff")
-    assert [item for item in findings if item["code"] == check.E_OWNERSHIP] == []
-    assert findings == []
 
 
-def test_handoff_finding_is_a_diagnostic(workspace):
-    """``HandoffFinding = Diagnostic & {...}`` -- it is reported as both."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    result, code = _check(workspace, "handoff")
-    assert code == 1
-    assert len(result.diagnostics) == 1
-    diagnostic = result.diagnostics[0]
-    assert isinstance(diagnostic, core.Diagnostic)
-    assert diagnostic.severity == core.SEVERITY_ERROR
-    assert diagnostic.to_dict()["state"] == "stranded"
 
 
 # ---------------------------------------------------------------------------
@@ -1410,279 +894,44 @@ def _chain_findings(findings):
     return [item for item in findings if "state" in item]
 
 
-def test_handoff_reports_nothing_for_a_workspace_that_has_deferred_nothing(workspace):
-    """No list is not an empty list is not a defect -- it must report neither."""
-    _chain(workspace)
-    result, code = _check(workspace, "handoff")
-    assert result.data["findings"] == []
-    assert code == 0
 
 
-def test_handoff_reports_every_open_entry_with_the_skill_it_is_routed_to(workspace):
-    """The acceptance clause, whole: *every* entry, and the routed skill on each."""
-    _chain(workspace)
-    _todo_add(workspace, title="first deferral", run="/mfix")
-    _todo_add(workspace, title="second deferral", run="/mspec")
-
-    findings = _findings(workspace, "handoff")
-    deferrals = _deferrals(findings)
-    assert len(deferrals) == 2
-    # Document order, which is the order `todo add` appended them in.
-    assert "'first deferral'" in deferrals[0]["message"]
-    assert "/mfix" in deferrals[0]["message"]
-    assert "'second deferral'" in deferrals[1]["message"]
-    assert "/mspec" in deferrals[1]["message"]
-    assert [item["file"] for item in deferrals] == [TODO_REL, TODO_REL]
-    assert deferrals[0]["line"] < deferrals[1]["line"]
 
 
-def test_a_deferral_finding_carries_the_entrys_own_line(workspace):
-    _chain(workspace)
-    _todo_add(workspace, title="first deferral")
-    _todo_add(workspace, title="second deferral")
-
-    deferrals = _deferrals(_findings(workspace, "handoff"))
-    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
-    assert lines[deferrals[0]["line"] - 1] == "## first deferral"
-    assert lines[deferrals[1]["line"] - 1] == "## second deferral"
 
 
-def test_an_open_entry_does_not_change_the_exit_code(workspace):
-    """Asserted, not assumed: the same chain, with and without the list."""
-    _chain(workspace)
-    before = _check(workspace, "handoff")[1]
-    _todo_add(workspace, title="a deferral")
-    result, after = _check(workspace, "handoff")
-
-    assert (before, after) == (0, 0)
-    assert result.ok is True
-    assert len(_deferrals(result.data["findings"])) == 1
-    assert [item["severity"] for item in _deferrals(result.data["findings"])] == ["warning"]
 
 
-def test_many_open_entries_still_do_not_change_the_exit_code(workspace):
-    """A list that grew is still not a defect -- there is no count that blocks."""
-    _chain(workspace)
-    for index in range(5):
-        _todo_add(workspace, title="deferral %d" % index)
-
-    result, code = _check(workspace, "handoff")
-    assert len(_deferrals(result.data["findings"])) == 5
-    assert code == 0 and result.ok is True
 
 
-def test_an_open_entry_neither_masks_nor_creates_a_stage_finding(workspace):
-    """The other direction: a real defect still exits 1 with entries present."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    _todo_add(workspace, title="a deferral")
-
-    result, code = _check(workspace, "handoff")
-    findings = result.data["findings"]
-    assert code == 1
-    assert len(_chain_findings(findings)) == 1
-    assert len(_deferrals(findings)) == 1
 
 
-def test_the_stage_walk_is_unchanged_by_an_open_entry(workspace):
-    """No existing finding gains or loses severity, and none is added or lost."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
-        _req_change_text("001", TARGET, "open"),
-    )
-    before = _chain_findings(_findings(workspace, "handoff"))
-
-    _todo_add(workspace, title="a deferral")
-    after = _chain_findings(_findings(workspace, "handoff"))
-
-    assert before == after
-    assert sorted(item["severity"] for item in after) == ["error", "warning"]
 
 
-def test_a_deferral_is_not_folded_into_a_stage_chain_finding(workspace):
-    """Distinguishable by machine: its own code, and none of the handoff keys."""
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    deferral = findings[0]
-    assert deferral["code"] == check.W_TODO_OPEN
-    assert deferral["code"] != core.E_HANDOFF
-    assert deferral["severity"] == "warning"
-    for key in ("from_stage", "to_stage", "artifact", "state"):
-        assert key not in deferral, key
 
 
-def test_a_deferral_is_not_a_handoff_finding_in_the_walk_either(workspace):
-    """``StageWalk.findings`` is the published ``HandoffFinding[]``; a deferral
-    is not one, so it must not appear there -- ``status`` renders that list."""
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-
-    walk = check.walk_stages(workspace.ws)
-    assert walk.findings == []
-    assert [item.code for item in walk.deferrals] == [check.W_TODO_OPEN]
-    assert not any(isinstance(item, check.HandoffFinding) for item in walk.deferrals)
-    assert check.handoff_findings(workspace.ws) == []
 
 
-def test_the_deferrals_are_reported_after_the_chain(workspace):
-    """Appended, not interleaved: the chain's own report keeps its order."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    _todo_add(workspace, title="a deferral")
-
-    codes = _codes(_findings(workspace, "handoff"))
-    assert codes == [core.E_HANDOFF, check.W_TODO_OPEN]
 
 
-def test_an_entry_awaiting_a_person_is_reported_under_its_own_code(workspace):
-    """A `human` entry is a standing prompt, not a stage-chain gap.
-
-    Asserted in **both** directions: it carries `W_TODO_HUMAN` and it is absent
-    from the `W_TODO_OPEN` group. A one-directional assertion would pass for an
-    implementation that reported it under both codes, which would leave the
-    drainable queue permanently non-empty -- the exact failure the partition
-    exists to prevent.
-    """
-    _chain(workspace)
-    _todo_add(workspace, title="needs a person", run="human")
-
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["code"] == check.W_TODO_HUMAN
-    assert _deferrals(findings) == []
-    assert findings[0]["severity"] == "warning"
 
 
-def test_a_human_entry_and_a_routed_one_land_in_different_groups(workspace):
-    """The partition is on the field alone, and it separates a mixed list."""
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-    _todo_add(workspace, title="needs a person", run="human")
-
-    findings = _findings(workspace, "handoff")
-    assert [item["code"] for item in findings] == [check.W_TODO_OPEN, check.W_TODO_HUMAN]
-    assert "a deferral" in findings[0]["message"]
-    assert "needs a person" in findings[1]["message"]
 
 
-def test_a_human_entry_never_blocks(workspace):
-    """It can never be cleared by a run, so turning the check red on one would
-    be a gate nobody can satisfy."""
-    _chain(workspace)
-    _todo_add(workspace, title="needs a person", run="human")
-
-    _, code = _check(workspace, "handoff")
-    assert code == 0
 
 
-def test_the_human_value_is_read_from_the_standard_not_spelled_here(workspace):
-    """`TODO_HUMAN_RUN` is derived as the enum member carrying no slash, so a
-    rename in `STANDARD-TODO.md` cannot leave this partition pointing at a value
-    the standard no longer has."""
-    assert check.TODO_HUMAN_RUN == "human"
-    assert not check.TODO_HUMAN_RUN.startswith("/")
 
 
-def test_handoff_still_walks_the_chain_exactly_once(workspace, monkeypatch):
-    """Folding the list in reads one more file; it adds no second traversal."""
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-
-    calls = []
-    original = check.walk_stages
-
-    def counted(ws):
-        calls.append(ws)
-        return original(ws)
-
-    monkeypatch.setattr(check, "walk_stages", counted)
-    result, code = _check(workspace, "handoff")
-
-    assert len(calls) == 1
-    assert code == 0
-    assert len(_deferrals(result.data["findings"])) == 1
 
 
-def test_an_entry_whose_run_field_is_missing_is_still_reported(workspace):
-    """Open work must not hide from the one place open work is read.
-
-    Which field is wrong is ``check todo``'s to say, and it still says it --
-    the handoff report names the entry and stays a warning.
-    """
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-    _todo_edit(workspace, "**Run:** /mfix\n", "")
-
-    result, code = _check(workspace, "handoff")
-    deferrals = _deferrals(result.data["findings"])
-    assert len(deferrals) == 1
-    assert "'a deferral'" in deferrals[0]["message"]
-    assert check.TODO_RUN_FIELD in deferrals[0]["message"]
-    assert code == 0
-    # The defect itself is reported, at `error`, by the check that owns it.
-    assert _codes(_findings(workspace, "todo")) == [todo.E_TODO_FIELD]
-    assert _check(workspace, "todo")[1] == 1
 
 
-def test_the_routed_skill_is_read_from_the_standards_own_field(workspace):
-    """A rename in ``STANDARD-TODO.md`` fails here rather than quietly routing
-    every entry to nobody."""
-    assert check.TODO_RUN_FIELD == "Run"
-    assert check.TODO_RUN_FIELD in todo.LIST_FILTER_FIELDS
-    assert check.TODO_RUN_FIELD in [item.name for item in todo.field_specs()]
 
 
-def test_both_checks_read_the_same_list(workspace):
-    """One reader, so ``check todo`` and ``check handoff`` cannot disagree about
-    what the list holds."""
-    _chain(workspace)
-    _todo_add(workspace, title="first deferral")
-    _todo_add(workspace, title="second deferral")
-
-    entries, relative, problems = check.read_todo(workspace.ws)
-    assert problems == []
-    assert relative == TODO_REL
-    assert [entry.title for entry in entries] == ["first deferral", "second deferral"]
-    assert len(_deferrals(_findings(workspace, "handoff"))) == len(entries)
 
 
-def test_check_all_carries_the_deferrals_without_failing_the_run(workspace):
-    """``check all`` reports them in its handoff report and still exits 0."""
-    _chain(workspace)
-    _todo_add(workspace, title="a deferral")
-
-    result, code = _check(workspace, "all", TARGET)
-    reports = {report["check"]: report for report in result.data["reports"]}
-    assert _codes(reports["todo"]["findings"]) == []
-    assert _codes(reports["handoff"]["findings"]) == [check.W_TODO_OPEN]
-    assert code == 0
 
 
-def test_status_is_unaffected_by_an_open_entry(workspace):
-    """``StatusReport.handoff`` is ``HandoffFinding[]``; a deferral is not one,
-    so the report the operator view publishes keeps its documented shape."""
-    _chain(workspace)
-    before = _status(workspace)[0].data
-    _todo_add(workspace, title="a deferral")
-    after, code = _status(workspace)
-
-    assert after.data == before
-    assert after.data["handoff"] == []
-    assert code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1690,53 +939,10 @@ def test_status_is_unaffected_by_an_open_entry(workspace):
 # ---------------------------------------------------------------------------
 
 
-def test_all_runs_every_check_for_one_target(workspace):
-    _chain(workspace)
-    result, code = _check(workspace, "all", TARGET)
-    assert [report["check"] for report in result.data["reports"]] == [
-        "depends-on",
-        "coupling",
-        "requirements",
-        "catalog",
-        "todo",
-        "handoff",
-    ]
-    assert result.data["targets"] == [TARGET]
-    assert code == 0
 
 
-def test_all_includes_the_todo_check_and_its_findings(workspace):
-    """``check all`` gains a check, so a defect only it sees still fails the run."""
-    _chain(workspace)
-    _todo_origin(workspace)
-    _todo_add(workspace)
-    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
-
-    result, code = _check(workspace, "all", TARGET)
-    reports = {report["check"]: report for report in result.data["reports"]}
-    assert _codes(reports["todo"]["findings"]) == [todo.E_TODO_ENUM]
-    assert code == 1
 
 
-def test_all_without_a_target_covers_every_target(workspace):
-    _chain(workspace)
-    _tree(workspace, layout=_layout("other"), catalog=_catalog_text("other"), target="other")
-    result, code = _check(workspace, "all")
-    assert result.data["target"] is None
-    assert result.data["targets"] == ["demo", "other"]
-    assert [report["target"] for report in result.data["reports"]] == [
-        "demo",
-        "demo",
-        "demo",
-        "demo",
-        "other",
-        "other",
-        "other",
-        "other",
-        None,  # todo -- one list, at the project tier
-        None,  # handoff -- one stage chain, across the workspace
-    ]
-    assert code == 0
 
 
 def test_all_carries_every_finding_into_the_envelope(workspace):
@@ -1755,20 +961,6 @@ def test_all_carries_every_finding_into_the_envelope(workspace):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("verb", ["depends-on", "coupling", "requirements"])
-def test_exit_code_follows_the_findings(workspace, verb):
-    _tree(workspace)
-    assert _check(workspace, verb, TARGET)[1] == 0
-
-    layout = _layout()
-    layout[_spec("ALPHA", "ALPHA-IMPLEMENTATION.md")] = [
-        _spec("BETA", "BETA-IMPLEMENTATION.md"),
-        _spec("ALPHA", "ALPHA-GONE.md"),
-    ]
-    _tree(workspace, layout, catalog=_catalog_text(modules=(("ALPHA", ("REQ-009",)),)))
-    result, code = _check(workspace, verb, TARGET)
-    assert result.data["findings"], "the defective fixture must report something"
-    assert code == 1
 
 
 def test_an_unknown_verb_is_a_usage_error(workspace):
@@ -1789,126 +981,18 @@ def test_a_bad_target_is_rejected_never_sanitized(workspace):
 # ---------------------------------------------------------------------------
 
 
-def test_status_reports_the_documented_shape(workspace):
-    _chain(workspace)
-    result, code = _status(workspace)
-    assert code == 0
-    report = result.data
-    assert sorted(report) == ["generated", "handoff", "stages"]
-    assert report["generated"] == NOW
-    assert sorted(report["stages"]) == [
-        "changes",
-        "conformance",
-        "plans",
-        "requirements",
-        "slices",
-    ]
-    assert sorted(report["stages"]["requirements"]) == ["dangling", "open_req_changes", "uncovered"]
-    assert report["stages"]["requirements"]["open_req_changes"] == []
-    assert sorted(report["stages"]["changes"]) == ["pending", "unindexed"]
-    assert sorted(report["stages"]["plans"]) == ["unfinished", "unplanned_indexes"]
-    # findings and deferred side by side, never pre-subtracted: four findings of
-    # which three are accepted debt is a fact a net figure of one would hide.
-    assert report["stages"]["conformance"] == [
-        {"plan_id": "001-demo", "status": "clean", "findings": 0, "deferred": 0}
-    ]
-    # A pre-slice plan reports null counters, not zero: no progress and no
-    # slices to progress through are different facts.
-    assert report["stages"]["slices"] == [
-        {"plan_id": "001-demo", "applied": None, "total": None, "current": None}
-    ]
-    assert report["handoff"] == []
 
 
-def test_status_reports_the_work_in_progress(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "pending"),
-    )
-    report = _status(workspace)[0].data
-    pending = report["stages"]["changes"]["pending"]
-    assert [ref["path"] for ref in pending] == ["context/%s/changes/CHANGE-002-orphaned.md" % TARGET]
-    assert [ref["number"] for ref in report["stages"]["changes"]["unindexed"]] == ["002"]
-    assert [finding["artifact"] for finding in report["handoff"]] == [
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET
-    ]
 
 
-def test_status_reuses_the_check_stage_walk(workspace):
-    """One traversal, two presentations -- never two stage walks."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    report = _status(workspace)[0].data
-    handoff = _findings(workspace, "handoff")
-    assert report["handoff"] == handoff
 
 
-def test_status_reports_an_unfinished_plan_as_a_resolution(workspace):
-    _chain(workspace)
-    workspace.write("context/project/plans/002-next/plan.yaml", _graph_text("002-next"))
-    workspace.write(
-        "context/project/plans/002-next/state.yaml",
-        _plan_state_text("002-next", run=2, statusname="in-progress", stories=(("01-01-demo-ALPHA", "pending"),)),
-    )
-    report = _status(workspace)[0].data
-    assert report["stages"]["plans"]["unfinished"] == [
-        {
-            "plan_id": "002-next",
-            "plan_dir": "context/project/plans/002-next",
-            "status": "in-progress",
-            "run": 2,
-            "resume_wave": 1,
-            # `resume_wave` keeps its name and its meaning; `resume_slice` sits
-            # alongside it, and reads "00" on a graph written before slices.
-            "resume_slice": "00",
-            "pending_stories": ["01-01-demo-ALPHA"],
-        }
-    ]
 
 
-def test_status_is_deterministic_under_a_pinned_clock(workspace):
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    first = status.run(workspace.args(), workspace.ws).to_json()
-    second = status.run(workspace.args(), workspace.ws).to_json()
-    assert first == second
-    assert '"generated": "%s"' % NOW in first
 
 
-def test_status_reports_open_req_changes_from_the_same_walk(workspace):
-    """`status` renders `open_req_changes` from the same single stage walk
-    `check handoff` uses -- no second traversal."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
-        _req_change_text("001", TARGET, "open"),
-    )
-    result, code = _status(workspace)
-    assert result.data["stages"]["requirements"]["open_req_changes"] == [
-        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET
-    ]
-    assert code == 0
 
 
-def test_status_reports_findings_as_data_not_as_failure(workspace):
-    """``status`` describes the workspace; ``check`` judges it."""
-    _chain(workspace)
-    workspace.write(
-        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
-        _change_text("002", "orphaned", "applied"),
-    )
-    result, code = _status(workspace)
-    assert result.data["handoff"]
-    assert result.ok is True
-    assert code == 0
-    assert _check(workspace, "handoff")[1] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1916,14 +1000,6 @@ def test_status_reports_findings_as_data_not_as_failure(workspace):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["check.py", "status.py"])
-def test_no_dependency_on_a_concurrent_sibling(name):
-    """Neither group may reach for ``tools/state.py`` or ``tools/worktree.py``."""
-    source = (PLUGIN_ROOT / "tools" / name).read_text(encoding="utf-8")
-    assert "tools import" in source or "from tools" in source
-    for sibling in ("state", "worktree"):
-        assert "from tools import %s" % sibling not in source
-        assert "tools.%s" % sibling not in source
 
 
 def test_no_fixture_file_is_committed_under_the_plugin_tree(workspace):
@@ -1946,54 +1022,14 @@ def _with_conformance(workspace, conformance):
     return workspace
 
 
-def test_four_findings_with_three_deferred_still_fires(workspace):
-    _chain(workspace)
-    _with_conformance(workspace, ("drift", 4, 3))
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert findings[0]["from_stage"] == "mverify"
-    assert findings[0]["to_stage"] == "mfix"
-    # The message names what is outstanding, which is one, not four.
-    assert "1 finding" in findings[0]["message"]
 
 
-def test_four_findings_with_four_deferred_clears_the_stage(workspace):
-    """A gate nobody can satisfy is one everybody learns to route around."""
-    _chain(workspace)
-    _with_conformance(workspace, ("drift", 4, 4))
-    result, code = _check(workspace, "handoff")
-    assert code == 0 and result.ok
-    assert result.data["findings"] == []
 
 
-def test_an_absent_deferred_count_scores_as_zero(workspace):
-    """Every conformance block written before the field keeps its meaning."""
-    _chain(workspace)
-    _with_conformance(workspace, ("drift", 4))
-    findings = _findings(workspace, "handoff")
-    assert len(findings) == 1
-    assert "4 finding" in findings[0]["message"]
 
 
-def test_deferred_exceeding_findings_is_itself_a_finding(workspace):
-    """Not scored to a negative outstanding count -- that would read as cleaner
-    than clean, and the block is one nobody can act on."""
-    _chain(workspace)
-    _with_conformance(workspace, ("drift", 2, 5))
-    findings = _findings(workspace, "handoff")
-    assert _codes(findings) == [check.E_CONFORMANCE_DEFERRED]
-    assert findings[0]["state"] == "incomplete"
-    assert _check(workspace, "handoff")[1] == 1
 
 
-def test_status_reports_findings_and_deferrals_separately(workspace):
-    """A recorded acceptance, not a suppression: both numbers stay visible."""
-    _chain(workspace)
-    _with_conformance(workspace, ("drift", 4, 3))
-    report = _status(workspace)[0].data
-    assert report["stages"]["conformance"] == [
-        {"plan_id": "001-demo", "status": "drift", "findings": 4, "deferred": 3}
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2001,45 +1037,8 @@ def test_status_reports_findings_and_deferrals_separately(workspace):
 # ---------------------------------------------------------------------------
 
 
-def test_a_pending_change_leaves_the_pending_list_once_it_is_closed(workspace):
-    """Until `change close` existed nothing ever moved a document off `pending`,
-    so the list grew monotonically and every shipped change read as outstanding."""
-    _chain(workspace)
-    path = "context/%s/changes/CHANGE-002-later.md" % TARGET
-    workspace.write(path, _change_text("002", "later", "pending"))
-    workspace.write(
-        "context/project/changes/PROJECT-CHANGE-002-later.md",
-        _index_text("002", "later", "pending", [path]),
-    )
-    workspace.mkdir("context/project/plans/002-later")
-    workspace.write("context/project/plans/002-later/plan.yaml", _graph_text("002-later", project_change="002"))
-    workspace.write("context/project/plans/002-later/state.yaml", _plan_state_text("002-later"))
-
-    walk = check.walk_stages(workspace.ws)
-    assert path in [ref["path"] for ref in walk.pending_changes]
-
-    result = change.run(
-        workspace.args(verb="close", path=path, status="applied"), workspace.ws
-    )
-    assert result.ok, [item.render() for item in result.diagnostics]
-
-    walk = check.walk_stages(workspace.ws)
-    assert path not in [ref["path"] for ref in walk.pending_changes]
 
 
-def test_closing_the_index_drains_it_from_the_pending_list_too(workspace):
-    _chain(workspace)
-    index = "context/project/changes/PROJECT-CHANGE-002-later.md"
-    path = "context/%s/changes/CHANGE-002-later.md" % TARGET
-    workspace.write(path, _change_text("002", "later", "applied"))
-    workspace.write(index, _index_text("002", "later", "pending", [path]))
-    workspace.mkdir("context/project/plans/002-later")
-    workspace.write("context/project/plans/002-later/plan.yaml", _graph_text("002-later", project_change="002"))
-    workspace.write("context/project/plans/002-later/state.yaml", _plan_state_text("002-later"))
-
-    assert index in [ref["path"] for ref in check.walk_stages(workspace.ws).pending_changes]
-    change.run(workspace.args(verb="close", path=index, status="applied"), workspace.ws)
-    assert index not in [ref["path"] for ref in check.walk_stages(workspace.ws).pending_changes]
 
 
 # ---------------------------------------------------------------------------
@@ -2091,11 +1090,6 @@ FULL_FILES = CONTRACT_FILES + (
 )
 
 
-def test_a_contract_module_missing_a_contract_facet_is_reported(workspace):
-    _depth_tree(workspace, "ALPHA", ("ALPHA-OVERVIEW.md", "ALPHA-INTERFACE.md"), "contract")
-    findings = _findings(workspace, "catalog", TARGET)
-    assert _codes(findings) == [check.E_CATALOG_DEPTH]
-    assert "datamodel" in findings[0]["message"]
 
 
 def test_a_contract_module_whose_implementation_is_absent_is_not_reported(workspace):
@@ -2105,12 +1099,6 @@ def test_a_contract_module_whose_implementation_is_absent_is_not_reported(worksp
     assert _findings(workspace, "catalog", TARGET) == []
 
 
-def test_a_full_module_missing_any_facet_is_reported(workspace):
-    _depth_tree(workspace, "ALPHA", CONTRACT_FILES, "full")
-    findings = _findings(workspace, "catalog", TARGET)
-    assert _codes(findings) == [check.E_CATALOG_DEPTH]
-    for facet in ("deps", "impl", "test"):
-        assert facet in findings[0]["message"]
 
 
 def test_a_full_module_carrying_every_facet_is_clean(workspace):
@@ -2125,16 +1113,6 @@ def test_a_module_declaring_no_depth_is_never_reported_by_the_rule(workspace):
     assert _findings(workspace, "catalog", TARGET) == []
 
 
-def test_the_depth_rule_runs_after_the_exports_rule(workspace):
-    """Finding order is fixed: file-set, facet, layer, exports, then depth."""
-    _depth_tree(workspace, "ALPHA", CONTRACT_FILES, "full")
-    text = workspace.path("context/%s/spec/CATALOG.yaml" % TARGET).read_text(encoding="utf-8")
-    workspace.write(
-        "context/%s/spec/CATALOG.yaml" % TARGET,
-        _set_catalog_exports(text, _spec("ALPHA", "ALPHA-INTERFACE.md"), ["ghost"]),
-    )
-    findings = _findings(workspace, "catalog", TARGET)
-    assert _codes(findings) == [check.E_CATALOG_EXPORTS, check.E_CATALOG_DEPTH]
 
 
 def test_the_live_catalog_still_passes_the_depth_rule(workspace):
@@ -2181,38 +1159,11 @@ def _sweep_findings(workspace, **kwargs):
     ]
 
 
-def test_a_finished_plan_with_no_declaration_is_reported(workspace):
-    assert len(_sweep_findings(workspace)) == 1
 
 
-def test_a_finished_plan_declaring_zero_is_not_reported(workspace):
-    """The pair that is the whole mechanism.
-
-    A declared zero satisfies the stage exactly as a declared five does. A test
-    asserting only that the finding fires would pass for a stage that fires
-    always, which would make the declaration worthless.
-    """
-    assert _sweep_findings(workspace, sweep=0) == []
 
 
-def test_an_unfinished_plan_with_no_declaration_is_not_reported(workspace):
-    """The declaration is owed at the end of delivery, not throughout it."""
-    assert _sweep_findings(workspace, statusname="in-progress") == []
 
 
-def test_a_plan_older_than_the_sweep_version_is_not_reported(workspace):
-    """Its silence is not a missing declaration -- it predates declarations.
-
-    No run can return to a finished plan and declare what it left behind, so
-    reporting one would be a finding nobody could ever clear.
-    """
-    assert _sweep_findings(workspace, version=2) == []
 
 
-def test_the_sweep_finding_never_blocks(workspace):
-    _chain(workspace)
-    workspace.write("context/project/plans/001-demo/state.yaml", _sweep_state())
-    result, code = _check(workspace, "handoff")
-    codes = [item["code"] for item in result.data["findings"]]
-    assert check.W_HANDOFF_SWEEP in codes
-    assert code == 0

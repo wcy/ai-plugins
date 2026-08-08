@@ -235,24 +235,6 @@ def test_a_missing_verb_is_a_usage_error(workspace):
     assert [d.code for d in result.diagnostics] == [core.E_USAGE]
 
 
-def test_the_group_borrows_only_the_shared_matcher_from_a_sibling():
-    """The one thing taken from ``tools/change.py`` is the definition of what a
-    repo change reference *is* -- the same pair ``check handoff`` reads.
-
-    Change documents themselves are still read through ``core``'s front-matter
-    helper, no ``change`` verb is called from here, and no other sibling group
-    is reached for at all. Duplicating the matcher instead is the defect
-    CHANGE-020 removes, so this is a borrowing the module is required to make.
-    """
-    source = (PLUGIN_ROOT / "tools" / "plan.py").read_text(encoding="utf-8")
-    assert "load_front_matter" in source
-    assert "change.REPO_CHANGE_REF_RE" in source
-    assert "change.section_body" in source
-    # Behaviour is never borrowed: no verb of the sibling group is invoked.
-    assert "change.run(" not in source
-    for sibling in ("state", "worktree", "check", "spec", "req"):
-        assert "from tools import %s" % sibling not in source
-        assert "tools.%s" % sibling not in source
 
 
 def test_the_group_carries_no_second_change_reference_matcher():
@@ -355,55 +337,8 @@ def test_scope_reads_the_same_change_files_from_either_table_form(workspace, for
     assert [item.severity for item in result.diagnostics] == []
 
 
-@pytest.mark.parametrize("form", sorted(TABLE_FORMS))
-def test_scope_and_check_handoff_see_the_same_references(workspace, form):
-    """The two stages agreed only for one form before; now they agree for both.
-
-    ``check handoff`` reports an index naming no repo change file. Whatever
-    ``scope`` finds, the handoff must have found too -- a handoff reporting
-    clean over a scope that came back empty is the failure being closed.
-    """
-    referenced = ["context/demo/changes/CHANGE-002-thing.md"]
-    index_path = "context/project/changes/PROJECT-CHANGE-004-fourth.md"
-    _add_index(workspace, "004", "fourth", "pending", referenced, form=form)
-
-    scoped = _run(workspace, verb="scope")[0].data["change_files"]
-    handoff = check.run(workspace.args(verb="handoff", target=None), workspace.ws)
-    empty_index = [
-        finding
-        for finding in handoff.data["findings"]
-        if finding.get("file") == index_path and "no repo change file" in finding["message"]
-    ]
-    assert scoped == referenced
-    assert empty_index == []
 
 
-def test_an_index_naming_nothing_is_reported_by_both_stages(workspace):
-    """The negative case, so the agreement above is not vacuous."""
-    index_path = "context/project/changes/PROJECT-CHANGE-004-fourth.md"
-    _add_index(workspace, "004", "fourth", "pending")
-
-    result, code = _run(workspace, verb="scope")
-    handoff = check.run(workspace.args(verb="handoff", target=None), workspace.ws)
-
-    assert code == 0  # a warning, not an error: the caller still gets the scope
-    assert result.data == {
-        "type": "incremental",
-        "plan_id": "004-fourth",
-        "plan_dir": "context/project/plans/004-fourth",
-        "project_change": "004",
-        "change_files": [],
-    }
-    assert len(result.diagnostics) == 1
-    warning = result.diagnostics[0]
-    assert warning.severity == core.SEVERITY_WARNING
-    assert warning.file == index_path  # the diagnostic names the index
-    assert "PROJECT-CHANGE-004-fourth.md" in warning.message
-    assert [
-        finding
-        for finding in handoff.data["findings"]
-        if finding.get("file") == index_path and "no repo change file" in finding["message"]
-    ]
 
 
 def test_an_empty_incremental_scope_is_a_warning_and_not_an_error(workspace):

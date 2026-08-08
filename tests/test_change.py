@@ -745,17 +745,6 @@ def test_close_rewrites_no_other_front_matter_key(workspace):
     assert core.strip_front_matter(text) == body_before
 
 
-def test_close_moves_a_document_out_of_the_pending_list(workspace):
-    """The whole point of the terminator: the change stage now drains."""
-    relative = _repo_change(workspace, "001", "alpha", "pending")
-    walk = check.walk_stages(workspace.ws)
-    assert [ref["path"] for ref in walk.pending_changes] == [relative]
-
-    result, code = _close(workspace, relative)
-    assert code == 0 and result.ok
-
-    walk = check.walk_stages(workspace.ws)
-    assert [ref["path"] for ref in walk.pending_changes] == []
 
 
 def test_close_makes_the_document_terminal_for_resolution(workspace):

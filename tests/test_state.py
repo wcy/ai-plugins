@@ -1397,49 +1397,78 @@ def test_an_omitted_deferred_count_leaves_the_key_absent(emitted):
 # ---------------------------------------------------------------------------
 
 
-def test_sweep_filed_zero_writes_a_block_that_is_present(workspace):
-    """`--filed 0` is a declaration, never an occasion to omit the key."""
-    _emit_sliced(workspace)
-    result, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=0, titles=None)
-    assert code == 0, [d.render() for d in result.diagnostics]
-
-    doc = _load(_state_path(workspace))
-    assert "sweep" in doc
-    assert doc["sweep"]["filed"] == 0
-
-
-def test_a_declared_zero_is_distinguishable_from_no_declaration(workspace):
-    """The two states the block exists to separate.
-
-    Compared directly rather than through the count: an assertion that only read
-    ``filed`` could not tell a declared zero from an undeclared plan, since the
-    undeclared one has no count to read at all.
-    """
-    _emit_sliced(workspace)
-    before = _load(_state_path(workspace))
-    assert "sweep" not in before
-
-    _, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=0, titles=None)
-    assert code == 0
-
-    after = _load(_state_path(workspace))
-    assert "sweep" in after
-    assert before.get("sweep") != after.get("sweep")
+# ---------------------------------------------------------------------------
+# set-slice -- arm and confirm, the two refusals that make a slice demonstrable
+#
+# The slice's delivered-surface acceptance is run twice: once before its stories
+# and once after its last barrier. Only a recorded red followed by a recorded
+# green demonstrates the slice, which is what turns `surface: delivered` from an
+# assertion the draft makes into a measurement the run took. Each refusal below
+# is checked to persist nothing -- both files byte-identical -- because a
+# refusal that half-wrote would leave a slice claiming evidence it does not have.
+# ---------------------------------------------------------------------------
 
 
-def test_sweep_records_the_titles_it_filed(workspace):
-    _emit_sliced(workspace)
-    _, code = _run(
-        workspace, verb="sweep", plan_id=PLAN_ID, filed=2,
-        titles='["first item", "second item"]',
-    )
-    assert code == 0
-    assert _load(_state_path(workspace))["sweep"]["titles"] == ["first item", "second item"]
+def _bytes_on_disk(workspace):
+    return (_state_path(workspace).read_bytes(), _ledger_path(workspace).read_bytes())
 
 
-def test_sweep_refuses_titles_that_are_not_a_json_string_array(workspace):
-    """A plausible-but-wrong shape reaching disk is what hand-writing allowed."""
-    _emit_sliced(workspace)
-    result, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=1, titles='{"a": 1}')
-    assert code != 0
-    assert "sweep" not in _load(_state_path(workspace))
+def test_arming_records_the_red_exit_code(emitted):
+    result, code = _set_slice(emitted, status="in-progress", armed=1)
+    assert code == 0 and result.ok
+    state = _load(_state_path(emitted))
+    assert state["slices"] == [{"slice": SLICE, "status": "in-progress", "armed": 1}]
+    assert core.validate_against(core.load_schema("plan-state"), state) == []
+
+
+def test_arming_refuses_an_acceptance_that_already_passes(emitted):
+    """Exit 0 before the slice runs means the acceptance demonstrates nothing."""
+    before = _bytes_on_disk(emitted)
+    result, code = _set_slice(emitted, status="in-progress", armed=0)
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_ACCEPTANCE_NOT_RED]
+    assert result.data["written"] == []
+    assert _bytes_on_disk(emitted) == before
+
+
+def test_confirming_a_slice_that_was_never_armed_is_refused(emitted):
+    """A green with no red before it shows the command can pass, not that this
+    slice made it pass."""
+    before = _bytes_on_disk(emitted)
+    result, code = _set_slice(emitted, status="applied", acceptance="pass", confirmed=0)
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_NOT_ARMED]
+    assert result.data["written"] == []
+    assert _bytes_on_disk(emitted) == before
+
+
+def test_confirming_non_zero_while_claiming_pass_is_refused(emitted):
+    _set_slice(emitted, status="in-progress", armed=1)
+    before = _bytes_on_disk(emitted)
+    result, code = _set_slice(emitted, status="applied", acceptance="pass", confirmed=2)
+    assert code == 1 and not result.ok
+    assert [item.code for item in result.diagnostics] == [core.E_ACCEPTANCE_NOT_GREEN]
+    assert result.data["written"] == []
+    assert _bytes_on_disk(emitted) == before
+
+
+def test_a_red_to_green_slice_is_recorded_whole(emitted):
+    """The demonstration the pair exists to record: armed non-zero, confirmed 0."""
+    _set_slice(emitted, status="in-progress", armed=1)
+    result, code = _set_slice(emitted, status="applied", acceptance="pass", confirmed=0)
+    assert code == 0 and result.ok
+    state = _load(_state_path(emitted))
+    assert state["slices"] == [
+        {"slice": SLICE, "status": "applied", "acceptance": "pass", "armed": 1, "confirmed": 0}
+    ]
+    assert core.validate_against(core.load_schema("plan-state"), state) == []
+    assert _load(_ledger_path(emitted))["plans"][PLAN_ID]["slices_applied"] == 1
+
+
+def test_a_failed_acceptance_may_record_its_non_zero_confirmation(emitted):
+    """`--confirmed` is refused only against a `pass` claim; a fail records it."""
+    _set_slice(emitted, status="in-progress", armed=1)
+    result, code = _set_slice(emitted, status="failed", acceptance="fail", confirmed=3)
+    assert code == 0 and result.ok
+    entry = _load(_state_path(emitted))["slices"][0]
+    assert entry["acceptance"] == "fail" and entry["confirmed"] == 3

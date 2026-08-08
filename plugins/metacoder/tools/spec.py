@@ -1,15 +1,13 @@
 """The ``spec`` command group -- spec-tree resolution and catalog emission.
 
     mc.py spec mode <target>
-    mc.py spec layers <target>
     mc.py spec catalog-emit <target>
     mc.py spec consumers <IFACE> [--stale]
-    mc.py spec depth <target> <module> [--set contract|full]
     mc.py spec revision <IFACE> [--bump]
 
 ``spec mode`` is one of the four documented **split steps**
 (``TOOLS-IMPLEMENTATION.md`` §"Split steps"): this module answers whether a
-spec tree exists and whether the requirements gate passes, and *nothing else*.
+spec tree exists, and *nothing else*.
 Whether the user is describing a new product despite an existing tree is
 judgment, and it stays with ``mspec``'s prose -- there is deliberately no code
 here that reads a description, a change file, or anything else that could
@@ -17,25 +15,18 @@ encode it.
 
 ``spec catalog-emit`` derives from the tree only what the tree actually states:
 the module list, each module's ``files[]``, and each file's ``path``, ``facet``
-and ``depends_on``. Seven fields are **preserved verbatim** from the existing
+and ``depends_on``. Five fields are **preserved verbatim** from the existing
 catalog because none of them is derivable from ``depends-on`` front-matter --
-``layers``, each module's ``layer``, each module's ``requirements``, each
-INTERFACE file's ``exports``, ``shared_interfaces``, each module's ``depth`` and
-each shared interface's ``revision``. Dropping any of them would regress a real
-``CATALOG.yaml`` while an emit-twice round trip still passed. A module the
+``layers``, each module's ``layer``, each INTERFACE file's ``exports``,
+``shared_interfaces``, and each shared interface's ``revision``. Dropping any of
+them would regress a real ``CATALOG.yaml`` while an emit-twice round trip still
+passed. A module the
 existing catalog places in no layer -- neither in its module entry nor in the
 ``layers`` block -- is refused rather than assigned one, and an emission that
 would not validate is refused rather than persisted.
 
-``depth`` and ``revision`` are the two newest members of that preserved set, and
-both for the same reason: neither is a fact the tree can supply. A tree could be
-read as ``contract`` merely because nobody has written its IMPLEMENTATION yet,
-which is indistinguishable from a module deliberately left at contract depth, so
-deriving it would silently convert an oversight into a declaration; a revision is
-a fact about what consumers were *told*, which no file records. ``depth --set
-full`` is therefore the one write that checks the tree back: it refuses while any
-of DEPENDENCIES/IMPLEMENTATION/TESTING is absent, so the field can be narrowed
-freely and widened only against files on disk. ``revision --bump`` increments by
+``revision`` is preserved for the same reason: it is a fact about what consumers
+were *told*, which no file in the tree records. ``revision --bump`` increments by
 one and never decrements.
 
 ``consumers --stale`` answers a different question from a different source: it
@@ -49,7 +40,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools import core, req
+from tools import core
 
 COMMAND = "spec"
 
@@ -92,24 +83,6 @@ COMMON_FACET = "overview"
 
 #: The front-matter key every spec file carries.
 DEPENDS_ON_KEY = "depends-on"
-
-#: ``depth`` -- how far a module has been described, per ``catalog.schema.json``.
-#: **Absence is not a third state**: a module with no field is ``full``, which is
-#: what every catalog written before spec depth existed means.
-DEPTH_CONTRACT = "contract"
-DEPTH_FULL = "full"
-DEPTH_LEVELS = (DEPTH_CONTRACT, DEPTH_FULL)
-DEPTH_DEFAULT = DEPTH_FULL
-
-#: The facets ``depth: contract`` asserts exist, and the three ``full`` adds.
-#: ``--set full`` is refused while any of the second group is missing -- the one
-#: thing keeping the field from claiming coverage that is not on disk.
-CONTRACT_FACETS = ("overview", "datamodel", "interface")
-DEEPENING_FACETS = ("deps", "impl", "test")
-
-#: facet -> the filename suffix that names it, for a diagnostic that names the
-#: file an author has to write rather than the internal facet token.
-FACET_FILENAME_SUFFIX = {facet: suffix for suffix, facet in FACET_BY_SUFFIX}
 
 #: ``revision`` -- the agreement version consuming work records itself against.
 #: Absent means 1; only an ``mspec`` cascade bumps it and nothing lowers it.
@@ -283,7 +256,6 @@ def _mode(args, ws: core.Workspace) -> core.Result:
     target = core.check_ident(args.target, "target")
     spec_dir = ws.safe_path("context", target, SPEC_DIR)
     modules = module_dirs(spec_dir)
-    document = req.read_requirements(ws, target)
     return core.Result(
         command="%s.mode" % COMMAND,
         # Exactly the SpecMode shape, field for field. `mode` follows from the
@@ -292,51 +264,7 @@ def _mode(args, ws: core.Workspace) -> core.Result:
             "target": target,
             "mode": "UPDATE" if modules else "CREATE",
             "spec_dir": spec_dir_path(target),
-            # Reported independently of `mode`: a CREATE target may already
-            # have requirements and an UPDATE target may have none.
-            "requirements": document.summary(),
         },
-        diagnostics=document.diagnostics(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# `spec layers`
-# ---------------------------------------------------------------------------
-
-
-def _layers(args, ws: core.Workspace) -> core.Result:
-    target = core.check_ident(args.target, "target")
-    relative = catalog_path(target)
-    path = ws.safe_path("context", target, SPEC_DIR, CATALOG_FILENAME)
-    command = "%s.layers" % COMMAND
-    if not path.is_file():
-        return core.Result(
-            command=command,
-            data={"target": target, "path": relative, "layers": [], "modules": []},
-            diagnostics=[core.error(core.E_NOT_FOUND, "no such catalog", file=relative)],
-        )
-    document = core.load_yaml(path, relative)
-    declared = document.get("layers") if isinstance(document, dict) else None
-    if not isinstance(declared, dict):
-        return core.Result(
-            command=command,
-            data={"target": target, "path": relative, "layers": [], "modules": []},
-            diagnostics=[
-                core.error(core.E_INVALID_STATE, "catalog declares no layers", file=relative)
-            ],
-        )
-    layers: List[Dict[str, Any]] = []
-    ordered: List[str] = []
-    for name in sorted(declared, key=layer_sort_key):
-        entry = declared.get(name)
-        modules = entry.get("modules") if isinstance(entry, dict) else None
-        modules = [str(item) for item in modules] if isinstance(modules, list) else []
-        layers.append({"layer": name, "modules": modules})
-        ordered.extend(modules)
-    return core.Result(
-        command=command,
-        data={"target": target, "path": relative, "layers": layers, "modules": ordered},
     )
 
 
@@ -472,9 +400,6 @@ def build_repo_catalog(
             )
             continue
         entry: Dict[str, Any] = {"layer": layer, "files": _with_exports(derived[module], exports)}
-        requirements = existing.field("modules", module, "requirements")
-        if requirements is not None:
-            entry["requirements"] = requirements
         # Preserved, never derived: an absent IMPLEMENTATION is indistinguishable
         # from an unwritten one, so reading depth off the tree would turn an
         # oversight into a declaration.
@@ -697,94 +622,6 @@ def _module_facets(ws: core.Workspace, target: str, module: str) -> Dict[str, st
     return found
 
 
-def _depth(args, ws: core.Workspace) -> core.Result:
-    """Report a module's ``depth``, or set it.
-
-    Reporting treats absence as :data:`DEPTH_FULL` -- absence is not a third
-    state, and every catalog written before spec depth existed means exactly
-    that. Setting ``full`` is refused while any deepening facet is missing;
-    setting ``contract`` is accepted regardless, since claiming *less* coverage
-    than exists harms nothing.
-    """
-    command = "%s.depth" % COMMAND
-    target = core.check_ident(args.target, "target")
-    module = core.check_ident(getattr(args, "module", None), "module")
-    requested = getattr(args, "set", None)
-    relative = catalog_path(target)
-
-    existing = load_existing_catalog(ws, target)
-    key = "interfaces" if target == SHARED_TARGET else "modules"
-    entry = _module_entry(existing, key, module)
-    if entry is None:
-        return core.Result(
-            command=command,
-            data={"target": target, "module": module, "depth": None, "written": []},
-            diagnostics=[
-                core.error(
-                    core.E_NOT_FOUND,
-                    "the catalog declares no module %r" % (module,),
-                    file=relative,
-                )
-            ],
-        )
-
-    declared = entry.get("depth")
-    current = declared if declared in DEPTH_LEVELS else DEPTH_DEFAULT
-    data: Dict[str, Any] = {
-        "target": target,
-        "module": module,
-        "depth": current,
-        "declared": declared if declared in DEPTH_LEVELS else None,
-        "written": [],
-    }
-    if requested is None:
-        return core.Result(command=command, data=data)
-
-    if requested not in DEPTH_LEVELS:
-        raise core.fail(
-            core.E_USAGE,
-            "--set takes one of %s, not %r" % (" | ".join(DEPTH_LEVELS), requested),
-        )
-    if requested == DEPTH_FULL:
-        present = _module_facets(ws, target, module)
-        missing = [facet for facet in DEEPENING_FACETS if facet not in present]
-        if missing:
-            # The one refusal keeping the field honest: it can be narrowed
-            # freely, and widened only against files on disk.
-            data["depth"] = current
-            return core.Result(
-                command=command,
-                data=data,
-                diagnostics=[
-                    core.error(
-                        core.E_INVALID_STATE,
-                        "refusing `--set %s` for %r: %s %s not on disk, so the field "
-                        "would claim coverage that does not exist"
-                        % (
-                            DEPTH_FULL,
-                            module,
-                            ", ".join(
-                                "%s%s" % (module, FACET_FILENAME_SUFFIX[facet])
-                                for facet in missing
-                            ),
-                            "is" if len(missing) == 1 else "are",
-                        ),
-                        file=relative,
-                    )
-                ],
-            )
-
-    entry["depth"] = requested
-    diagnostics = _persist_catalog(ws, target, existing.document)
-    if diagnostics:
-        data["depth"] = current
-        return core.Result(command=command, data=data, diagnostics=diagnostics)
-    data["depth"] = requested
-    data["declared"] = requested
-    data["written"] = [relative]
-    return core.Result(command=command, data=data)
-
-
 def _current_revision(ws: core.Workspace, interface: str) -> int:
     """The shared interface's recorded ``revision``; absent means 1."""
     existing = load_existing_catalog(ws, SHARED_TARGET)
@@ -795,6 +632,8 @@ def _current_revision(ws: core.Workspace, interface: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < DEFAULT_REVISION:
         return DEFAULT_REVISION
     return value
+
+
 
 
 def _revision(args, ws: core.Workspace) -> core.Result:
@@ -874,28 +713,21 @@ def register(subparsers) -> None:
 
     mode_parser = verbs.add_parser(
         "mode",
-        help="CREATE/UPDATE plus the requirements gate result",
+        help="CREATE or UPDATE, from the presence of a module directory",
         description=(
-            "Report whether the target's spec tree exists and whether its requirements "
-            "gate passes. Judgment -- whether the user is describing a new product "
-            "despite an existing tree -- belongs to mspec, not here."
+            "Report whether the target's spec tree exists. Judgment -- whether the "
+            "user is describing a new product despite an existing tree -- belongs to "
+            "mspec, not here."
         ),
     )
     mode_parser.add_argument("target", help="a repo name or 'shared'")
-
-    layers_parser = verbs.add_parser(
-        "layers",
-        help="the target's modules in layer order",
-        description="Read the target's CATALOG.yaml and return its modules in layer order.",
-    )
-    layers_parser.add_argument("target", help="a repo name or 'shared'")
 
     emit_parser = verbs.add_parser(
         "catalog-emit",
         help="write CATALOG.yaml derived from the spec tree",
         description=(
             "Derive modules, files, facets and depends_on from the tree; preserve layers, "
-            "each module's layer and requirements, each INTERFACE file's exports, and "
+            "each module's layer, each INTERFACE file's exports, and "
             "shared_interfaces from the existing catalog."
         ),
     )
@@ -917,26 +749,6 @@ def register(subparsers) -> None:
         help="return delivered stories built against an older revision, not consuming repos",
     )
 
-    depth_parser = verbs.add_parser(
-        "depth",
-        help="report or set a module's spec depth",
-        description=(
-            "Report how far a module has been described -- absence means full, not a "
-            "third state -- or set it. --set full is refused while any of "
-            "DEPENDENCIES/IMPLEMENTATION/TESTING is missing, so the field cannot claim "
-            "coverage that is not on disk; --set contract is accepted regardless."
-        ),
-    )
-    depth_parser.add_argument("target", help="a repo name or 'shared'")
-    depth_parser.add_argument("module", metavar="module", help="the module TAG")
-    depth_parser.add_argument(
-        "--set",
-        dest="set",
-        default=None,
-        metavar="|".join(DEPTH_LEVELS),
-        help="set the module's depth to contract or full",
-    )
-
     revision_parser = verbs.add_parser(
         "revision",
         help="report or bump a shared interface's agreement revision",
@@ -956,10 +768,8 @@ def register(subparsers) -> None:
 
 VERBS = {
     "mode": _mode,
-    "layers": _layers,
     "catalog-emit": _catalog_emit,
     "consumers": _consumers,
-    "depth": _depth,
     "revision": _revision,
 }
 

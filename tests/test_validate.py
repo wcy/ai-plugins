@@ -108,86 +108,20 @@ def test_every_alias_resolves_to_its_canonical_schema(workspace, alias, canonica
     assert core.resolve_kind(alias) == core.resolve_kind(canonical)
 
 
-def test_the_tables_are_exactly_the_twelve_kinds_and_ten_aliases():
-    assert core.KIND_ALIASES == EXPECTED_ALIASES
-    assert set(core.CANONICAL_KINDS) == EXPECTED_KINDS
-    assert len(core.CANONICAL_KINDS) == 12
-    assert len(core.KIND_ALIASES) == 10
 
 
-def test_the_eleventh_kind_resolves_and_validates(workspace):
-    path = _slice_report(workspace)
-    result, code = _run(workspace, SLICE_REPORT, [path])
-    assert code == 0
-    assert result.ok is True
-    assert result.data["lines"] == ["OK    %s (%s)" % (path, SLICE_REPORT)]
 
 
-def test_the_slice_alias_resolves_to_the_slice_report_schema(workspace):
-    path = _slice_report(workspace)
-    result, code = _run(workspace, SLICE_ALIAS, [path])
-    assert code == 0
-    assert result.ok is True
-    # The alias, not the canonical name, is echoed back.
-    assert result.data["lines"] == ["OK    %s (%s)" % (path, SLICE_ALIAS)]
-    assert core.resolve_kind(SLICE_ALIAS) == core.resolve_kind(SLICE_REPORT)
 
 
-def test_the_slice_report_kind_rejects_a_replan_with_no_reason(workspace):
-    """The kind is registered against the real schema, not merely resolvable."""
-    path = workspace.write(
-        "instances/bad-slice-report.json",
-        '{\n'
-        '  "slice": "01",\n'
-        '  "plan_id": "001-demo",\n'
-        '  "outcome": "replan",\n'
-        '  "acceptance": "fail"\n'
-        '}\n',
-    )
-    result, code = _run(workspace, SLICE_ALIAS, [path])
-    assert code == 1
-    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
 
 
-def test_the_twelfth_kind_resolves_and_validates(workspace):
-    path = _todo_front_matter(workspace)
-    result, code = _run(workspace, TODO_FRONT_MATTER, [path])
-    assert code == 0
-    assert result.ok is True
-    assert result.data["lines"] == ["OK    %s (%s)" % (path, TODO_FRONT_MATTER)]
 
 
-def test_the_todo_alias_resolves_to_the_todo_frontmatter_schema(workspace):
-    path = _todo_front_matter(workspace)
-    result, code = _run(workspace, TODO_ALIAS, [path])
-    assert code == 0
-    assert result.ok is True
-    # The alias, not the canonical name, is echoed back.
-    assert result.data["lines"] == ["OK    %s (%s)" % (path, TODO_ALIAS)]
-    assert core.resolve_kind(TODO_ALIAS) == core.resolve_kind(TODO_FRONT_MATTER)
 
 
-def test_the_todo_kind_rejects_a_list_claiming_another_tier(workspace):
-    """The kind is registered against the real schema, not merely resolvable.
-
-    There is one list at one tier, so ``todo`` is a ``const`` and a per-repo
-    list is exactly what the schema must refuse.
-    """
-    path = workspace.write(
-        "instances/bad-todo.md",
-        "<!-- todo: demo -->\n<!-- updated: 2026-01-15 -->\n\n# Deferred Work\n",
-    )
-    result, code = _run(workspace, TODO_ALIAS, [path])
-    assert code == 1
-    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
 
 
-def test_registering_the_group_kinds_twice_changes_nothing():
-    """The registration is idempotent, so a re-import cannot duplicate it."""
-    before_kinds, before_aliases = core.CANONICAL_KINDS, dict(core.KIND_ALIASES)
-    validate._register_kinds()
-    assert core.CANONICAL_KINDS == before_kinds
-    assert core.KIND_ALIASES == before_aliases
 
 
 @pytest.mark.parametrize("kind", sorted(VALID_INSTANCES))
@@ -199,25 +133,8 @@ def test_explicit_schema_filename_resolves(workspace, kind):
     assert result.data["lines"] == ["OK    %s (%s)" % (path, explicit)]
 
 
-def test_req_change_frontmatter_resolves_and_validates_a_conforming_record(workspace):
-    path = workspace.add_instance("req-change-frontmatter")
-    result, code = _run(workspace, "req-change-frontmatter", [path])
-    assert code == 0
-    assert result.ok is True
 
 
-def test_req_change_frontmatter_rejects_a_closed_record_with_no_spec_change(workspace):
-    path = workspace.write(
-        "instances/bad-req-change.md",
-        "<!-- req-change: 001 -->\n"
-        "<!-- tier: demo -->\n"
-        "<!-- status: closed -->\n"
-        "<!-- date: 2026-01-01 -->\n"
-        "\n# REQ-CHANGE-001: Tightened Scope\n",
-    )
-    result, code = _run(workspace, "req-change-frontmatter", [path])
-    assert code == 1
-    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
 
 
 # ---------------------------------------------------------------------------
@@ -646,30 +563,8 @@ def test_a_version_four_state_validates_with_no_sweep_block(workspace):
     assert code == 0, [d.render() for d in result.diagnostics]
 
 
-def test_a_version_four_state_validates_with_a_zeroed_sweep_block(workspace):
-    """`filed: 0` is a declaration -- a run that left nothing behind said so."""
-    doc = _state(sweep={"filed": 0, "titles": []})
-    result, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
-    assert code == 0, [d.render() for d in result.diagnostics]
 
 
-def test_an_absent_sweep_and_a_zeroed_one_stay_distinguishable(workspace):
-    """The whole value of the field.
-
-    A loader that normalised the missing key into a zeroed block would erase the
-    difference between *never declared* and *declared nothing*, which is the one
-    distinction the declaration exists to record. Asserted on the parsed
-    documents, not on the validator's verdict -- both validate, and that is
-    precisely why validity cannot be the assertion.
-    """
-    absent = _state()
-    zeroed = _state(sweep={"filed": 0, "titles": []})
-    assert "sweep" not in absent
-    assert zeroed["sweep"]["filed"] == 0
-    assert absent != zeroed
-    for doc in (absent, zeroed):
-        _, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
-        assert code == 0
 
 
 def test_a_version_three_state_carrying_a_sweep_block_is_rejected(workspace):

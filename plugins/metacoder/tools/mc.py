@@ -34,13 +34,10 @@ GROUPS = (
     "validate",
     "change",
     "spec",
-    "req",
     "plan",
     "state",
     "worktree",
-    "todo",
     "check",
-    "status",
 )
 
 _EPILOG = "command groups:\n" + "".join("  %s\n" % name for name in GROUPS)

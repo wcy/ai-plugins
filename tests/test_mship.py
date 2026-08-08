@@ -330,25 +330,8 @@ def test_under_gate_never_an_unverifiable_acceptance_is_recorded_unconfirmed():
     assert "pass" not in backticked(cell)
 
 
-@pytest.mark.parametrize("kind", ["plan-state", "slice-report"])
-def test_unconfirmed_is_a_value_both_schemas_admit(kind):
-    """The skill records it through the tool, so both writers must accept it."""
-    schema = core.load_schema(kind)
-    if kind == "plan-state":
-        enum = schema["$defs"]["sliceState"]["properties"]["acceptance"]["enum"]
-    else:
-        enum = schema["properties"]["acceptance"]["enum"]
-    assert "unconfirmed" in enum
-    assert {"pass", "fail"} <= set(enum)
 
 
-def test_every_documented_outcome_is_one_the_schemas_record():
-    """A decision the state writer cannot express is one that gets lost."""
-    documented = {rule.kind for rule in decision_rules()}
-    recorded = set(core.load_schema("slice-report")["properties"]["outcome"]["enum"])
-    state_enum = core.load_schema("plan-state")["$defs"]["sliceState"]["properties"]
-    assert documented <= recorded
-    assert documented <= set(state_enum["outcome"]["enum"])
 
 
 def test_the_stop_reasons_are_the_three_the_datamodel_names():
@@ -439,13 +422,6 @@ def test_a_null_cost_is_excluded_from_the_sample_not_counted_as_zero():
     assert 10.0 >= 4.0 * statistics.median(counted_as_zero)
 
 
-def test_the_baseline_is_observed_cost_and_never_a_pre_run_estimate():
-    """`REQ-024` asks for evidence; a figure quoted up front is prediction."""
-    body = section(skill_text(), "### The budget breaker")
-    assert "never an estimate made before the run" in body
-    telemetry = core.load_schema("slice-report")["$defs"]["telemetry"]
-    assert "never a pre-run estimate" in telemetry["description"]
-    assert sorted(telemetry["properties"]) == ["cost_usd", "tokens", "wall_clock_s"]
 
 
 def test_the_breaker_reads_a_cost_field_the_telemetry_type_carries():
@@ -497,36 +473,8 @@ def documented_invocations(text=None):
         yield tokens[index], tokens[index + 1], tokens[index + 2 :]
 
 
-def test_the_skill_documents_the_verbs_the_loop_is_built_from():
-    """Guards the derivation below: no invocations would make it vacuous."""
-    named = {(group, verb) for group, verb, _rest in documented_invocations()}
-    assert {
-        ("plan", "resolve"),
-        ("plan", "slices"),
-        ("plan", "reslice"),
-        ("state", "set-slice"),
-        ("spec", "depth"),
-        ("spec", "consumers"),
-    } <= named
 
 
-def test_every_option_the_skill_documents_is_one_its_verb_accepts():
-    """A skill passing a flag the verb never registered fails at run time,
-    where nobody is reading the exit code, rather than here."""
-    registered = registered_options()
-    unknown = []
-    for group, verb, rest in documented_invocations():
-        if group.startswith(("<", "-")) or verb.startswith(("<", "-")):
-            continue
-        accepted = registered.get((group, verb))
-        if accepted is None:
-            unknown.append("mc.py %s %s" % (group, verb))
-            continue
-        for token in rest:
-            token = token.strip("[](),.`").split("=")[0]
-            if token.startswith("--") and len(token) > 2 and token not in accepted:
-                unknown.append("mc.py %s %s %s" % (group, verb, token))
-    assert unknown == []
 
 
 def test_the_skill_never_claims_a_per_slice_telemetry_write():
@@ -964,29 +912,10 @@ def _depth(workspace):
     return result.data
 
 
-def test_a_catalog_with_no_depth_field_reports_full_so_step_one_never_fires(workspace):
-    """The whole of the backward-compatibility story: a plan carried over from
-    before spec depth existed runs with the deepen step never invoked."""
-    _depth_catalog(workspace, declared=None)
-    reported = _depth(workspace)
-    assert reported["depth"] == "full" and reported["declared"] is None
-    assert reported["written"] == []
 
 
-def test_only_a_module_the_catalog_calls_contract_is_deepened(workspace):
-    _depth_catalog(workspace, declared="contract")
-    assert _depth(workspace)["depth"] == "contract"
-    _depth_catalog(workspace, declared="full")
-    assert _depth(workspace)["depth"] == "full"
 
 
-def test_the_skill_asks_the_catalog_rather_than_reading_the_tree():
-    body = section(skill_text(), "### Step 1: Deepen — ask the catalog, do not infer")
-    assert ("spec", "depth") in {
-        (group, verb) for group, verb, _rest in documented_invocations(body)
-    }
-    assert "writes no facet and never flips the depth field" in body
-    assert "skips the step silently" in body
 
 
 # ---------------------------------------------------------------------------

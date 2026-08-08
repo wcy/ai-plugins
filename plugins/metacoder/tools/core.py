@@ -52,8 +52,9 @@ E_AMBIGUOUS = "E_AMBIGUOUS"
 E_INVALID_STATE = "E_INVALID_STATE"
 E_DANGLING_DEPENDS_ON = "E_DANGLING_DEPENDS_ON"
 E_COUPLING = "E_COUPLING"
-E_MISSING_REQUIREMENT = "E_MISSING_REQUIREMENT"
-E_ORPHAN_REQUIREMENT = "E_ORPHAN_REQUIREMENT"
+E_ACCEPTANCE_NOT_RED = "E_ACCEPTANCE_NOT_RED"
+E_ACCEPTANCE_NOT_GREEN = "E_ACCEPTANCE_NOT_GREEN"
+E_NOT_ARMED = "E_NOT_ARMED"
 E_HANDOFF = "E_HANDOFF"
 E_UNPARSED_NAME = "E_UNPARSED_NAME"
 
@@ -673,26 +674,24 @@ SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 CANONICAL_KINDS = (
     "catalog",
     "change-frontmatter",
-    "conformance-report",
-    "inconsistency-report",
+    "finding-report",
     "plan-graph",
     "plan-state",
     "project-state",
-    "requirements-frontmatter",
-    "req-change-frontmatter",
     "story-report",
 )
 
-#: The eight friendly aliases, per SCHEMAS-INTERFACE.md.
+#: The friendly aliases. `conformance` and `inconsistency` both resolve to
+#: `finding-report`: the two schemas differed only in their finding vocabulary,
+#: so the names are kept as aliases and the shape is one.
 KIND_ALIASES = {
     "change": "change-frontmatter",
     "plan": "plan-graph",
     "ledger": "project-state",
-    "conformance": "conformance-report",
+    "finding": "finding-report",
+    "conformance": "finding-report",
+    "inconsistency": "finding-report",
     "story": "story-report",
-    "inconsistency": "inconsistency-report",
-    "requirements": "requirements-frontmatter",
-    "req-change": "req-change-frontmatter",
 }
 
 SCHEMA_SUFFIX = ".schema.json"

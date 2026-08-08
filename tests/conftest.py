@@ -98,13 +98,10 @@ VALID_INSTANCES = {
         "<!-- date: 2026-01-01 -->\n"
         "\n# CHANGE-001\n",
     ),
-    "conformance-report": (
-        "conformance.json",
-        '{\n  "scope": {\n    "kind": "aggregate"\n  },\n  "findings": [],\n  "clean": true\n}\n',
-    ),
-    "inconsistency-report": (
-        "inconsistency.json",
-        '{\n  "scope": {\n    "kind": "intra-repo",\n    "repo": "demo"\n  },\n  "findings": []\n}\n',
+    "finding-report": (
+        "finding.json",
+        '{\n  "pass": "conformance",\n  "scope": {\n    "kind": "aggregate"\n  },\n'
+        '  "findings": [],\n  "clean": true\n}\n',
     ),
     "plan-graph": (
         "plan.yaml",
@@ -152,18 +149,6 @@ VALID_INSTANCES = {
         "    status: pending\n"
         "    plan_dir: context/project/plans/001-demo/\n",
     ),
-    "requirements-frontmatter": (
-        "requirements.md",
-        "<!-- requirements: demo -->\n<!-- updated: 2026-01-01 -->\n\n# Requirements\n",
-    ),
-    "req-change-frontmatter": (
-        "req-change.md",
-        "<!-- req-change: 001 -->\n"
-        "<!-- tier: demo -->\n"
-        "<!-- status: open -->\n"
-        "<!-- date: 2026-01-01 -->\n"
-        "\n# REQ-CHANGE-001: Tightened Scope\n",
-    ),
     "story-report": (
         "story.json",
         '{\n'
@@ -182,17 +167,17 @@ KIND_ALIASES = {
     "change": "change-frontmatter",
     "plan": "plan-graph",
     "ledger": "project-state",
-    "conformance": "conformance-report",
+    "finding": "finding-report",
+    "conformance": "finding-report",
+    "inconsistency": "finding-report",
     "story": "story-report",
-    "inconsistency": "inconsistency-report",
-    "requirements": "requirements-frontmatter",
-    "req-change": "req-change-frontmatter",
 }
 
 #: One instance per kind that parses but fails its schema.
 INVALID_INSTANCES = {
     "catalog": ("bad-catalog.yaml", "version: 1\nrepo: demo\n"),
     "story-report": ("bad-story.json", '{\n  "story_id": "nope"\n}\n'),
+    "finding-report": ("bad-finding.json", '{\n  "scope": {"kind": "repo"},\n  "findings": []\n}\n'),
 }
 
 

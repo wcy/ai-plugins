@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/finding-report.schema.json",
+  "title": "Finding report (a shard's return, or an aggregate over shards)",
+  "description": "The one report shape in the workflow. It replaces conformance-report and inconsistency-report, which differed only in their finding vocabularies while sharing a scope object, a findings array, and a clean flag. The producing pass is named by `pass`; the finding vocabulary is the union, and each type belongs to exactly one pass. A shard returns this object and writes nothing; the orchestrator persists it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pass",
+    "scope",
+    "findings"
+  ],
+  "properties": {
+    "pass": {
+      "enum": [
+        "conformance",
+        "inconsistency"
+      ],
+      "description": "Which detection pass produced this report. conformance = mverify checking shipped code against the change/plan/spec that specified it. inconsistency = mreverse comparing code against code, within a repo or across a boundary."
+    },
+    "shard": {
+      "enum": [
+        "change-conformance",
+        "cross-repo",
+        "coupling"
+      ],
+      "description": "The conformance shard kind that produced this report. Absent on an aggregate and on an inconsistency report. Distinct from scope.kind, which is the granularity axis: `cross-repo` appears on both and means different things -- here, the shared-interface sweep; there, that the report spans repos."
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "module",
+            "repo",
+            "intra-repo",
+            "cross-repo",
+            "aggregate"
+          ]
+        },
+        "repo": {
+          "type": "string",
+          "description": "Repo under review. Omitted on cross-repo and aggregate scopes."
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The repos compared, on a cross-repo scope."
+        },
+        "module": {
+          "type": "string",
+          "description": "Module TAG, on a module scope."
+        },
+        "interface": {
+          "type": "string",
+          "description": "Shared interface TAG, on a cross-repo conformance shard."
+        },
+        "boundary": {
+          "type": "string",
+          "description": "The contract boundary compared, on a cross-repo inconsistency report."
+        },
+        "change_ref": {
+          "type": "string",
+          "description": "The change/plan/spec unit this shard was checked against."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "clean": {
+      "type": "boolean",
+      "description": "True iff findings is empty. On an aggregate, true iff no shard reported a finding. A clean result is a real result and is reported, never omitted."
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "severity",
+        "detail"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "missing",
+            "extra",
+            "mismatch",
+            "coupling",
+            "cross-repo-drift",
+            "stale-contract-revision",
+            "self-contradiction",
+            "module-drift",
+            "dead-code",
+            "duplicated-divergent",
+            "type-mismatch",
+            "emitted-but-unread",
+            "read-but-unemitted",
+            "version-skew",
+            "signature-mismatch"
+          ],
+          "description": "The first six belong to the conformance pass, the last nine to the inconsistency pass. missing/extra/mismatch = change<->code surface drift; coupling = a cross-module IMPLEMENTATION import or a cross-repo reference bypassing context/shared/spec/; cross-repo-drift = a producer or consumer that does not match the frozen shared contract; stale-contract-revision = delivered code conforming to the agreement revision it was built against and to no other. That last is deliberately its own type rather than a cross-repo-drift, because the remedy differs: drift means somebody diverged and wants investigating, whereas a stale revision means the contract moved underneath conforming work and wants scheduling."
+        },
+        "severity": {
+          "enum": [
+            "blocking",
+            "warning",
+            "info"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string"
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The repos that disagree, on a cross-repo finding."
+        },
+        "spec_ref": {
+          "type": "string",
+          "description": "The spec or contract surface the code was checked against (file + signature/type)."
+        },
+        "code_path": {
+          "type": "string",
+          "description": "Source path, relative to repos/<repo>/, where the finding lives."
+        },
+        "code_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Source locations evidencing an inconsistency finding."
+        },
+        "surface": {
+          "type": "string",
+          "description": "The specific signature, type, endpoint or event affected."
+        },
+        "built_against": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "On a stale-contract-revision finding: the agreement revision the delivered code was built against."
+        },
+        "current_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "On a stale-contract-revision finding: the revision the agreement now carries. With built_against this makes the gap legible without re-deriving it."
+        }
+      }
+    }
+  }
+}

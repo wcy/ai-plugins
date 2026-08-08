@@ -20,7 +20,7 @@
         3,
         4
       ],
-      "description": "New state files are written with 4. A 1, 2 or 3 file carries no sweep declaration and still resolves: no field was renamed, and its absence reads as never having declared. The version rises because additionalProperties is false, so a reader pinned to 3 rejects the new key outright -- a compatibility fact about readers rather than about files."
+      "description": "New state files are written with 4. Earlier versions still resolve: no field was ever renamed, and an absent slices[] reads as one implicit slice covering every wave."
     },
     "plan_id": {
       "type": "string",
@@ -131,28 +131,6 @@
     "telemetry": {
       "$ref": "#/$defs/telemetry",
       "description": "Rough actuals for the run (never a pre-run estimate)."
-    },
-    "sweep": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "filed"
-      ],
-      "description": "The end-of-run deferral declaration, written by mship and mquick through mc.py state sweep. ITS PRESENCE IS THE CLAIM: a plan with no sweep key never declared, a plan with filed: 0 declared that it left nothing behind. Nothing may collapse the two, and no writer may treat filed: 0 as an occasion to omit the key. Optional at the schema level and obligatory at the end of delivery -- the schema cannot express 'required once status is terminal' without invalidating every in-flight file, so check handoff carries that half of the rule.",
-      "properties": {
-        "filed": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "How many entries this run's closing sweep filed. 0 is a declaration, not a no-op."
-        },
-        "titles": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The titles the sweep filed, so a reader reaches them without re-reading the run. Not a second copy of the entries, which live only in context/project/TODO.md."
-        }
-      }
     }
   },
   "$defs": {
@@ -223,6 +201,18 @@
             null
           ],
           "description": "mship's decision at this slice boundary; null until the slice is decided."
+        },
+        "armed": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "description": "The exit code of the slice's surface: delivered acceptance command, run BEFORE the slice's stories. It must be non-zero: an acceptance that already passes either does not reach the behaviour the slice delivers or the slice delivers nothing. mc.py state set-slice --armed refuses 0, so this field can only ever hold a red. Its presence is what makes the later green a demonstration rather than a claim."
+        },
+        "confirmed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "The exit code of the same command, re-run after the slice's last barrier. mc.py state set-slice refuses --confirmed non-zero paired with --acceptance pass, and refuses --confirmed at all on a slice that was never armed."
         },
         "telemetry": {
           "$ref": "#/$defs/telemetry"

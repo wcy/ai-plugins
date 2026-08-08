@@ -4,31 +4,32 @@ Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts — so
 the *shape* of every automated file. `../shared/` holds the prose standards for *content and
 conventions*.
 
-This module is **purely declarative**: twelve JSON documents plus this `README.md`, no executable
+This module is **purely declarative**: seven JSON documents plus this `README.md`, no executable
 code.
 
 ## Kinds and aliases
 
-Twelve canonical kinds, each resolving to `<kind>.schema.json` in this directory:
+Seven canonical kinds, each resolving to `<kind>.schema.json` in this directory:
 
-`catalog`, `change-frontmatter`, `conformance-report`, `inconsistency-report`, `plan-graph`,
-`plan-state`, `project-state`, `story-report`, `slice-report`, `requirements-frontmatter`,
-`req-change-frontmatter`, `todo-frontmatter`.
+`catalog`, `change-frontmatter`, `finding-report`, `plan-graph`, `plan-state`, `project-state`,
+`story-report`.
 
-Ten friendly aliases name the same documents:
+`finding-report` is one shape for both detection passes. `conformance-report` and
+`inconsistency-report` differed only in their finding vocabulary while sharing a `scope` object, a
+`findings` array and a `clean` flag; the producing pass is now a `pass` field and the vocabulary is
+the union. The old names survive as aliases.
+
+Friendly aliases name the same documents:
 
 | Alias | Kind |
 |-------|------|
 | `change` | `change-frontmatter` |
 | `plan` | `plan-graph` |
 | `ledger` | `project-state` |
-| `conformance` | `conformance-report` |
+| `finding` | `finding-report` |
+| `conformance` | `finding-report` |
+| `inconsistency` | `finding-report` |
 | `story` | `story-report` |
-| `slice` | `slice-report` |
-| `inconsistency` | `inconsistency-report` |
-| `requirements` | `requirements-frontmatter` |
-| `req-change` | `req-change-frontmatter` |
-| `todo` | `todo-frontmatter` |
 
 The kinds and the aliases are this module's contract. The CLI that accepts them lives in `../tools/`:
 
@@ -45,21 +46,17 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py validate <kind> <file> [<file> ...]
 | `plan-graph.schema.json` | `context/project/plans/<plan-id>/plan.yaml` | mplan | mexecute, mverify |
 | `project-state.schema.json` | `context/project/state.yaml` | mplan, mexecute | all entry points (resume) |
 | `plan-state.schema.json` | `context/project/plans/<plan-id>/state.yaml` | mplan (initial), mexecute, mverify (the `conformance` block, standalone runs only) | mexecute, mverify |
-| `conformance-report.schema.json` | each shard's returned JSON, persisted as `context/project/out/<plan-id>/shards/<shard-id>.json`, and the aggregate `context/project/out/<plan-id>/mverify-report.json` — four validations per sweep | mverify's orchestrator (shards return JSON and write nothing) | mverify, mexecute |
-| `story-report.schema.json` | mexecute wave-agent return | mexecute subagents | mexecute, mship (the `spec_defect` field only) |
-| `slice-report.schema.json` | mship per-slice return | mship | mship, mquick (relayed into its Phase E report) |
-| `inconsistency-report.schema.json` | mreverse reader return + aggregate | mreverse subagents | mreverse |
-| `requirements-frontmatter.schema.json` | `context/<repo\|shared\|project>/requirements/REQUIREMENTS.md` front-matter | mreq | mspec (read-only — Prerequisites gate + Risk Scan's requirements-drift category) |
-| `req-change-frontmatter.schema.json` | `context/<tier>/requirements/changes/REQ-CHANGE-*.md` front-matter | mreq (authors the record), tools (`req change-close` writes the closing transition) | mspec, tools (`check handoff`), mmigrate |
+| `finding-report.schema.json` | each shard's returned JSON, persisted as `context/project/out/<plan-id>/shards/<shard-id>.json`, and the aggregate `context/project/out/<plan-id>/mverify-report.json`; also mreverse's reader returns and its aggregate | the orchestrator (shards return JSON and write nothing) | mverify, mship, mreverse |
+| `story-report.schema.json` | story-agent return | mship's story subagents | mship |
 
 The "Written by" and "Read by" columns name the skill whose step produces or consumes the artifact.
 Every one of those reads and writes now goes through `../tools/`, which validates each artifact
 before persisting it — so validation is no longer a step a skill can omit.
 
-Three rows validate a *return value* rather than a path — `story-report`, `slice-report`,
-`inconsistency-report` — because nothing writes those into the workspace. What mship does persist,
-the aggregate `mship-run.md` in the plan's `context/project/out/` directory, is rendered Markdown
-assembled from validated slice returns, not itself a schema-checked artifact.
+`story-report` validates a *return value* rather than a path, because nothing writes it into the
+workspace. What mship does persist, the aggregate `mship-run.md` in the plan's
+`context/project/out/` directory, is rendered Markdown assembled from validated returns, not itself
+a schema-checked artifact.
 
 ## Two levels of state
 
