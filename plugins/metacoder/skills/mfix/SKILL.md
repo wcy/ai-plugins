@@ -229,11 +229,19 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
     --context "<what the finding is, the spec_ref and code_path it names, what Step 1 confirmed, and what closing it needs>"
 ```
 
-`--run` is where a deferred item names the skill that owns it: `/mspec` for a missing contract,
-`/mreverse` for a repo with no spec tree. `--kind` is `architecture` for the missing-contract case
-Step 2.4 defers. `--origin` is the Step 5 change document, so a reader can open the run that raised
-the item. `--context` is written for a **cleared** context — the reader was not here and has not
-seen the report.
+`--run` is where a deferred item names who owns it: `/mspec` for a missing contract, `/mreverse` for
+a repo with no spec tree, and `human` where closing it needs an action no agent can take — a plugin
+install, a credential rotation, an approval only a person can give. `--kind` is `architecture` for
+the missing-contract case Step 2.4 defers. `--origin` is the Step 5 change document, so a reader can
+open the run that raised the item. `--context` is written for a **cleared** context — the reader was
+not here and has not seen the report.
+
+**An item routed `human` is not this skill's to attempt, and the queue excludes it by construction.**
+`mfix` works its queue by reading `todo list --run /mfix`, which returns none of them, so a human
+item is never picked up and never fails on a pass. Before `human` existed such work carried `/mfix`
+as the least-wrong available value, and every `mfix` run would take it up and be unable to close it:
+the routing was not untidy but wrong, and this is the shape of the fix. Nothing here needs to learn
+to skip such an item — the filter simply does not return it.
 
 The verb validates every field before it appends and a refusal writes nothing, so a rejected entry
 leaves no half-written list. Do not compose an entry in prose and do not restate its enums here;

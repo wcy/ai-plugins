@@ -240,6 +240,7 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
    | `coupling` | `/mfix` | `architecture` |
    | any of the above where **no contract exists to compare against** (the spec module, or the `context/shared/spec/<IFACE>/` tree, is not written yet) | `/mspec` | `spec-drift` |
    | a spec the code has moved wholesale past, wanting reconciliation rather than a fix | `/mreverse` | `spec-drift` |
+   | a finding whose close requires an action **no agent can take** — a plugin install, a credential rotation, an approval only a person can give | `human` | as the cause fits |
 
    `--origin` is the resolved `<plan-id>`, or the `CHANGE-<NNN>` ref on the ad-hoc path; `todo add` refuses an origin that resolves to nothing and writes nothing on refusal, so a rejected entry leaves no half-filed item. The four ratings are annotations — nothing here or downstream gates, orders or defers on them.
 
@@ -273,7 +274,7 @@ Worked example: `context/project/changes/CHANGE-003-retry.md` → basename `CHAN
 - **No spec/change/plan rewrites.** It reports drift; closing it is a separate `mspec` (respec) or `mreverse` (reconcile) run, or a code fix.
 - **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced.
 - **No delegated verdict.** `mc.py` supplies the shard list and the mechanical checks; which findings the report carries and how severe each one is stays here.
-- **No adjudication.** A finding left open is filed through `todo add` and routed to the skill that should close it (Step 4.3). The entry **names** the finding and proposes no fix: which of code and spec is authoritative stays `/mfix`'s call, and routing an item is not judging it.
+- **No adjudication.** A finding left open is filed through `todo add` and routed to whoever should close it (Step 4.3). The entry **names** the finding and proposes no fix: which of code and spec is authoritative stays `/mfix`'s call, and routing an item is not judging it. Routing one to `human` is a routing judgement of the same kind as choosing between `/mfix` and `/mspec` — it records that no invocation closes the item, which is a fact about the finding rather than a verdict on it, and no more an adjudication than the other rows are.
 - **No hand-written entry.** The TODO's fields are a fixed shape over closed enums, so the entry is composed by `todo add` and never in prose here — `STANDARD-TODO.md` owns the schema and this file does not restate it.
 - **No deferral.** It carries the `deferred` count and never sets, raises, or acts on it. A finding `mfix` accepted as debt is re-detected and re-reported here on every run — and filing one to the TODO does not defer it either.
 - **No re-planning.** `--slice <NN>` narrows what this run looks at; deciding what the next slice should be off the back of a report is `mship`'s call.
