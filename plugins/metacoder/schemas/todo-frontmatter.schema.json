@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wcy/ai-plugins/main/plugins/metacoder/schemas/todo-frontmatter.schema.json",
+  "title": "TODO-list front-matter",
+  "description": "The HTML-comment front-matter block at the top of the project TODO list (context/project/TODO.md). Keys are the <!-- key: value --> lines. Shape-only, like requirements-frontmatter.schema.json: it never validates the '## <Title>' entry bodies — the routing skill, the enums, the origin reference and the context paragraph are 'mc.py check todo''s guarantee, not this document's. See STANDARD-REQ.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["todo", "updated"],
+  "properties": {
+    "todo": {
+      "type": "string",
+      "const": "project",
+      "description": "The tier the list belongs to. Only the project tier holds a TODO list, so this is always 'project'."
+    },
+    "updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    }
+  }
+}

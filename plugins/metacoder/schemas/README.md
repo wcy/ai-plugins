@@ -4,18 +4,18 @@ Machine-readable JSON Schemas (Draft 2020-12) for the metacoder artifacts — so
 the *shape* of every automated file. `../shared/` holds the prose standards for *content and
 conventions*.
 
-This module is **purely declarative**: eleven JSON documents plus this `README.md`, no executable
+This module is **purely declarative**: twelve JSON documents plus this `README.md`, no executable
 code.
 
 ## Kinds and aliases
 
-Eleven canonical kinds, each resolving to `<kind>.schema.json` in this directory:
+Twelve canonical kinds, each resolving to `<kind>.schema.json` in this directory:
 
 `catalog`, `change-frontmatter`, `conformance-report`, `inconsistency-report`, `plan-graph`,
 `plan-state`, `project-state`, `story-report`, `slice-report`, `requirements-frontmatter`,
-`req-change-frontmatter`.
+`req-change-frontmatter`, `todo-frontmatter`.
 
-Nine friendly aliases name the same documents:
+Ten friendly aliases name the same documents:
 
 | Alias | Kind |
 |-------|------|
@@ -28,6 +28,7 @@ Nine friendly aliases name the same documents:
 | `inconsistency` | `inconsistency-report` |
 | `requirements` | `requirements-frontmatter` |
 | `req-change` | `req-change-frontmatter` |
+| `todo` | `todo-frontmatter` |
 
 The kinds and the aliases are this module's contract. The CLI that accepts them lives in `../tools/`:
 
