@@ -4,6 +4,7 @@
     mc.py check coupling <target>
     mc.py check requirements <target>
     mc.py check catalog <target>
+    mc.py check todo
     mc.py check handoff
     mc.py check all [<target>]
 
@@ -42,6 +43,12 @@ Several rules live here, and **only** here -- no other module re-derives one:
   every facet. Only a declaration is measured: an absent ``depth`` means
   ``full`` for resolution but is not an assertion this rule may fire on, which
   is what keeps every catalog written before spec depth existed conforming.
+* **the deferral list** -- every entry in ``context/project/TODO.md`` carries
+  each required field, a ``Run``/``Kind``/rating inside its enum, an ``Origin``
+  that resolves, and a ``Context`` naming something the reader could open. The
+  first three are exactly what ``todo add`` refuses on and are reported with the
+  same codes; the fourth is this check's alone, because the emitter does not
+  apply it.
 
 ``check handoff`` walks the stage chain once. **``stranded`` is the general
 rule** ``TOOLS-DATAMODEL.md`` states -- *the artifact is complete but no
@@ -67,9 +74,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from tools import change, core, plan, req, spec
+from tools import change, core, plan, req, spec, todo
 
 COMMAND = "check"
+
+#: The three codes `todo add` refuses on, re-exported under this module's names
+#: so `check todo` reports a hand-edited violation with the very code the
+#: emitter would have refused it with. One definition, two call sites: the
+#: checker and the emitter cannot describe the same defect differently.
+E_TODO_FIELD = todo.E_TODO_FIELD
+E_TODO_ENUM = todo.E_TODO_ENUM
+E_TODO_ORIGIN = todo.E_TODO_ORIGIN
 
 # ---------------------------------------------------------------------------
 # Stable diagnostic codes owned by this module.
@@ -134,10 +149,16 @@ CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
 CHECK_REQUIREMENTS = "requirements"
 CHECK_CATALOG = "catalog"
+CHECK_TODO = "todo"
 CHECK_HANDOFF = "handoff"
 
 #: `check all` runs these per-target checks, in this order.
 TARGET_CHECKS = (CHECK_DEPENDS_ON, CHECK_COUPLING, CHECK_REQUIREMENTS, CHECK_CATALOG)
+
+#: `check all` then runs these workspace-wide checks, in this order -- the same
+#: order TOOLS-INTERFACE.md's table lists them in. Neither takes a target: one
+#: list at one tier, and one stage chain across the whole workspace.
+WORKSPACE_CHECKS = (CHECK_TODO, CHECK_HANDOFF)
 
 # ---------------------------------------------------------------------------
 # Spec-tree vocabulary
@@ -1074,6 +1095,124 @@ def catalog_findings(ws: core.Workspace, target: str) -> List[core.Diagnostic]:
 
 
 # ---------------------------------------------------------------------------
+# check todo -- where the deferral list's guarantee actually lives
+#
+# `todo-frontmatter.schema.json` is shape-only by necessity: it validates two
+# HTML-comment lines and can say nothing about the `## <Title>` bodies beneath
+# them. Everything `todo add` refuses before it writes is therefore re-checked
+# here, against the same field table and the same enums read from
+# `STANDARD-TODO.md` and with the same diagnostic codes, so a hand-edited list
+# is held to exactly what the emitter would have allowed.
+#
+# One rule is this check's alone. A `Context` too thin to start from is measured
+# **structurally** -- as a Context naming no file, artifact or identifier the
+# reader could open -- rather than by length, and the rule is deliberately weak:
+# it catches the empty gesture, not the plausible-but-useless paragraph, and no
+# checker can catch the second.
+# ---------------------------------------------------------------------------
+
+#: A `Context` that names nothing a reader could open.
+E_TODO_CONTEXT = "E_TODO_CONTEXT"
+
+#: A backticked artifact: a command, a verb, a schema kind, a symbol.
+_CONTEXT_ARTIFACT_RE = re.compile(r"`[^`\s][^`]*`")
+
+#: A filename or a path: a stem of two or more characters, a dot, and a short
+#: extension. The two-character stem is what keeps `e.g.` and `i.e.` out, and
+#: requiring letters after the dot is what keeps a sentence-ending `etc.` out.
+_CONTEXT_FILE_RE = re.compile(r"\b[A-Za-z0-9_/-]*[A-Za-z0-9_-]{2}\.[A-Za-z]{1,6}\b")
+
+#: An identifier the workspace uses: a requirement or change number, a plan id,
+#: or a module TAG.
+_CONTEXT_IDENT_RE = re.compile(
+    r"\b(?:REQ|CHANGE|PROJECT-CHANGE|REQ-CHANGE)-[0-9]{3,4}\b"
+    r"|\b[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)+\b"
+    r"|\b[A-Z][A-Z0-9]{2,}\b"
+)
+
+_CONTEXT_RULES = (_CONTEXT_ARTIFACT_RE, _CONTEXT_FILE_RE, _CONTEXT_IDENT_RE)
+
+
+def context_names_something(text: str) -> bool:
+    """Whether a ``Context`` names a file, an artifact or an identifier."""
+    return any(rule.search(text) is not None for rule in _CONTEXT_RULES)
+
+
+def todo_findings(ws: core.Workspace) -> List[core.Diagnostic]:
+    """Every violation ``context/project/TODO.md`` carries.
+
+    A workspace with no list is clean rather than incomplete: nothing has been
+    deferred, which is not a defect. Findings are emitted entry by entry in
+    document order and, within an entry, in the standard's own field order, so
+    the report is stable between runs.
+    """
+    path, escape = ws.resolve_path(*todo.TODO_PARTS)
+    if escape is not None:
+        return [escape]
+    if not path.is_file():
+        return []
+    relative = ws.rel(path)
+    try:
+        text = core.read_text(path, relative)
+    except core.ToolError as exc:
+        return [exc.diagnostic]
+
+    specs = todo.field_specs()
+    findings: List[core.Diagnostic] = []
+    for entry in todo.parse_entries(text):
+        for item in specs:
+            findings.extend(_todo_field_findings(ws, entry, item, relative))
+    return findings
+
+
+def _todo_field_findings(
+    ws: core.Workspace, entry: "todo.TodoEntry", item: "todo.FieldSpec", relative: str
+) -> List[core.Diagnostic]:
+    """One entry's one field: presence, enum, then the field's own rule."""
+    value = entry.get(item.name).strip()
+    where = "entry %r" % (entry.title,)
+    if not value:
+        return [
+            core.error(
+                E_TODO_FIELD,
+                "%s is missing the required %s field" % (where, item.name),
+                file=relative,
+                line=entry.line,
+            )
+        ]
+    if item.enum is not None and value not in item.enum:
+        return [
+            core.error(
+                E_TODO_ENUM,
+                "%s has %s %r, which is outside its enum: %s"
+                % (where, item.name, value, ", ".join(item.enum)),
+                file=relative,
+                line=entry.line,
+            )
+        ]
+    if item.name == todo.ORIGIN_FIELD and todo.resolve_origin(ws, value) is None:
+        return [
+            core.error(
+                E_TODO_ORIGIN,
+                "%s has Origin %r, which names no change document or plan" % (where, value),
+                file=relative,
+                line=entry.line,
+            )
+        ]
+    if item.name == todo.CONTEXT_FIELD and not context_names_something(value):
+        return [
+            core.error(
+                E_TODO_CONTEXT,
+                "%s has a Context naming no file, artifact or identifier, so it cannot be "
+                "started from a cleared context" % (where,),
+                file=relative,
+                line=entry.line,
+            )
+        ]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # check handoff -- the single stage walk
 # ---------------------------------------------------------------------------
 
@@ -1685,6 +1824,11 @@ def run_target_check(ws: core.Workspace, name: str, target: str) -> CheckReport:
     return CheckReport(name, target, list(TARGET_RUNNERS[name](ws, target)))
 
 
+def run_todo_check(ws: core.Workspace) -> CheckReport:
+    """The workspace-wide deferral-list check, as a ``CheckReport``."""
+    return CheckReport(CHECK_TODO, None, list(todo_findings(ws)))
+
+
 def run_handoff_check(ws: core.Workspace) -> Tuple[CheckReport, List[core.Diagnostic]]:
     """The workspace-wide handoff check and the reads it warned about."""
     walk = walk_stages(ws)
@@ -1719,13 +1863,18 @@ def _catalog_check(args, ws: core.Workspace) -> core.Result:
     return _report_result(run_target_check(ws, CHECK_CATALOG, target))
 
 
+def _todo_check(args, ws: core.Workspace) -> core.Result:
+    """``check todo`` -- workspace-wide, because there is one list at one tier."""
+    return _report_result(run_todo_check(ws))
+
+
 def _handoff(args, ws: core.Workspace) -> core.Result:
     report, diagnostics = run_handoff_check(ws)
     return _report_result(report, diagnostics)
 
 
 def _all(args, ws: core.Workspace) -> core.Result:
-    """Every check: the per-target ones, then the workspace-wide handoff."""
+    """Every check: the per-target ones, then the two workspace-wide ones."""
     given = getattr(args, "target", None)
     if given is None:
         targets = list(ws.targets)  # sorted, and excludes `project`
@@ -1736,6 +1885,7 @@ def _all(args, ws: core.Workspace) -> core.Result:
     for target in targets:
         for name in TARGET_CHECKS:
             reports.append(run_target_check(ws, name, target))
+    reports.append(run_todo_check(ws))
     handoff_report, warnings = run_handoff_check(ws)
     reports.append(handoff_report)
     diagnostics.extend(warnings)
@@ -1758,6 +1908,7 @@ VERBS = {
     CHECK_COUPLING: _coupling,
     CHECK_REQUIREMENTS: _requirements,
     CHECK_CATALOG: _catalog_check,
+    CHECK_TODO: _todo_check,
     CHECK_HANDOFF: _handoff,
     "all": _all,
 }
@@ -1776,7 +1927,8 @@ def register(subparsers) -> None:
         description=(
             "Run one of the mechanical checks: dangling depends-on paths, the three "
             "dependency rules, requirement coverage, catalog agreement with the spec "
-            "tree, or the cross-stage handoff walk. Any finding sets exit 1."
+            "tree, the deferral list, or the cross-stage handoff walk. Any finding sets "
+            "exit 1."
         ),
     )
     parser.set_defaults(group=COMMAND, verb=None)
@@ -1825,6 +1977,19 @@ def register(subparsers) -> None:
     )
     catalog_parser.add_argument("target", help="a repo name or 'shared'")
     catalog_parser.set_defaults(verb=CHECK_CATALOG)
+
+    todo_parser = verbs.add_parser(
+        CHECK_TODO,
+        help="deferral entries missing a field, outside an enum, or unstartable",
+        description=(
+            "Check every entry in context/project/TODO.md against "
+            "shared/STANDARD-TODO.md: a missing required field, a Run, Kind or rating "
+            "outside its enum, an Origin naming a change or plan that does not resolve, "
+            "and a Context naming no file, artifact or identifier to start from. Takes no "
+            "target -- there is one list, at the project tier."
+        ),
+    )
+    todo_parser.set_defaults(verb=CHECK_TODO)
 
     handoff_parser = verbs.add_parser(
         CHECK_HANDOFF,

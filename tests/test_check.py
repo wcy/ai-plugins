@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import change, check, core, req, spec, status
+from tools import change, check, core, req, spec, status, todo
 
 TARGET = "demo"
 
@@ -889,6 +889,217 @@ def test_catalog_exports_findings_are_errors(workspace):
 
 
 # ---------------------------------------------------------------------------
+# check todo
+#
+# Same two shapes as every other check: a fixture built to contain exactly one
+# defect, and a clean fixture that reports nothing. The list is written by
+# ``todo add`` wherever the entry is meant to be conforming -- a fixture
+# hand-writing the *good* case would be a second implementation of the emitter
+# and could drift from it -- and hand-edited only to introduce the one defect
+# under test, which is the state a checker exists for.
+# ---------------------------------------------------------------------------
+
+TODO_REL = todo.TODO_REL
+
+#: A conforming ``todo add`` call, keyed by argparse destination.
+_TODO_FIELDS = {
+    "run": "/mfix",
+    "kind": "spec-drift",
+    "origin": "CHANGE-001",
+    "priority": "medium",
+    "risk_if_unfixed": "low",
+    "regression_risk": "low",
+    "cost": "low",
+    "context": "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos.",
+}
+
+
+def _todo_origin(workspace):
+    """A change document a conforming ``Origin`` resolves to."""
+    workspace.write(
+        "context/%s/changes/CHANGE-001-demo.md" % TARGET,
+        _change_text("001", "demo", "pending"),
+    )
+
+
+def _todo_add(workspace, title="a deferral", **overrides):
+    """Write one entry through the emitter, so the fixture is what it produces."""
+    fields = dict(_TODO_FIELDS)
+    fields.update(overrides)
+    result = todo.run(workspace.args(verb="add", title=title, **fields), workspace.ws)
+    assert core.exit_code(result) == 0, [item.render() for item in result.diagnostics]
+    return result
+
+
+def _todo_edit(workspace, old, new):
+    """The one hand edit a test introduces, applied to the emitted list."""
+    path = workspace.path(TODO_REL)
+    text = path.read_text(encoding="utf-8")
+    assert old in text, old
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return path
+
+
+def test_todo_reports_nothing_on_a_workspace_with_no_list(workspace):
+    """Nothing deferred is not a defect, and must not read as one."""
+    result, code = _check(workspace, "todo")
+    assert result.data["findings"] == []
+    assert result.data["target"] is None
+    assert code == 0
+
+
+def test_todo_reports_nothing_on_a_conforming_list(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    result, code = _check(workspace, "todo")
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_todo_reports_a_missing_required_field(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Cost:** low\n", "")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_FIELD]
+    assert "Cost" in findings[0]["message"]
+    assert findings[0]["file"] == TODO_REL
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("**Run:** /mfix", "**Run:** /mnope"),
+        ("**Kind:** spec-drift", "**Kind:** typo"),
+        ("**Priority:** medium", "**Priority:** urgent"),
+        ("**Risk-if-unfixed:** low", "**Risk-if-unfixed:** none"),
+        ("**Regression-risk:** low", "**Regression-risk:** unknown"),
+        ("**Cost:** low", "**Cost:** cheap"),
+    ],
+)
+def test_todo_reports_a_value_outside_its_enum(workspace, old, new):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, old, new)
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ENUM]
+
+
+def test_todo_reports_an_origin_that_resolves_to_nothing(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ORIGIN]
+    assert "CHANGE-404" in findings[0]["message"]
+
+
+@pytest.mark.parametrize(
+    "context",
+    ["needs more thought", "fix later", "this one is important and someone should do it"],
+)
+def test_todo_reports_a_context_too_thin_to_start_from(workspace, context):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], context)
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [check.E_TODO_CONTEXT]
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "plugins/metacoder/tools/check.py aggregates across repos",
+        "the rule lives in `context_names_something` and has no test",
+        "CHANGE-029 left this open",
+        "TOOLS publishes it but the catalog does not",
+        "020-deferred-work-todo shipped without it",
+    ],
+)
+def test_a_context_naming_a_file_artifact_or_identifier_is_accepted(workspace, context):
+    """The rule is deliberately weak: it catches the empty gesture only."""
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], context)
+
+    assert _findings(workspace, "todo") == []
+
+
+def test_a_sentence_abbreviation_is_not_mistaken_for_a_filename(workspace):
+    """``e.g.``/``i.e.``/``etc.`` must not satisfy the rule on their own."""
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], "it is broken, e.g. sometimes, etc.")
+
+    assert _codes(_findings(workspace, "todo")) == [check.E_TODO_CONTEXT]
+
+
+def test_todo_reports_every_violation_the_emitter_would_have_refused(workspace):
+    """The checker's codes are the emitter's codes, not a parallel vocabulary."""
+    assert (check.E_TODO_FIELD, check.E_TODO_ENUM, check.E_TODO_ORIGIN) == (
+        todo.E_TODO_FIELD,
+        todo.E_TODO_ENUM,
+        todo.E_TODO_ORIGIN,
+    )
+
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
+    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
+    _todo_edit(workspace, "**Cost:** low\n", "")
+
+    findings = _findings(workspace, "todo")
+    # Field order is the standard's, so the report is stable between runs.
+    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ORIGIN, todo.E_TODO_FIELD]
+
+
+def test_todo_reports_each_entry_in_document_order(workspace):
+    """Two defective entries, reported in the order the file writes them."""
+    _todo_origin(workspace)
+    _todo_add(workspace, title="first")
+    _todo_add(workspace, title="second", kind="architecture")
+    # `_todo_edit` replaces the first occurrence only, and the second entry is
+    # given a `Kind` of its own, so each edit lands on the entry named beside it.
+    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
+    _todo_edit(workspace, "**Kind:** architecture", "**Kind:** typo")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ENUM]
+    assert "'first'" in findings[0]["message"] and "Run" in findings[0]["message"]
+    assert "'second'" in findings[1]["message"] and "Kind" in findings[1]["message"]
+    assert findings[0]["line"] < findings[1]["line"]
+
+
+def test_a_todo_finding_carries_the_entrys_line(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace, title="first")
+    _todo_add(workspace, title="second")
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+
+    findings = _findings(workspace, "todo")
+    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
+    assert lines[findings[0]["line"] - 1] == "## first"
+
+
+def test_todo_findings_set_exit_1(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+    assert _check(workspace, "todo")[1] == 1
+
+
+def test_todo_takes_no_target(workspace):
+    """One list at one tier: a target would imply a per-repo list, and there is none."""
+    result, code = _check(workspace, "todo", "../escape")
+    assert code == 0
+    assert result.data["target"] is None
+
+
+# ---------------------------------------------------------------------------
 # check handoff
 # ---------------------------------------------------------------------------
 
@@ -1192,10 +1403,24 @@ def test_all_runs_every_check_for_one_target(workspace):
         "coupling",
         "requirements",
         "catalog",
+        "todo",
         "handoff",
     ]
     assert result.data["targets"] == [TARGET]
     assert code == 0
+
+
+def test_all_includes_the_todo_check_and_its_findings(workspace):
+    """``check all`` gains a check, so a defect only it sees still fails the run."""
+    _chain(workspace)
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+
+    result, code = _check(workspace, "all", TARGET)
+    reports = {report["check"]: report for report in result.data["reports"]}
+    assert _codes(reports["todo"]["findings"]) == [todo.E_TODO_ENUM]
+    assert code == 1
 
 
 def test_all_without_a_target_covers_every_target(workspace):
@@ -1213,7 +1438,8 @@ def test_all_without_a_target_covers_every_target(workspace):
         "other",
         "other",
         "other",
-        None,
+        None,  # todo -- one list, at the project tier
+        None,  # handoff -- one stage chain, across the workspace
     ]
     assert code == 0
 

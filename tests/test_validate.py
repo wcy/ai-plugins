@@ -10,9 +10,10 @@ The core I/O the group stands on (deterministic YAML emission in schema key
 order, front-matter read/write) is covered at the bottom, because waves 2-4
 build their emitters on it.
 
-The eleventh kind, ``slice-report``, and its ``slice`` alias are registered by
-the group rather than restated in ``core``, so their instance and their place in
-the two tables are declared here beside the cases that exercise them.
+The eleventh and twelfth kinds -- ``slice-report`` with its ``slice`` alias, and
+``todo-frontmatter`` with its ``todo`` alias -- are registered by the group
+rather than restated in ``core``, so their instances and their place in the two
+tables are declared here beside the cases that exercise them.
 """
 
 import json
@@ -43,11 +44,26 @@ SLICE_REPORT_INSTANCE = (
     '}\n',
 )
 
-#: The whole documented surface, once the group has registered the eleventh
-#: kind. Declared here rather than in ``conftest`` because the registration is
-#: this group's, and a table that disagreed with it would be the defect.
-EXPECTED_KINDS = set(VALID_INSTANCES) | {SLICE_REPORT}
-EXPECTED_ALIASES = dict(KIND_ALIASES, **{SLICE_ALIAS: SLICE_REPORT})
+#: The twelfth canonical kind and the tenth alias, per SCHEMAS-INTERFACE.md.
+TODO_FRONT_MATTER = "todo-frontmatter"
+TODO_ALIAS = "todo"
+
+#: A conforming ``todo-frontmatter`` instance: the two-line block at the top of
+#: ``context/project/TODO.md``. Markdown, because that is the file the kind
+#: validates and the front-matter reader is the loader it goes through.
+TODO_INSTANCE = (
+    "todo.md",
+    "<!-- todo: project -->\n<!-- updated: 2026-01-15 -->\n\n# Deferred Work\n",
+)
+
+#: The whole documented surface, once the group has registered the eleventh and
+#: twelfth kinds. Declared here rather than in ``conftest`` because the
+#: registration is this group's, and a table that disagreed with it would be the
+#: defect.
+EXPECTED_KINDS = set(VALID_INSTANCES) | {SLICE_REPORT, TODO_FRONT_MATTER}
+EXPECTED_ALIASES = dict(
+    KIND_ALIASES, **{SLICE_ALIAS: SLICE_REPORT, TODO_ALIAS: TODO_FRONT_MATTER}
+)
 
 
 def _run(workspace, kind, files):
@@ -58,6 +74,11 @@ def _run(workspace, kind, files):
 
 def _slice_report(workspace):
     filename, content = SLICE_REPORT_INSTANCE
+    return workspace.write("instances/%s" % filename, content)
+
+
+def _todo_front_matter(workspace):
+    filename, content = TODO_INSTANCE
     return workspace.write("instances/%s" % filename, content)
 
 
@@ -87,11 +108,11 @@ def test_every_alias_resolves_to_its_canonical_schema(workspace, alias, canonica
     assert core.resolve_kind(alias) == core.resolve_kind(canonical)
 
 
-def test_the_tables_are_exactly_the_eleven_kinds_and_nine_aliases():
+def test_the_tables_are_exactly_the_twelve_kinds_and_ten_aliases():
     assert core.KIND_ALIASES == EXPECTED_ALIASES
     assert set(core.CANONICAL_KINDS) == EXPECTED_KINDS
-    assert len(core.CANONICAL_KINDS) == 11
-    assert len(core.KIND_ALIASES) == 9
+    assert len(core.CANONICAL_KINDS) == 12
+    assert len(core.KIND_ALIASES) == 10
 
 
 def test_the_eleventh_kind_resolves_and_validates(workspace):
@@ -128,10 +149,43 @@ def test_the_slice_report_kind_rejects_a_replan_with_no_reason(workspace):
     assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
 
 
-def test_registering_the_eleventh_kind_twice_changes_nothing():
+def test_the_twelfth_kind_resolves_and_validates(workspace):
+    path = _todo_front_matter(workspace)
+    result, code = _run(workspace, TODO_FRONT_MATTER, [path])
+    assert code == 0
+    assert result.ok is True
+    assert result.data["lines"] == ["OK    %s (%s)" % (path, TODO_FRONT_MATTER)]
+
+
+def test_the_todo_alias_resolves_to_the_todo_frontmatter_schema(workspace):
+    path = _todo_front_matter(workspace)
+    result, code = _run(workspace, TODO_ALIAS, [path])
+    assert code == 0
+    assert result.ok is True
+    # The alias, not the canonical name, is echoed back.
+    assert result.data["lines"] == ["OK    %s (%s)" % (path, TODO_ALIAS)]
+    assert core.resolve_kind(TODO_ALIAS) == core.resolve_kind(TODO_FRONT_MATTER)
+
+
+def test_the_todo_kind_rejects_a_list_claiming_another_tier(workspace):
+    """The kind is registered against the real schema, not merely resolvable.
+
+    There is one list at one tier, so ``todo`` is a ``const`` and a per-repo
+    list is exactly what the schema must refuse.
+    """
+    path = workspace.write(
+        "instances/bad-todo.md",
+        "<!-- todo: demo -->\n<!-- updated: 2026-01-15 -->\n\n# Deferred Work\n",
+    )
+    result, code = _run(workspace, TODO_ALIAS, [path])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_registering_the_group_kinds_twice_changes_nothing():
     """The registration is idempotent, so a re-import cannot duplicate it."""
     before_kinds, before_aliases = core.CANONICAL_KINDS, dict(core.KIND_ALIASES)
-    validate._register_slice_report()
+    validate._register_kinds()
     assert core.CANONICAL_KINDS == before_kinds
     assert core.KIND_ALIASES == before_aliases
 
