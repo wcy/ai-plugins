@@ -92,6 +92,18 @@ Ruling human-only work off this list instead was considered and rejected. Any de
 to survive a cleared context, which is the whole premise of this list, so a second home would either
 duplicate this schema or be a worse version of it.
 
+**A prose deferral is a deferral.** The obligation to file attaches to the **act** of deferring, not
+to the shape the run happened to record it in. A skill that defers through a named result field — a
+`spec_defect`, a `deferred_break`, a stop reason — and one that defers in a sentence of its own prose
+incur the same obligation, and neither is exempt for lacking a field to key on.
+
+This is stated because the opposite was assumed once, and the assumption was invisible. Enumerating
+the skills that defer by looking for their named fields returned five, and five looked like all of
+them: `mmigrate` deferred at five separate points and `mreverse` at one, each in prose only, and each
+called `todo add` zero times. The coverage read as complete precisely because the method that built
+it could not see what it was missing. A rule stated without its cause reads as a preference, so the
+cause is recorded here with it.
+
 **`Origin` must resolve.** The named change document or plan has to exist on disk — the same
 obligation `req change-close` places on the `CHANGE-<NNN>` it writes. A dangling origin is a finding,
 not a plausible-looking string, because an entry whose provenance cannot be opened is an entry
