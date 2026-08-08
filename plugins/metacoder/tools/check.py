@@ -58,6 +58,16 @@ unconsumed exactly as a ``pending`` one is, and is reported the same way. That
 generality is the point of REQ-019; reading only the parenthetical would make
 the check blind to the defect the change document cites as its rationale.
 
+It also **folds the open deferrals in**, each carrying the skill it is routed
+to. A deferral is not stranded in the stage sense -- nothing downstream is
+waiting on it, and no absent successor would reveal it -- so it is reported as
+outstanding work with an owner rather than as a broken handoff: a plain
+``Diagnostic`` at ``warning`` severity under its own code, never a
+``HandoffFinding`` and never folded into ``stranded``, and it never changes the
+exit code. Folding it in here is what makes "picked up on the next iteration"
+true, because ``check handoff`` is where someone already looks to see what is
+outstanding.
+
 The walk in :func:`walk_stages` is the *only* stage traversal in the package;
 ``tools/status.py`` renders its ``StatusReport`` from the same object rather
 than walking a second time.
@@ -143,6 +153,13 @@ E_CATALOG_DEPTH = "E_CATALOG_DEPTH"
 #: than scored, because a negative outstanding count is not a cleaner plan --
 #: it is a block nobody can act on.
 E_CONFORMANCE_DEFERRED = "E_CONFORMANCE_DEFERRED"
+
+#: An open entry on `context/project/TODO.md`, folded into `check handoff`
+#: alongside the stage chain. A warning, never an error: outstanding work with
+#: an owner is not a broken handoff, and a list that blocked the check would be
+#: a gate cleared only by deferring nothing. Its own code, not `E_HANDOFF`, is
+#: what makes it distinguishable from a stage-chain finding by machine.
+W_TODO_OPEN = "W_TODO_OPEN"
 
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
@@ -1132,10 +1149,42 @@ _CONTEXT_IDENT_RE = re.compile(
 
 _CONTEXT_RULES = (_CONTEXT_ARTIFACT_RE, _CONTEXT_FILE_RE, _CONTEXT_IDENT_RE)
 
+#: The entry field naming the skill an item is routed to -- the "with the skill
+#: it is routed to" half of the deferral finding. `STANDARD-TODO.md` owns the
+#: name and `todo list --run` filters on the same field, so it is read out of
+#: `todo`'s own filter list rather than spelled again here. The suite pins both
+#: the value and its membership of the standard's field table, so a rename there
+#: fails a test instead of quietly routing every entry to "no skill".
+TODO_RUN_FIELD = todo.LIST_FILTER_FIELDS[0]
+
 
 def context_names_something(text: str) -> bool:
     """Whether a ``Context`` names a file, an artifact or an identifier."""
     return any(rule.search(text) is not None for rule in _CONTEXT_RULES)
+
+
+def read_todo(
+    ws: core.Workspace,
+) -> Tuple[List["todo.TodoEntry"], str, List[core.Diagnostic]]:
+    """``(entries, path, problems)`` for ``context/project/TODO.md``.
+
+    The one reader of the list, shared by ``check todo`` and by the deferrals
+    ``check handoff`` folds in -- two readers of one file are two things to keep
+    in step, and the two checks must not be able to disagree about what the list
+    holds. Entries come back in document order. A workspace with no list yields
+    no entries and no problem: nothing has been deferred, which is not a defect.
+    """
+    path, escape = ws.resolve_path(*todo.TODO_PARTS)
+    if escape is not None:
+        return [], todo.TODO_REL, [escape]
+    relative = ws.rel(path)
+    if not path.is_file():
+        return [], relative, []
+    try:
+        text = core.read_text(path, relative)
+    except core.ToolError as exc:
+        return [], relative, [exc.diagnostic]
+    return list(todo.parse_entries(text)), relative, []
 
 
 def todo_findings(ws: core.Workspace) -> List[core.Diagnostic]:
@@ -1146,20 +1195,13 @@ def todo_findings(ws: core.Workspace) -> List[core.Diagnostic]:
     document order and, within an entry, in the standard's own field order, so
     the report is stable between runs.
     """
-    path, escape = ws.resolve_path(*todo.TODO_PARTS)
-    if escape is not None:
-        return [escape]
-    if not path.is_file():
-        return []
-    relative = ws.rel(path)
-    try:
-        text = core.read_text(path, relative)
-    except core.ToolError as exc:
-        return [exc.diagnostic]
+    entries, relative, problems = read_todo(ws)
+    if problems:
+        return problems
 
     specs = todo.field_specs()
     findings: List[core.Diagnostic] = []
-    for entry in todo.parse_entries(text):
+    for entry in entries:
         for item in specs:
             findings.extend(_todo_field_findings(ws, entry, item, relative))
     return findings
@@ -1245,22 +1287,39 @@ class StageWalk:
     slices: List[Dict[str, Any]] = field(default_factory=list)
     conformance: List[Dict[str, Any]] = field(default_factory=list)
     findings: List[HandoffFinding] = field(default_factory=list)
+    #: The open deferrals, one warning each. Deliberately **not** in
+    #: :attr:`findings`: that list is the ``HandoffFinding[]`` both
+    #: ``TOOLS-DATAMODEL.md`` §"Checks and handoff" and ``StatusReport.handoff``
+    #: publish, and a deferral is not a handoff finding -- it has no stage pair
+    #: and neither ``stranded`` nor ``incomplete`` describes it. Keeping them
+    #: apart is what leaves the stage walk itself, and everything rendered from
+    #: it, exactly as it was.
+    deferrals: List[core.Diagnostic] = field(default_factory=list)
     diagnostics: List[core.Diagnostic] = field(default_factory=list)
 
 
 def walk_stages(ws: core.Workspace) -> StageWalk:
-    """Walk mreq -> mspec -> mplan -> mexecute -> mverify -> mfix once."""
+    """Walk mreq -> mspec -> mplan -> mexecute -> mverify -> mfix once.
+
+    :func:`_deferrals_stage` reads one more file at the end and traverses
+    nothing: the chain is still walked exactly once.
+    """
     walk = StageWalk()
     _requirements_stage(ws, walk)
     indexes = _changes_stage(ws, walk)
     _plans_stage(ws, walk, indexes)
     _ownership(ws, walk)
+    _deferrals_stage(ws, walk)
     return walk
 
 
 def handoff_findings(ws: core.Workspace) -> List[HandoffFinding]:
     """``HandoffFinding[]`` -- stranded and incomplete artifacts, plus
-    ownership violations."""
+    ownership violations.
+
+    The stage chain only. The open deferrals ``check handoff`` reports beside
+    these are :attr:`StageWalk.deferrals`, and are not ``HandoffFinding``.
+    """
     return walk_stages(ws).findings
 
 
@@ -1807,6 +1866,43 @@ def _walk_files(directory: Path) -> List[Path]:
     return found
 
 
+# -- the open deferrals, folded in alongside the chain -----------------------
+
+
+def _routed_skill(entry: "todo.TodoEntry") -> str:
+    """The skill ``entry`` is routed to, as the finding names it.
+
+    An entry whose ``Run`` is missing is still reported -- it is open work, and
+    dropping it would let a malformed entry hide from the one place outstanding
+    work is read. Which field is wrong is ``check todo``'s to say, and it does.
+    """
+    return entry.get(TODO_RUN_FIELD).strip() or "no skill (its %s field is missing)" % (
+        TODO_RUN_FIELD,
+    )
+
+
+def _deferrals_stage(ws: core.Workspace, walk: StageWalk) -> None:
+    """Every open entry on ``context/project/TODO.md``, with its routed skill.
+
+    One warning per entry, in the list's own document order, so the report is
+    stable between runs. Never an error: a deferral is outstanding work with an
+    owner, and a check that a non-empty list turned red would be a gate cleared
+    only by deferring nothing -- which is the gate `todo add` exists to avoid
+    needing.
+    """
+    entries, relative, problems = read_todo(ws)
+    walk.diagnostics.extend(problems)
+    for entry in entries:
+        walk.deferrals.append(
+            core.warning(
+                W_TODO_OPEN,
+                "entry %r is open and routed to %s" % (entry.title, _routed_skill(entry)),
+                file=relative,
+                line=entry.line,
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # Verbs
 # ---------------------------------------------------------------------------
@@ -1830,9 +1926,15 @@ def run_todo_check(ws: core.Workspace) -> CheckReport:
 
 
 def run_handoff_check(ws: core.Workspace) -> Tuple[CheckReport, List[core.Diagnostic]]:
-    """The workspace-wide handoff check and the reads it warned about."""
+    """The workspace-wide handoff check and the reads it warned about.
+
+    The stage-chain findings first, then the open deferrals -- appended rather
+    than interleaved, so the chain's own report is byte-identical to what it was
+    on a workspace that has deferred nothing.
+    """
     walk = walk_stages(ws)
-    return CheckReport(CHECK_HANDOFF, None, list(walk.findings)), list(walk.diagnostics)
+    report = CheckReport(CHECK_HANDOFF, None, list(walk.findings) + list(walk.deferrals))
+    return report, list(walk.diagnostics)
 
 
 def _report_result(report: CheckReport, extra: Sequence[core.Diagnostic] = ()) -> core.Result:
@@ -1993,11 +2095,13 @@ def register(subparsers) -> None:
 
     handoff_parser = verbs.add_parser(
         CHECK_HANDOFF,
-        help="stranded and incomplete artifacts between stages",
+        help="stranded and incomplete artifacts between stages, and the open deferrals",
         description=(
             "Walk the stage chain and report every artifact whose successor never "
             "consumed it, every successor input that is present but partial, and every "
-            "file written by a stage that does not own it."
+            "file written by a stage that does not own it. Every open entry in "
+            "context/project/TODO.md is reported alongside with the skill it is routed "
+            "to, as a warning that never changes the exit code."
         ),
     )
     handoff_parser.set_defaults(verb=CHECK_HANDOFF)
