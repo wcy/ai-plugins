@@ -62,7 +62,7 @@ fixed field block, then `**Context:**`:
 
 | Field | Value |
 |---|---|
-| `Run` | the skill that should pick this up — `/mquick`, `/mreq`, `/mspec`, `/mfix`, `/mreverse` |
+| `Run` | who should pick this up — `/mquick`, `/mreq`, `/mspec`, `/mfix`, `/mreverse`, or `human` |
 | `Kind` | `logic`, `edge-case`, `error-handling`, `build`, `compile`, `packaging`, `deployment`, `test-coverage`, `spec-drift`, `architecture`, `performance`, `security` |
 | `Origin` | the `CHANGE-<NNN>`, `PROJECT-CHANGE-<NNN>` or plan id the deferral came from |
 | `Raised` | `YYYY-MM-DD` |
@@ -75,11 +75,22 @@ fixed field block, then `**Context:**`:
 **All nine fields are required.** There is no optional field and no default: an entry missing one is
 malformed, not partially filled.
 
-**`Run` and `Kind` are closed enums**, as are the four ratings — five members and twelve members
+**`Run` and `Kind` are closed enums**, as are the four ratings — six members and twelve members
 respectively, exactly as tabled above, and `high|medium|low` for each rating. A value outside the set
 fails rather than inventing a category or routing an item nowhere: an unrecognised `Kind` would
 silently create a thirteenth category nothing queries, and an unrecognised `Run` would file the item
 against a skill that never reads for it.
+
+**`human` is the one `Run` value that is not a skill**, and it carries no slash for exactly that
+reason. The other five are commands an agent invokes; `human` names work no agent can perform — a
+plugin install, a credential rotation, an approval only a person can give — and its own grammar says
+so, so a reader cannot mistake it for something to run. Before it existed, such an item carried
+whichever of the five was least wrong, which routed it to a skill that would pick it up and fail to
+close it on every pass: the routing was not untidy but wrong.
+
+Ruling human-only work off this list instead was considered and rejected. Any destination would have
+to survive a cleared context, which is the whole premise of this list, so a second home would either
+duplicate this schema or be a worse version of it.
 
 **`Origin` must resolve.** The named change document or plan has to exist on disk — the same
 obligation `req change-close` places on the `CHANGE-<NNN>` it writes. A dangling origin is a finding,

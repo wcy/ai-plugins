@@ -44,7 +44,7 @@ TITLE = "check handoff reports no per-repo counts"
 #: The two closed enums and the four ratings, exactly as ``STANDARD-TODO.md``
 #: §"Entry schema" tables them. Restated *here* on purpose: the code derives
 #: them, and a test that derived them too would agree with any derivation.
-DOCUMENTED_RUNS = ("/mquick", "/mreq", "/mspec", "/mfix", "/mreverse")
+DOCUMENTED_RUNS = ("/mquick", "/mreq", "/mspec", "/mfix", "/mreverse", "human")
 DOCUMENTED_KINDS = (
     "logic",
     "edge-case",
