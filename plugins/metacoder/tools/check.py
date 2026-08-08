@@ -161,6 +161,13 @@ E_CONFORMANCE_DEFERRED = "E_CONFORMANCE_DEFERRED"
 #: what makes it distinguishable from a stage-chain finding by machine.
 W_TODO_OPEN = "W_TODO_OPEN"
 
+#: An open entry routed to `human` -- work no invocation of anything clears.
+#: Its own code, distinct from `W_TODO_OPEN`, is the partition: every other
+#: reported entry names work some run can pick up, so that group drains, and a
+#: `human` item left among them would make it permanently non-empty and
+#: therefore unread. A standing prompt, not a stage-chain gap.
+W_TODO_HUMAN = "W_TODO_HUMAN"
+
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
@@ -1157,6 +1164,18 @@ _CONTEXT_RULES = (_CONTEXT_ARTIFACT_RE, _CONTEXT_FILE_RE, _CONTEXT_IDENT_RE)
 #: fails a test instead of quietly routing every entry to "no skill".
 TODO_RUN_FIELD = todo.LIST_FILTER_FIELDS[0]
 
+#: The one `Run` value that is not a skill, read out of the standard's own enum
+#: rather than spelled here -- it is the member carrying no leading slash, which
+#: is the grammar `STANDARD-TODO.md` gives it. Deriving it keeps this partition
+#: from disagreeing with the standard the way a literal would.
+TODO_HUMAN_RUN = next(
+    value
+    for spec in todo.field_specs()
+    if spec.name == TODO_RUN_FIELD
+    for value in (spec.enum or ())
+    if not value.startswith("/")
+)
+
 
 def context_names_something(text: str) -> bool:
     """Whether a ``Context`` names a file, an artifact or an identifier."""
@@ -1295,6 +1314,10 @@ class StageWalk:
     #: apart is what leaves the stage walk itself, and everything rendered from
     #: it, exactly as it was.
     deferrals: List[core.Diagnostic] = field(default_factory=list)
+    #: The open entries routed to `human`, one warning each. Held apart from
+    #: :attr:`deferrals` for the reason `W_TODO_HUMAN` gives: that list is a
+    #: queue that drains, and these never do.
+    human_deferrals: List[core.Diagnostic] = field(default_factory=list)
     diagnostics: List[core.Diagnostic] = field(default_factory=list)
 
 
@@ -1893,10 +1916,21 @@ def _deferrals_stage(ws: core.Workspace, walk: StageWalk) -> None:
     entries, relative, problems = read_todo(ws)
     walk.diagnostics.extend(problems)
     for entry in entries:
+        routed = _routed_skill(entry)
+        if routed == TODO_HUMAN_RUN:
+            walk.human_deferrals.append(
+                core.warning(
+                    W_TODO_HUMAN,
+                    "entry %r is open and awaits a person; no run clears it" % (entry.title,),
+                    file=relative,
+                    line=entry.line,
+                )
+            )
+            continue
         walk.deferrals.append(
             core.warning(
                 W_TODO_OPEN,
-                "entry %r is open and routed to %s" % (entry.title, _routed_skill(entry)),
+                "entry %r is open and routed to %s" % (entry.title, routed),
                 file=relative,
                 line=entry.line,
             )
@@ -1928,12 +1962,18 @@ def run_todo_check(ws: core.Workspace) -> CheckReport:
 def run_handoff_check(ws: core.Workspace) -> Tuple[CheckReport, List[core.Diagnostic]]:
     """The workspace-wide handoff check and the reads it warned about.
 
-    The stage-chain findings first, then the open deferrals -- appended rather
-    than interleaved, so the chain's own report is byte-identical to what it was
-    on a workspace that has deferred nothing.
+    The stage-chain findings first, then the open deferrals, then the entries
+    awaiting a person -- appended rather than interleaved, so the chain's own
+    report is byte-identical to what it was on a workspace that has deferred
+    nothing, and the `human` group stays visibly separate from the queue that
+    drains.
     """
     walk = walk_stages(ws)
-    report = CheckReport(CHECK_HANDOFF, None, list(walk.findings) + list(walk.deferrals))
+    report = CheckReport(
+        CHECK_HANDOFF,
+        None,
+        list(walk.findings) + list(walk.deferrals) + list(walk.human_deferrals),
+    )
     return report, list(walk.diagnostics)
 
 
