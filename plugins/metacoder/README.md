@@ -86,6 +86,7 @@ ai-plugins/                              # the marketplace repo
         │   ├── STANDARD-SPEC.md         # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…
         │   ├── STANDARD-CHANGE.md
         │   ├── STANDARD-REQ.md          # referenced via ${CLAUDE_PLUGIN_ROOT}/shared/…, mreq only
+        │   ├── STANDARD-TODO.md         # the standard context/project/TODO.md entries follow
         │   ├── PLAN-STORY-TEMPLATE.md   # story template, rendered by `mc.py plan story-emit`
         │   └── CHATFORM.md              # optional, opt-in interaction convention
         └── schemas/                     # JSON Schemas for CATALOG/plan-graph/state/reports/
@@ -250,6 +251,19 @@ so a failure names the increment that introduced it rather than the story it sur
 branch every story of the run branches off and every green story merges back into — which is the
 first and only point at which stories built in isolation are exercised together. Every one of these
 steps is `kind: exit-code`, so running them often costs no model effort and no human attention.
+
+**Work a run could not finish is written down, not remembered.** Some of what a run turns up outlives
+the run — a conformance finding left open, a defect a story hit, a judgement no command could settle.
+Rather than being reported into a session that then ends, it is recorded in `context/project/TODO.md`:
+the workspace's one durable list of outstanding work, each entry routed to the skill that should take
+it and carrying enough context to be picked up from a cleared session.
+
+Two rules keep that list worth reading. Entries are written **only** through `mc.py`'s `todo add`
+verb — no skill composes one in prose, so an entry has the same shape whichever skill deferred it.
+And **resolution is removal**: a resolved entry is deleted.
+There is no closed status and no closed section, so the list holds outstanding work and nothing else;
+what was fixed is recorded in the change that fixed it. `shared/STANDARD-TODO.md` is the standard
+those entries follow.
 
 ## Orchestration
 
