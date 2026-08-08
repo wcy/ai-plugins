@@ -246,9 +246,34 @@ When a slice reveals the shared contract itself is wrong, run the cascade in exa
 
 Remediation stories are appended to the **next** slice, never edited into the slice that shipped them. The slice that shipped stays as delivered; the work the cascade left out of step is scheduled, not rewritten.
 
+## The Closing Sweep
+
+**The loop does not end until the run has declared what it is leaving behind.** Whichever way delivery finishes — every slice `applied`, or a `{stop}` from rules 1–3 — the last thing `mship` does is re-read this run's own findings against `context/project/TODO.md`, file what is missing through `todo add`, and record the declaration:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state sweep <plan-id> --filed <n> [--titles <json>]
+```
+
+**A sweep is not a producer, and does not replace one.** Each producer files what it is *holding* at the moment it holds it — a stop reason, a `spec_defect`, a `deferred_break`. The sweep asks a different question: *what did this run learn that nobody wrote down?* Filing-at-the-moment was already wired everywhere it applies, and the list still received only what the session happened to recall: five entries from memory on the run that shipped the mechanism, with six more found minutes later by somebody looking deliberately. All six were true at filing time. **None was being held by anything.**
+
+Sources to re-read, at minimum:
+
+- every `SliceOutcome` and the reasoning behind it;
+- every `spec_defect` and `deferred_break` any story reported;
+- the per-slice `mverify` findings;
+- the acceptance of every slice recorded `unconfirmed`;
+- **any obligation the run discharged by hand** rather than through the step that owns it — a deferral about the workflow rather than the code, and the category a run is least likely to notice about itself.
+
+**`--filed 0` is a real outcome and must be recorded.** A run that genuinely left nothing behind declares so; it does not skip the call. This is the whole mechanism: nothing can check that a sweep was *thorough*, so what is checked is that it *happened*, and `check handoff` reports a finished plan carrying no declaration. Silence and a declared zero are different states, and only one is a claim somebody made.
+
+A plan whose `state.yaml` predates the declaration cannot carry one, and `state sweep` refuses it rather than migrating the file — the same reason `check handoff` does not report such a plan. Neither is a gap: the obligation cannot reach backwards.
+
+The sweep **files** entries; it closes nothing and fixes nothing. An item it files routed `human` is work no later run will pick up, which is the point of that value.
+
 ## Outputs
 
 - **`context/project/out/<plan-id>/mship-run.md`** — per slice: what it delivered, what its acceptance proved, its `SliceTelemetry`, and the `SliceOutcome` taken. This file is the per-slice cost series the budget breaker samples.
+- **The `sweep` declaration** in the plan `state.yaml`, via `mc.py state sweep` — present on every finished run, including one that filed nothing.
 - **Plan state** — slice status, acceptance and outcome via `mc.py state set-slice`; the run's actuals via `mc.py state telemetry <plan-id>`. Nothing under `context/project/plans/` is ever hand-written.
 - **`context/project/TODO.md`** — one entry per stop, via `mc.py todo add`, written before the run returns. This is the only output that outlives the session, which is why a stop writes one and a hand-back does not.
 - **A closing report** naming: slices delivered vs. planned · every re-plan performed and why · every cascade run and the revision it moved · the developer questions asked and their answers · **cost per slice** · every acceptance recorded `unconfirmed` · and, if the run stopped, which `StopReason` fired.
