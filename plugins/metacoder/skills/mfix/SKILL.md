@@ -78,8 +78,10 @@ This is the skill. Work through it per finding, in this order:
 3. **Are both wrong?** → fix both, and say so in the change file.
 
 4. **Is neither authoritative because the contract doesn't exist yet?** → **do not invent one.**
-   "No registered interface covers this surface" findings are missing architecture. Record them
-   as tracked debt in the relevant spec file and hand them to `mspec`.
+   "No registered interface covers this surface" findings are missing architecture. Defer them:
+   make no edit, and record each one on the TODO list at Step 6 with `todo add`, routed to `mspec`
+   (`mreverse` for a repo with no spec tree at all). The list is where a deferral is written; no
+   spec file is edited to note it.
 
 **Tie-breaker, when both readings look defensible:** ask which choice makes the *next* drift
 impossible rather than merely describing this one. Documenting a private module as public API
@@ -215,11 +217,43 @@ to is not deferred, it is unfixed.
 about which artefact is authoritative, which is exactly what `mfix` exists to make: `mverify`
 reports findings and never adjudicates one, and `mmigrate` will not touch it either.
 
+**Write every deferral to the TODO list**, one `todo add` per deferred finding, before you report:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "<the finding in one line>" \
+    --run /mspec \
+    --kind architecture \
+    --origin CHANGE-<NNN> \
+    --priority <p> --risk-if-unfixed <r> --regression-risk <r> --cost <c> \
+    --context "<what the finding is, the spec_ref and code_path it names, what Step 1 confirmed, and what closing it needs>"
+```
+
+`--run` is where a deferred item names the skill that owns it: `/mspec` for a missing contract,
+`/mreverse` for a repo with no spec tree. `--kind` is `architecture` for the missing-contract case
+Step 2.4 defers. `--origin` is the Step 5 change document, so a reader can open the run that raised
+the item. `--context` is written for a **cleared** context — the reader was not here and has not
+seen the report.
+
+The verb validates every field before it appends and a refusal writes nothing, so a rejected entry
+leaves no half-written list. Do not compose an entry in prose and do not restate its enums here;
+`STANDARD-TODO.md` owns the field set and `todo add` applies it.
+
+**The TODO entry is the only record of a deferral.** Do not also write the debt into the module's
+own spec. That was the earlier rule and it is retired, not merely supplemented: two records of one
+debt need two edits to close, and the one nobody is looking at rots into a claim that is no longer
+true.
+
+**Say plainly what that costs**, because it is not free. A module's spec no longer carries its own
+known debt, so someone reading `<MODULE>-INTERFACE.md` sees a contract that looks whole while a
+finding against it stands open. The only place that says otherwise is `context/project/TODO.md`, and
+they only find it if they look there or run `mc.py check handoff`. The trade was taken because a
+rotted second copy is worse than a single copy read in one place — but the reader who never opens
+the list is the person this change made worse off, and the run report should not pretend otherwise.
+
 The run report lists, per finding: `code` | `spec` | `both` | `deferred` | `not-reproduced`, the
-one-line reason, the files touched, and any release/propagation the fix forced. Deferred items
-name the skill that owns them (`mspec` for missing contracts, `mreverse` for a repo with no spec
-tree). **Anything not fixed is written down** — in the spec file it affects, so it reads as known
-debt, not an unnoticed violation.
+one-line reason, the files touched, and any release/propagation the fix forced. A `deferred` finding
+also names the `todo add` entry that now carries it and the skill its `Run` field routed it to.
 
 **Close the change document the run settled.** When every finding the Step 5 record covers is
 resolved, deferred, or marked `not-reproduced`, that record is finished — move it off `pending`:
@@ -241,12 +275,14 @@ outstanding when you do.
 
 - **Does:** verify findings; decide code-vs-spec per finding — that call is `mfix`'s, not the
   user's or the tool's; fix at root cause; write a change file and close it once the run settles
-  it; keep gates green; re-verify in `standalone` mode; record deferrals as an accepted count.
+  it; keep gates green; re-verify in `standalone` mode; write each deferral to
+  `context/project/TODO.md` through `todo add`; record deferrals as an accepted count.
 - **Does NOT:** ship feature code — remediation of a raised finding only, never new functionality
   (that's `mexecute`); refactor beyond a finding's fence; author `context/shared/spec/` contracts
   (that's `mspec`); generate a spec tree for a repo that has none (that's `mreverse`); re-plan
-  (`mplan`); re-derive a mechanical step `mc.py` owns or carry on past a failed invocation;
-  publish or push without explicit authorisation.
+  (`mplan`); note a deferral in the affected module's spec — the TODO entry is the whole record;
+  re-derive a mechanical step `mc.py` owns or carry on past a failed invocation; publish or push
+  without explicit authorisation.
 
 ## Asking Questions
 
