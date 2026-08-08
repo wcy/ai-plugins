@@ -168,6 +168,16 @@ W_TODO_OPEN = "W_TODO_OPEN"
 #: therefore unread. A standing prompt, not a stage-chain gap.
 W_TODO_HUMAN = "W_TODO_HUMAN"
 
+#: A finished plan carrying no `sweep` declaration. A warning: the run
+#: delivered, and what is missing is its statement of what it left behind --
+#: which nobody can supply retroactively by blocking on it.
+W_HANDOFF_SWEEP = "W_HANDOFF_SWEEP"
+
+#: The plan statuses at which a closing sweep declaration is owed. Delivery is
+#: over at both: `applied` finished it, `failed` stopped it, and a stopped run
+#: is the one with the most to defer.
+TERMINAL_PLAN_STATUSES = ("applied", "failed")
+
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
@@ -1555,6 +1565,54 @@ def _plans_stage(
             walk.unfinished_plans.append(resolution)
         _slice_stage(walk, plan_id, graph, state, ledger)
         _conformance_stage(ws, walk, plan_id, graph, state, ledger, highest_index)
+        _sweep_stage(walk, resolution, state)
+
+
+def _sweep_stage(walk: StageWalk, resolution: Dict[str, Any], state: Any) -> None:
+    """Report a finished plan that never declared what it left behind.
+
+    **The check is that the declaration is present, never that it is right.**
+    Nothing can confirm a run enumerated everything it learned, and a check
+    claiming to would be the false confirmation `REQ-028` describes -- so a
+    block recording ``filed: 0`` clears this stage exactly as one recording five
+    does. That is the point rather than a weakness: the absence becomes a claim
+    somebody made instead of a silence nobody notices.
+
+    A plan whose ``status`` is not yet terminal is skipped rather than reported
+    clean: the declaration is owed at the *end* of delivery, and reporting an
+    in-flight plan would train the reader to ignore the finding.
+
+    **A state file below the sweep version is skipped too**, and for a stronger
+    reason: it was written before the block existed, so its silence is not a
+    missing declaration but a plan from before declarations. The obligation
+    cannot reach backwards -- no run can return to a finished plan and declare
+    what it left behind -- so reporting one would be a finding nobody can ever
+    clear, and a check that can only be satisfied by plans yet to be written is
+    one every reader learns to skip. This is the same version-as-discriminator
+    rule ``plan.py`` states for ``slices``: a version-1/2 graph is a plan written
+    before slices existed, and nothing needs migrating.
+    """
+    if resolution["status"] not in TERMINAL_PLAN_STATUSES:
+        return
+    if not isinstance(state, dict):
+        return
+    if state.get("version") != plan.PLAN_STATE_SWEEP_VERSION:
+        return
+    if isinstance(state.get("sweep"), dict):
+        return
+    walk.findings.append(
+        handoff(
+            W_HANDOFF_SWEEP,
+            "the plan finished without a closing sweep declaration; a run that deferred "
+            "nothing further records that as `state sweep --filed 0` rather than silence",
+            STAGE_MEXECUTE,
+            STAGE_MVERIFY,
+            resolution["plan_dir"],
+            STATE_INCOMPLETE,
+            file="%s/%s" % (resolution["plan_dir"], plan.STATE_FILE),
+            severity="warning",
+        )
+    )
 
 
 def _plan_documents(

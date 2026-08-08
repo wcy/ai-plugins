@@ -321,6 +321,10 @@ def draft(project_change="001"):
     }
 
 
+#: The sliced plan `state sweep` writes to. Separate from :data:`PLAN_ID`,
+#: which is deliberately unsliced.
+SWEEP_PLAN_ID = "004-sweep-plan"
+
 #: The ``SliceDraft[]`` ``plan reslice`` is exercised with: one slice holding
 #: both of the fixture's stories, so every story lands in exactly one.
 SLICE_DRAFTS = [
@@ -367,6 +371,21 @@ def build(root, reverse=False):
     )
     assert result.ok, [item.render() for item in result.diagnostics]
     result = call(workspace, "state", "run-increment", plan_id=PLAN_ID, now=SEED_NOW)
+    assert result.ok, [item.render() for item in result.diagnostics]
+    # A second, *sliced* plan, whose state.yaml therefore carries the sweep
+    # version. The plan above stays unsliced on purpose -- two cases rely on its
+    # graph declaring no `slices` -- and `state sweep` cannot write to it,
+    # because a plan predating the declaration cannot declare. That refusal is
+    # the same rule `check handoff` applies when it skips such a plan, so the
+    # fixture holds one plan of each kind rather than bending either.
+    result = call(
+        workspace,
+        "plan",
+        "emit",
+        plan_id=SWEEP_PLAN_ID,
+        stdin=io.StringIO(json.dumps(dict(draft(), version=3, slices=SLICE_DRAFTS))),
+        now=SEED_NOW,
+    )
     assert result.ok, [item.render() for item in result.diagnostics]
     result = call(
         workspace, "todo", "add", title=TODO_TITLE, now=SEED_NOW, **dict(TODO_FIELDS)
@@ -467,6 +486,10 @@ def arguments():
             "findings": 0,
         },
         "state.telemetry": {"plan_id": PLAN_ID, "cost": 1.5, "tokens": 4096, "wall_clock": 61.5},
+        # `filed: 0` deliberately: the case that must still write a block, since
+        # a declared zero and an absent block are the two states `sweep` exists
+        # to keep apart. A case passing a non-zero count would not exercise it.
+        "state.sweep": {"plan_id": SWEEP_PLAN_ID, "filed": 0, "titles": None},
         "worktree.names": {"plan_id": PLAN_ID, "story_id": LAST_STORY, "run": 1, "attempt": 1},
         "worktree.reconcile": {"plan_id": PLAN_ID, "list_from": LISTING_REL},
         # A title the fixture does not already carry, so the case writes; the

@@ -111,12 +111,21 @@ PLAN_STATE_SLICE_VERSION = 3
 #: ``validation``, the barrier check run against the merged integration branch.
 PLAN_GRAPH_BARRIER_VERSION = 4
 
+#: The version that lets ``state.yaml`` carry the end-of-run ``sweep``
+#: declaration. It is the state file's own version, moved for the state file's
+#: own reason: version 4 of the *graph* changed the graph's shape and left this
+#: file alone, whereas ``sweep`` changes this one. ``additionalProperties`` is
+#: false, so a reader pinned to 3 rejects the key outright -- which is why a new
+#: key needs a new version rather than merely being optional.
+PLAN_STATE_SWEEP_VERSION = 4
+
 #: Every graph version that carries ``slices``. The **version** is the
 #: discriminator at every step, never the presence of a key, so a version added
 #: above 3 has to be added here too or it silently degrades to whole-job
 #: delivery -- which is the failure the version-as-discriminator rule exists to
-#: prevent. ``state.yaml`` has its own version line and stays at 3: what changed
-#: in 4 is the graph's shape, not the state file's.
+#: prevent. ``state.yaml`` has its own version line, moved to 4 by the ``sweep``
+#: block: graph version 4 changed the graph's shape and left the state file
+#: alone, and the state file's own 4 is a separate fact about a separate file.
 PLAN_GRAPH_SLICE_VERSIONS = (PLAN_GRAPH_SLICE_VERSION, PLAN_GRAPH_BARRIER_VERSION)
 LEDGER_VERSION = 1
 
@@ -1691,7 +1700,7 @@ def _derive_plan_state(graph: Dict[str, Any], now: str) -> Dict[str, Any]:
     declared = graph.get("slices")
     sliced = graph.get("version") in PLAN_GRAPH_SLICE_VERSIONS and isinstance(declared, list)
     state: Dict[str, Any] = {
-        "version": PLAN_STATE_SLICE_VERSION if sliced else PLAN_STATE_VERSION,
+        "version": PLAN_STATE_SWEEP_VERSION if sliced else PLAN_STATE_VERSION,
         "plan_id": graph.get("plan_id"),
         "run": 0,
         "updated": now,
@@ -1800,7 +1809,7 @@ def _reslice(args, ws, now) -> core.Result:
 
     recorded = _slice_statuses(state)
     rewritten_state = dict(state)
-    rewritten_state["version"] = PLAN_STATE_SLICE_VERSION
+    rewritten_state["version"] = PLAN_STATE_SWEEP_VERSION
     rewritten_state["slices"] = [
         _slice_state_entry(state, entry.get("slice"), recorded)
         for entry in slices

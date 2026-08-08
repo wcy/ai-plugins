@@ -1771,7 +1771,10 @@ def test_emit_seeds_every_slice_pending_and_the_ledger_counters(workspace):
     assert code == 0, [d.render() for d in result.diagnostics]
 
     state = core.load_yaml(workspace.path("context/project/plans/001-first/state.yaml"))
-    assert state["version"] == 3
+    # 4, not 3: the state file's own version moved when `sweep` was added to it.
+    # Graph version 4 changed the graph's shape and left this file alone; this 4
+    # is a separate fact about a separate file.
+    assert state["version"] == plan.PLAN_STATE_SWEEP_VERSION
     assert state["slices"] == [{"slice": "00", "status": "pending"}]
 
     ledger = core.load_yaml(workspace.path("context/project/state.yaml"))

@@ -2141,3 +2141,78 @@ def test_the_live_catalog_still_passes_the_depth_rule(workspace):
     """The whole tree this repo ships declares no depth, and must stay clean."""
     _tree(workspace)
     assert _findings(workspace, "catalog", TARGET) == []
+
+
+# ---------------------------------------------------------------------------
+# The sweep stage -- a finished plan that never declared
+#
+# What is checked is that the declaration is PRESENT, never that it is right.
+# Nothing can confirm a run enumerated everything it learned, so a block
+# recording `filed: 0` clears the stage exactly as one recording five does.
+# ---------------------------------------------------------------------------
+
+
+def _sweep_state(plan_id="001-demo", version=4, statusname="applied", sweep=None):
+    lines = [
+        "version: %d" % version,
+        "plan_id: %s" % plan_id,
+        "run: 1",
+        "status: %s" % statusname,
+        "stories:",
+        "  01-01-demo-ALPHA:",
+        "    repo: %s" % TARGET,
+        "    wave: 1",
+        "    status: applied",
+        "    retries: 0",
+    ]
+    if sweep is not None:
+        lines.append("sweep:")
+        lines.append("  filed: %d" % sweep)
+    return "\n".join(lines) + "\n"
+
+
+def _sweep_findings(workspace, **kwargs):
+    _chain(workspace)
+    workspace.write("context/project/plans/001-demo/state.yaml", _sweep_state(**kwargs))
+    return [
+        item
+        for item in _findings(workspace, "handoff")
+        if item["code"] == check.W_HANDOFF_SWEEP
+    ]
+
+
+def test_a_finished_plan_with_no_declaration_is_reported(workspace):
+    assert len(_sweep_findings(workspace)) == 1
+
+
+def test_a_finished_plan_declaring_zero_is_not_reported(workspace):
+    """The pair that is the whole mechanism.
+
+    A declared zero satisfies the stage exactly as a declared five does. A test
+    asserting only that the finding fires would pass for a stage that fires
+    always, which would make the declaration worthless.
+    """
+    assert _sweep_findings(workspace, sweep=0) == []
+
+
+def test_an_unfinished_plan_with_no_declaration_is_not_reported(workspace):
+    """The declaration is owed at the end of delivery, not throughout it."""
+    assert _sweep_findings(workspace, statusname="in-progress") == []
+
+
+def test_a_plan_older_than_the_sweep_version_is_not_reported(workspace):
+    """Its silence is not a missing declaration -- it predates declarations.
+
+    No run can return to a finished plan and declare what it left behind, so
+    reporting one would be a finding nobody could ever clear.
+    """
+    assert _sweep_findings(workspace, version=2) == []
+
+
+def test_the_sweep_finding_never_blocks(workspace):
+    _chain(workspace)
+    workspace.write("context/project/plans/001-demo/state.yaml", _sweep_state())
+    result, code = _check(workspace, "handoff")
+    codes = [item["code"] for item in result.data["findings"]]
+    assert check.W_HANDOFF_SWEEP in codes
+    assert code == 0
