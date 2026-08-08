@@ -112,10 +112,11 @@ superseded and add a replacement — a human decision, never automatic).
 entries (already read above, if any were present) and against
 `context/project/requirements/REQUIREMENTS.md` as cross-cutting context — scoped only to the
 entries in hand, never the whole tier's set (narrower than the [AUDIT branch](#audit-branch)'s full
-pairwise sweep). Raise anything found for the user to resolve before Phase 2 writes anything. When
-this Phase 1 runs unattended inside `mquick`, where there is no one to ask, do not halt and do not
-resolve it silently — flag it into the run's `REQ-CHANGE` record instead (see [Recording the
-Run](#recording-the-run)).
+pairwise sweep). Raise anything found for the user to resolve before Phase 2 writes anything — a
+contradiction settled here, with the user present, is resolved work and nothing further is filed for
+it. When this Phase 1 runs unattended inside `mquick`, where there is no one to ask, do not halt and
+do not resolve it silently — flag it into the run's `REQ-CHANGE` record *and* file it on the TODO
+list, routed to `/mreq` for a later AUDIT pass (see [Recording the Run](#recording-the-run)).
 
 Confirm the drafted need(s) with the user before proceeding.
 
@@ -186,8 +187,8 @@ written.
 requirements against the tier's existing entries and against
 `context/project/requirements/REQUIREMENTS.md`. DERIVE has no one to ask, so a contradiction found
 here is never resolved and never halts the run — it is flagged into the run's `REQ-CHANGE` record
-(see [Recording the Run](#recording-the-run)) for a human to resolve later, at a BRAINSTORM amend
-or a later `/mreq audit`.
+*and* filed on the TODO list, routed to `/mreq` (see [Recording the Run](#recording-the-run)), for a
+human to resolve later at a BRAINSTORM amend or a later `/mreq audit`.
 
 ### Phase 2: Write
 
@@ -275,6 +276,47 @@ In the record's body, name every entry touched, why, and what it replaced. In a 
 inside `mquick` and in DERIVE, additionally name any contradiction flagged rather than resolved. In
 AUDIT, name every contradiction found and how each was resolved.
 
+### A contradiction flagged rather than resolved is also filed as deferred work
+
+DERIVE, and a BRAINSTORM running unattended inside `mquick`, have no one to ask. Each contradiction
+they flagged is therefore **also** written to `context/project/TODO.md` — one entry per
+contradiction, after the record above and before the run reports:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "<the two needs that cannot both hold, in one line>" \
+    --run /mreq \
+    --kind architecture \
+    --origin <CHANGE-NNN|PROJECT-CHANGE-NNN|plan-id> \
+    --priority <p> --risk-if-unfixed <r> --regression-risk <r> --cost <c> \
+    --context "<the REQ ids and tiers on both sides, what each asks, which mode found it and why it could not ask, the REQ-CHANGE that records it, and that closing it is a /mreq <tier> audit pass>"
+```
+
+`--run` is `/mreq` on every one of these, because AUDIT is the branch that resolves a contradiction
+— the item routes back to this skill, not onward to `mspec`. `--kind` is `architecture`: two needs
+that cannot both be satisfied is a decision nobody has taken, not a defect in something built.
+`--origin` is the `CHANGE-<NNN>`, `PROJECT-CHANGE-<NNN>` or plan id this run was requested under —
+the `REQ-CHANGE` this run wrote is **not** an accepted origin, since `todo add` resolves only those
+three. `--context` is written for a **cleared** context: the reader was not here, has not seen this
+run, and cannot be sent to its transcript.
+
+**The entry is additional, never a replacement.** The `REQ-CHANGE` is the durable record *that* the
+contradiction was found; the TODO entry is what makes anyone look at it again. Drop the record and
+the contradiction is untraceable; drop the entry and it is unscheduled — nothing revisits it.
+
+**Neither path halts, and a refusal does not change that.** Halting would break `mquick`'s guarantee
+of no gate after Phase A, and resolving silently would break the rule that a human decides. A
+`todo add` refusal is exit `1` and writes nothing — including when this run has no change or plan
+for `--origin` to name; surface it in the closing report next to the flag and finish the run. The
+contradiction is still named in the `REQ-CHANGE` either way.
+
+**Attended BRAINSTORM and the AUDIT branch file nothing.** Both settle the contradiction with the
+user in the run that found it, so there is no unresolved work to defer, and an entry for one of them
+would file an item that is already closed before anybody reads the list.
+
+Do not compose an entry in prose and do not restate its enums here: `STANDARD-TODO.md` owns the
+field set, `todo add` applies it, and `check todo` checks it.
+
 ---
 
 ## Validation (every branch)
@@ -304,7 +346,9 @@ Run](#recording-the-run) — including an AUDIT run's, even though AUDIT never t
   target's `CATALOG.yaml`, for its `requirements:` back-reference.
 - **Writes:** `context/<tier>/requirements/REQUIREMENTS.md` and, for every amending run,
   `context/<tier>/requirements/changes/REQ-CHANGE-<NNN>-<slug>.md` — those two are the whole of
-  what this skill produces.
+  what this skill *authors*. It appends to one file it does not own,
+  `context/project/TODO.md`, and only through `mc.py todo add`: one entry per contradiction a mode
+  that could not ask flagged rather than resolved.
 - **Left alone, always:** `context/<target>/spec/**` and `CATALOG.yaml` — `mspec`'s exclusive
   domain — and a spec-layer change document, `CHANGE-<NNN>-*.md` or `PROJECT-CHANGE-<NNN>-*.md`.
   The `REQ-CHANGE-<NNN>-<slug>.md` records this skill authors carry a different prefix and are not
