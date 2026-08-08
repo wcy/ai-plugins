@@ -5,7 +5,7 @@ description: Use when you need to confirm that shipped code actually conforms to
 
 # Verify: Conformance From Change + Plan + Spec
 
-`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (change docs, plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only**: it produces a change-shaped conformance report and records results in state, and **never** rewrites code or spec. Findings feed a follow-up `/mfix` run, or `mspec`/`mreverse` when the gap is a missing contract or spec tree.
+`mverify` answers one question: **did the shipped code actually implement what a unit of executed work said it would?** It starts from the **change + plan + spec** files (change docs, plan graph, and the spec sections they reference) and checks the code in `repos/` against them. It is **read-only**: it produces a change-shaped conformance report, records results in state, files each finding it leaves open into `context/project/TODO.md`, and **never** rewrites code or spec. Findings feed a follow-up `/mfix` run, or `mspec`/`mreverse` when the gap is a missing contract or spec tree.
 
 Runs as `mexecute`'s **post-ship sweep** (its Step 3), or standalone against any prior change/plan.
 
@@ -221,9 +221,39 @@ The two axes are distinct even though `cross-repo` appears on both, with differe
 
    A deferred finding is **still detected and still reported**: it is still true, and re-detecting it every run is exactly what keeps the deferral in the ledger's accounting rather than out of sight. `mverify` does not subtract it from `findings` and does not suppress the finding in the report. Nor does it pass `--deferred` to `state conformance` — deciding that a finding *may* stand is `mfix`'s judgement about which artefact is authoritative, and `mfix` records the count itself after the standalone re-verify it asks for. This skill reports; it does not adjudicate. Carry the number; do not form an opinion about it.
 
-3. **Report to the user** the counts by type (change / cross-repo / coupling) and severity, and point at the report file.
+3. **Write each finding left open to the TODO list.** `mverify` closes nothing, so every finding this run reports is one it leaves open. A report lands in a session that then ends; the list is what outlives it. File each open finding through the verb — never by hand, the fields are a fixed shape over closed enums. This happens on **both** modes and on the ad-hoc path: "write no state" (§1) is about the plan's `conformance` block, not about the list, which has no plan directory to depend on:
 
-4. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report.
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+     --title "<the finding, named>" --run <skill> --kind <kind> --origin <plan-id-or-change-ref> \
+     --priority <rating> --risk-if-unfixed <rating> --regression-risk <rating> --cost <rating> \
+     --context "<repo, code path, spec ref, and the shard's own detail>"
+   ```
+
+   **Route on the finding's type** — `--run` names the skill that should close it:
+
+   | Finding | `--run` | `--kind` |
+   |---|---|---|
+   | `missing` / `extra` / `mismatch` | `/mfix` | `spec-drift` |
+   | `cross-repo-drift` | `/mfix` | `spec-drift` |
+   | `stale-contract-revision` | `/mfix` | `spec-drift` |
+   | `coupling` | `/mfix` | `architecture` |
+   | any of the above where **no contract exists to compare against** (the spec module, or the `context/shared/spec/<IFACE>/` tree, is not written yet) | `/mspec` | `spec-drift` |
+   | a spec the code has moved wholesale past, wanting reconciliation rather than a fix | `/mreverse` | `spec-drift` |
+
+   `--origin` is the resolved `<plan-id>`, or the `CHANGE-<NNN>` ref on the ad-hoc path; `todo add` refuses an origin that resolves to nothing and writes nothing on refusal, so a rejected entry leaves no half-filed item. The four ratings are annotations — nothing here or downstream gates, orders or defers on them.
+
+   **The entry names the finding; it does not propose a fix.** `--title` and `--context` carry what the shard reported — repo, code path, spec ref, the `detail` — and stop there. They do not say which of code and spec is authoritative, do not name the artefact that is wrong, and do not describe a remedy. **This is not adjudication:** recording that a finding is outstanding is not deciding what to do about it, `--run` routes the item rather than judging it, and the read-only contract is untouched — `repos/` and every spec, change and plan file are exactly as this run found them.
+
+   **Filing is not deferring**, and one filing is enough. Writing an entry sets no `deferred` count, suppresses nothing from the report, and subtracts nothing from `findings` (§2). And because a finding is re-detected on every run — by design — check what is already routed before adding, so the list does not fill with one finding's re-detections:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo list --run /mfix
+   ```
+
+4. **Report to the user** the counts by type (change / cross-repo / coupling) and severity, and point at the report file.
+
+5. **Do not halt or rewrite.** `mverify` only detects. When run as `mexecute`'s sweep, the run does **not** stop on drift — `mexecute` folds the returned result into its own report.
 
 ## Output File Path Patterns
 
@@ -243,7 +273,9 @@ Worked example: `context/project/changes/CHANGE-003-retry.md` → basename `CHAN
 - **No spec/change/plan rewrites.** It reports drift; closing it is a separate `mspec` (respec) or `mreverse` (reconcile) run, or a code fix.
 - **No gate.** It never blocks a run; coupling and conformance drift are surfaced, not enforced.
 - **No delegated verdict.** `mc.py` supplies the shard list and the mechanical checks; which findings the report carries and how severe each one is stays here.
-- **No deferral.** It carries the `deferred` count and never sets, raises, or acts on it. A finding `mfix` accepted as debt is re-detected and re-reported here on every run.
+- **No adjudication.** A finding left open is filed through `todo add` and routed to the skill that should close it (Step 4.3). The entry **names** the finding and proposes no fix: which of code and spec is authoritative stays `/mfix`'s call, and routing an item is not judging it.
+- **No hand-written entry.** The TODO's fields are a fixed shape over closed enums, so the entry is composed by `todo add` and never in prose here — `STANDARD-TODO.md` owns the schema and this file does not restate it.
+- **No deferral.** It carries the `deferred` count and never sets, raises, or acts on it. A finding `mfix` accepted as debt is re-detected and re-reported here on every run — and filing one to the TODO does not defer it either.
 - **No re-planning.** `--slice <NN>` narrows what this run looks at; deciding what the next slice should be off the back of a report is `mship`'s call.
 
 ## Asking Questions
