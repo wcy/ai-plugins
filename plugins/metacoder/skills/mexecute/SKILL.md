@@ -260,6 +260,8 @@ A story agent may report on its `story-report` that its **spec** — not its dif
 
 **The run continues.** A `spec_defect` does not halt the wave, does not halt the run, and is **not** a fourth halt condition — the halt conditions remain the three below, unchanged in number and in meaning. Carry the defect through the barrier, return it with the slice result, and let **`mship`** act on it at the slice boundary by re-planning what remains or cascading a contract change. `mexecute` never rewrites a spec, including one it just reported as defective.
 
+**And it is written down.** Returned in a run summary alone, a defect lives exactly as long as the session that raised it, so every `spec_defect` **also** writes an entry to `context/project/TODO.md`, routed to `/mspec` — see Step 4. That is a durable copy, not a change of status: still not a halt, still returned upward, and still `mship`'s decision at the boundary.
+
 **The enum is closed, and deliberately narrow.** A story agent able to declare its own spec wrong has an escape hatch from difficult work, so these have **no representation** and are never a `spec_defect`:
 
 - "harder than expected"
@@ -282,9 +284,9 @@ These are the **only** reasons a run stops early, and calling one is your judgme
 2. **Unmergeable wave** — reached two ways, and they count as one condition: a same-wave conflict the agent judges it cannot sensibly resolve or salvage (it reports rather than auto-resolving), **or the wave's barrier check failing against the merged integration branch**. Both say the same thing about the merged result — it is not fit to cut the next wave from — so the wave does not advance and the report names the conflict or the failing step.
 3. **Significant breaking contract change** — a shared-interface break surfaced during implementation whose blast radius **cascades beyond the current story** (forces a shared-spec revision or changes across consuming repos). The run **halts, reports the break, and ends**; it does not wait in-place for a decision.
 
-A breaking contract change whose blast radius is **contained** — it would only break code in the affected story — is **not** a halt: that story fails Post-Story Validation (so its worktree never merges), the failure is recorded as a `deferred_break` through `mc.py state set-story --deferred-break` (Step 4), and the **run continues**, folding it into the final report.
+A breaking contract change whose blast radius is **contained** — it would only break code in the affected story — is **not** a halt: that story fails Post-Story Validation (so its worktree never merges), the failure is recorded as a `deferred_break` through `mc.py state set-story --deferred-break` (Step 4), and the **run continues**, folding it into the final report and, at the end of the run, into a `context/project/TODO.md` entry routed to `/mfix` (Step 4). The entry is what keeps it from expiring with the session; it is still not a halt.
 
-**Three, and only three.** A `spec_defect` is not a fourth (see above), and neither is conformance drift, a failed Slice Acceptance, or a contained break: those are results the run reports, not reasons it stops early. A failed **barrier check** is not a fourth either — it *is* condition 2, an unmergeable wave, and it adds nothing to this list. Nor is a **red increment**: it is fixed inside the story agent's own attempt, and one that cannot be fixed reaches this list only through condition 1, by failing `post_story` and exhausting the retries that already existed.
+**Three, and only three.** A `spec_defect` is not a fourth (see above), and neither is conformance drift, a failed Slice Acceptance, or a contained break: those are results the run reports, not reasons it stops early. A failed **barrier check** is not a fourth either — it *is* condition 2, an unmergeable wave, and it adds nothing to this list. Nor is a **red increment**: it is fixed inside the story agent's own attempt, and one that cannot be fixed reaches this list only through condition 1, by failing `post_story` and exhausting the retries that already existed. Nor is **writing a finding to `context/project/TODO.md`**, or failing to: recording a `spec_defect` or a `deferred_break` is bookkeeping performed on the way out of a run that was ending anyway, and a `todo add` the tool refuses is reported alongside the finding — it is not a fourth reason to stop, and it converts no finding into one.
 
 **No human review between waves.** `mexecute` always runs every wave of the slice through; there is no between-wave gate and no mid-run prompt. Gating between **slices** belongs to `mship`, not here: a slice-scoped run simply ends at its slice boundary and returns, and that boundary is what gives `mship` somewhere to decide.
 
@@ -341,11 +343,38 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state conformance <plan-id> --status <
   **Nothing is hand-written into `state.yaml`, without exception.** The four fields that once had no verb — plan-level `integration_branches`, a story's `deferred_break`, an attempt's `validation` and `worktree_removed` — now have options above (`--integration-branches`, `--deferred-break`, `--validation`, `--worktree-removed`) and **must** go through them. Hand-writing was only ever safe against *shape* errors: the next verb's validation caught a malformed file, never a plausible-and-wrong value.
 - **Telemetry, not estimates.** Record actual `cost_usd` / `tokens` / `wall_clock_s` with `state telemetry`. **There is no cost gate** — never gate on a pre-run estimate.
 - **Logs/artifacts** under `context/project/out/<plan-id>/`.
-- **Final report:** the slice shipped and its **acceptance result**, stories shipped/failed/deferred, waves run, parallelism, retries used, the conformance-sweep result, any deferred contained breaks, **any `spec_defect` a story agent reported** (returned upward for `mship`), and telemetry. If the run halted, name which of the three conditions and what the user must decide. Close the plan with `state set-plan <plan-id> --status applied|failed` once its last slice is done.
+- **Final report:** the slice shipped and its **acceptance result**, stories shipped/failed/deferred, waves run, parallelism, retries used, the conformance-sweep result, any deferred contained breaks, **any `spec_defect` a story agent reported** (returned upward for `mship`), the TODO entry each of those two now carries, and telemetry. If the run halted, name which of the three conditions and what the user must decide. Close the plan with `state set-plan <plan-id> --status applied|failed` once its last slice is done.
+
+### Every `spec_defect` and Every `deferred_break` Writes a TODO Entry
+
+A `spec_defect` is returned to `mship` and a `deferred_break` is folded into the run report, and a report is read by whoever is present: neither finding is anywhere on disk once the session ends. **At the end of the run — after the sweep, before the final report — write one entry to `context/project/TODO.md` per finding**, through the tool:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "<story-id>: <the defect or the break in one line>" \
+    --run <skill> \
+    --kind <kind> \
+    --origin <plan-id> \
+    --priority <p> --risk-if-unfixed <r> --regression-risk <r> --cost <c> \
+    --context "<which story raised it, what the defect or break actually was, and what closing it requires>"
+```
+
+| Finding | `--run` | `--kind` | What `--context` carries beyond the story |
+|---|---|---|---|
+| `spec_defect` — `contradicts-contract` or `inexpressible` | `/mspec` | `architecture` | which of the two it was, the spec file and the contract that cannot both be satisfied (or the behaviour the code cannot be made to express), and what a spec change would have to settle |
+| `deferred_break` — a **contained** breaking contract change | `/mfix` | `spec-drift` | the interface the story broke against, why the blast radius was judged contained, the branch and worktree the failed attempt was left on, and what closing it needs |
+
+**`--run` routes to the skill that can act on it**, which is the whole of the split: only `mspec` writes a spec, and `mexecute` explicitly does not — including a defect it raised itself — while a contained break is a code-versus-contract disagreement, and deciding which of the two is authoritative is `mfix`'s job and nobody else's. **`--origin` is the plan id**, so a reader can open the run that raised the item. **`--context` is written for a cleared context** — the reader was not here, has not seen this report, and cannot be sent to a transcript, so it names the story, what the defect or break actually was, and what closing it requires, in that order.
+
+**Writing an entry changes neither finding's status.** A `spec_defect` is still not a halt, and it is still `mship` that decides at the slice boundary whether it re-plans what remains; a `deferred_break` still fails its story's Post-Story Validation, still never merges, and still does not stop the run. The entry is a second, durable copy of what the report already said — never a fourth halt condition, and never a substitute for returning the finding upward.
+
+**A halted run writes them too.** All three halt conditions end the run, and a run that ends is a run whose findings are about to be forgotten; a break deferred in wave 2 is no less real because wave 4 halted. Write the entries on the way out, then report the halt.
+
+**Do not compose an entry by hand and do not restate its enums here.** `STANDARD-TODO.md` owns the field set, `todo add` applies it, `check todo` checks it, and `check handoff` reports the open ones. The verb validates every field before it appends and a refusal writes nothing, so a rejected entry leaves no half-written list; surface the refusal in the final report alongside the finding it was for, and never fall back to editing `TODO.md` yourself.
 
 ## What mexecute does / does NOT do
 
-- **Does:** write code (the only skill that does), in `repos/<repo>/`; run the Workflow; run every git command the run needs — branch, `git worktree add`, merge, `git worktree remove`; validate — each story's increments as it is written, then its `post_story` gate, then each wave's merged result at its barrier — merge, retry, run the slice's acceptance, sweep; own both state files during the run.
+- **Does:** write code (the only skill that does), in `repos/<repo>/`; run the Workflow; run every git command the run needs — branch, `git worktree add`, merge, `git worktree remove`; validate — each story's increments as it is written, then its `post_story` gate, then each wave's merged result at its barrier — merge, retry, run the slice's acceptance, sweep; own both state files during the run; write every `spec_defect` and every `deferred_break` to `context/project/TODO.md` through `mc.py todo add` before the final report.
 - **Does NOT:** brainstorm or design (that's `mspec`); decide plan structure (that's `mplan`, read from `plan.yaml`); rewrite specs — **including a `spec_defect` it reported**, which it hands upward rather than acting on; decide which slice runs next, or whether to re-plan (that's `mship`); touch more than one repo per story; merge into a repo's live working branch; advance a wave on red; halt on conformance drift; ask `mc.py` to run git, or compose a name or a verdict `mc.py` owns.
 
 ## Asking Questions
