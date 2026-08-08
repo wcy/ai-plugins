@@ -1391,6 +1391,252 @@ def test_handoff_finding_is_a_diagnostic(workspace):
 
 
 # ---------------------------------------------------------------------------
+# check handoff folds the open deferrals in
+#
+# The stage chain answers "what did a stage leave behind"; the list answers
+# "what did a run decide not to do". Both are outstanding work, and this is
+# where outstanding work is read -- so the entries are reported here, each
+# carrying the skill it is routed to, and none of them ever blocks.
+# ---------------------------------------------------------------------------
+
+
+def _deferrals(findings):
+    """The deferral findings in a handoff report, in report order."""
+    return [item for item in findings if item["code"] == check.W_TODO_OPEN]
+
+
+def _chain_findings(findings):
+    """The stage-chain findings: the ones carrying the `HandoffFinding` keys."""
+    return [item for item in findings if "state" in item]
+
+
+def test_handoff_reports_nothing_for_a_workspace_that_has_deferred_nothing(workspace):
+    """No list is not an empty list is not a defect -- it must report neither."""
+    _chain(workspace)
+    result, code = _check(workspace, "handoff")
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_handoff_reports_every_open_entry_with_the_skill_it_is_routed_to(workspace):
+    """The acceptance clause, whole: *every* entry, and the routed skill on each."""
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral", run="/mfix")
+    _todo_add(workspace, title="second deferral", run="/mspec")
+
+    findings = _findings(workspace, "handoff")
+    deferrals = _deferrals(findings)
+    assert len(deferrals) == 2
+    # Document order, which is the order `todo add` appended them in.
+    assert "'first deferral'" in deferrals[0]["message"]
+    assert "/mfix" in deferrals[0]["message"]
+    assert "'second deferral'" in deferrals[1]["message"]
+    assert "/mspec" in deferrals[1]["message"]
+    assert [item["file"] for item in deferrals] == [TODO_REL, TODO_REL]
+    assert deferrals[0]["line"] < deferrals[1]["line"]
+
+
+def test_a_deferral_finding_carries_the_entrys_own_line(workspace):
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral")
+    _todo_add(workspace, title="second deferral")
+
+    deferrals = _deferrals(_findings(workspace, "handoff"))
+    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
+    assert lines[deferrals[0]["line"] - 1] == "## first deferral"
+    assert lines[deferrals[1]["line"] - 1] == "## second deferral"
+
+
+def test_an_open_entry_does_not_change_the_exit_code(workspace):
+    """Asserted, not assumed: the same chain, with and without the list."""
+    _chain(workspace)
+    before = _check(workspace, "handoff")[1]
+    _todo_add(workspace, title="a deferral")
+    result, after = _check(workspace, "handoff")
+
+    assert (before, after) == (0, 0)
+    assert result.ok is True
+    assert len(_deferrals(result.data["findings"])) == 1
+    assert [item["severity"] for item in _deferrals(result.data["findings"])] == ["warning"]
+
+
+def test_many_open_entries_still_do_not_change_the_exit_code(workspace):
+    """A list that grew is still not a defect -- there is no count that blocks."""
+    _chain(workspace)
+    for index in range(5):
+        _todo_add(workspace, title="deferral %d" % index)
+
+    result, code = _check(workspace, "handoff")
+    assert len(_deferrals(result.data["findings"])) == 5
+    assert code == 0 and result.ok is True
+
+
+def test_an_open_entry_neither_masks_nor_creates_a_stage_finding(workspace):
+    """The other direction: a real defect still exits 1 with entries present."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    _todo_add(workspace, title="a deferral")
+
+    result, code = _check(workspace, "handoff")
+    findings = result.data["findings"]
+    assert code == 1
+    assert len(_chain_findings(findings)) == 1
+    assert len(_deferrals(findings)) == 1
+
+
+def test_the_stage_walk_is_unchanged_by_an_open_entry(workspace):
+    """No existing finding gains or loses severity, and none is added or lost."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "open"),
+    )
+    before = _chain_findings(_findings(workspace, "handoff"))
+
+    _todo_add(workspace, title="a deferral")
+    after = _chain_findings(_findings(workspace, "handoff"))
+
+    assert before == after
+    assert sorted(item["severity"] for item in after) == ["error", "warning"]
+
+
+def test_a_deferral_is_not_folded_into_a_stage_chain_finding(workspace):
+    """Distinguishable by machine: its own code, and none of the handoff keys."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    deferral = findings[0]
+    assert deferral["code"] == check.W_TODO_OPEN
+    assert deferral["code"] != core.E_HANDOFF
+    assert deferral["severity"] == "warning"
+    for key in ("from_stage", "to_stage", "artifact", "state"):
+        assert key not in deferral, key
+
+
+def test_a_deferral_is_not_a_handoff_finding_in_the_walk_either(workspace):
+    """``StageWalk.findings`` is the published ``HandoffFinding[]``; a deferral
+    is not one, so it must not appear there -- ``status`` renders that list."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    walk = check.walk_stages(workspace.ws)
+    assert walk.findings == []
+    assert [item.code for item in walk.deferrals] == [check.W_TODO_OPEN]
+    assert not any(isinstance(item, check.HandoffFinding) for item in walk.deferrals)
+    assert check.handoff_findings(workspace.ws) == []
+
+
+def test_the_deferrals_are_reported_after_the_chain(workspace):
+    """Appended, not interleaved: the chain's own report keeps its order."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    _todo_add(workspace, title="a deferral")
+
+    codes = _codes(_findings(workspace, "handoff"))
+    assert codes == [core.E_HANDOFF, check.W_TODO_OPEN]
+
+
+def test_handoff_still_walks_the_chain_exactly_once(workspace, monkeypatch):
+    """Folding the list in reads one more file; it adds no second traversal."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    calls = []
+    original = check.walk_stages
+
+    def counted(ws):
+        calls.append(ws)
+        return original(ws)
+
+    monkeypatch.setattr(check, "walk_stages", counted)
+    result, code = _check(workspace, "handoff")
+
+    assert len(calls) == 1
+    assert code == 0
+    assert len(_deferrals(result.data["findings"])) == 1
+
+
+def test_an_entry_whose_run_field_is_missing_is_still_reported(workspace):
+    """Open work must not hide from the one place open work is read.
+
+    Which field is wrong is ``check todo``'s to say, and it still says it --
+    the handoff report names the entry and stays a warning.
+    """
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+    _todo_edit(workspace, "**Run:** /mfix\n", "")
+
+    result, code = _check(workspace, "handoff")
+    deferrals = _deferrals(result.data["findings"])
+    assert len(deferrals) == 1
+    assert "'a deferral'" in deferrals[0]["message"]
+    assert check.TODO_RUN_FIELD in deferrals[0]["message"]
+    assert code == 0
+    # The defect itself is reported, at `error`, by the check that owns it.
+    assert _codes(_findings(workspace, "todo")) == [todo.E_TODO_FIELD]
+    assert _check(workspace, "todo")[1] == 1
+
+
+def test_the_routed_skill_is_read_from_the_standards_own_field(workspace):
+    """A rename in ``STANDARD-TODO.md`` fails here rather than quietly routing
+    every entry to nobody."""
+    assert check.TODO_RUN_FIELD == "Run"
+    assert check.TODO_RUN_FIELD in todo.LIST_FILTER_FIELDS
+    assert check.TODO_RUN_FIELD in [item.name for item in todo.field_specs()]
+
+
+def test_both_checks_read_the_same_list(workspace):
+    """One reader, so ``check todo`` and ``check handoff`` cannot disagree about
+    what the list holds."""
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral")
+    _todo_add(workspace, title="second deferral")
+
+    entries, relative, problems = check.read_todo(workspace.ws)
+    assert problems == []
+    assert relative == TODO_REL
+    assert [entry.title for entry in entries] == ["first deferral", "second deferral"]
+    assert len(_deferrals(_findings(workspace, "handoff"))) == len(entries)
+
+
+def test_check_all_carries_the_deferrals_without_failing_the_run(workspace):
+    """``check all`` reports them in its handoff report and still exits 0."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    result, code = _check(workspace, "all", TARGET)
+    reports = {report["check"]: report for report in result.data["reports"]}
+    assert _codes(reports["todo"]["findings"]) == []
+    assert _codes(reports["handoff"]["findings"]) == [check.W_TODO_OPEN]
+    assert code == 0
+
+
+def test_status_is_unaffected_by_an_open_entry(workspace):
+    """``StatusReport.handoff`` is ``HandoffFinding[]``; a deferral is not one,
+    so the report the operator view publishes keeps its documented shape."""
+    _chain(workspace)
+    before = _status(workspace)[0].data
+    _todo_add(workspace, title="a deferral")
+    after, code = _status(workspace)
+
+    assert after.data == before
+    assert after.data["handoff"] == []
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
 # check all
 # ---------------------------------------------------------------------------
 

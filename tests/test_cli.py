@@ -533,7 +533,13 @@ def cases():
             "check", "catalog", "demo", stdout=["check: catalog", "findings"]
         ),
         "check.todo": Case("check", "todo", stdout=["check: todo", "findings"]),
-        "check.handoff": Case("check", "handoff", stdout=["check: handoff", "findings"]),
+        # The fixture carries one open deferral, so the folded-in finding is
+        # part of what this verb must put on stdout: the entry, the skill it is
+        # routed to, and the code that tells it from a stage-chain finding.
+        "check.handoff": Case(
+            "check", "handoff",
+            stdout=["check: handoff", "findings", TODO_TITLE, "/mfix", "W_TODO_OPEN"],
+        ),
         "check.all": Case(
             "check", "all", "demo",
             stdout=[
@@ -813,6 +819,81 @@ def test_check_all_carries_a_todo_finding_into_its_exit_code(workspace):
 
     assert completed.returncode == 1
     assert "E_TODO_ORIGIN" in out + err
+
+
+# ---------------------------------------------------------------------------
+# check handoff with an open entry present -- through the command line
+#
+# "It never blocks" is a claim about an **exit code**, which is a property of a
+# process. An in-process test can assert what `core.exit_code` computes; only a
+# subprocess can assert what the caller who ran `mc.py check handoff` is left
+# holding, and that is the surface every skill invokes.
+# ---------------------------------------------------------------------------
+
+
+def _handoff(workspace):
+    """``mc.py check handoff`` as a subprocess, decoded."""
+    completed = run(
+        workspace, "--workspace", workspace.root, "--now", NOW, "check", "handoff"
+    )
+    out, err = decoded(completed)
+    return completed.returncode, out, err
+
+
+def test_check_handoff_names_every_open_entry_and_its_routed_skill(workspace):
+    """The fixture's entry plus a second one routed elsewhere, both on stdout."""
+    second = "a second deferral"
+    completed = run(workspace, *todo_add_argv(workspace, NOW, second, **{"--run": "/mspec"}))
+    assert completed.returncode == 0, completed.stderr.decode()
+
+    code, out, err = _handoff(workspace)
+
+    assert code == 0, out + err
+    for fragment in (TODO_TITLE, "/mfix", second, "/mspec", "W_TODO_OPEN"):
+        assert fragment in out, "%r missing from stdout:\n%s" % (fragment, out)
+    assert TODO_REL in out
+    assert "Traceback" not in err
+
+
+def test_an_open_entry_does_not_change_check_handoffs_exit_code(workspace):
+    """Exit ``0`` with the entry present and exit ``0`` once it is removed --
+    the same code, so the entry is what changed and the verdict is not."""
+    with_entry, out_with, _err = _handoff(workspace)
+
+    removed = run(
+        workspace, "--workspace", workspace.root, "--now", NOW, "todo", "remove", TODO_TITLE
+    )
+    assert removed.returncode == 0, removed.stderr.decode()
+    without_entry, out_without, _err = _handoff(workspace)
+
+    assert (with_entry, without_entry) == (0, 0)
+    assert TODO_TITLE in out_with and TODO_TITLE not in out_without
+    assert "W_TODO_OPEN" not in out_without
+
+
+def test_an_open_entry_does_not_mask_a_stage_finding_at_the_command_line(workspace):
+    """Exit ``1`` is still exit ``1``: the warning never softens a real defect."""
+    path, text = _change("003", "stranded", "applied")
+    workspace.write(path, text)
+
+    code, out, err = _handoff(workspace)
+
+    assert code == 1, out + err
+    assert "CHANGE-003-stranded.md" in out + err
+    assert TODO_TITLE in out  # and the deferral is reported alongside it
+    assert "Traceback" not in err
+
+
+def test_check_all_reports_the_open_entry_and_still_exits_zero(workspace):
+    """The verb that runs every check inherits the folding and its severity."""
+    completed = run(
+        workspace, "--workspace", workspace.root, "--now", NOW, "check", "all", "demo"
+    )
+    out, err = decoded(completed)
+
+    assert completed.returncode == 0, out + err
+    assert TODO_TITLE in out and "W_TODO_OPEN" in out
+    assert "Traceback" not in err
 
 
 def test_the_list_the_cli_writes_validates_against_its_schema(workspace):
