@@ -258,8 +258,8 @@ Rather than being reported into a session that then ends, it is recorded in `con
 the workspace's one durable list of outstanding work, each entry routed to the skill that should take
 it and carrying enough context to be picked up from a cleared session.
 
-Two rules keep that list worth reading. Entries are written **only** through `mc.py`'s `todo add`
-verb — no skill composes one in prose, so an entry has the same shape whichever skill deferred it.
+Two rules keep that list worth reading. Entries are written **only** through `mc.py todo add` — no
+skill composes one in prose, so an entry has the same shape whichever skill deferred it.
 And **resolution is removal**: a resolved entry is deleted.
 There is no closed status and no closed section, so the list holds outstanding work and nothing else;
 what was fixed is recorded in the change that fixed it. `shared/STANDARD-TODO.md` is the standard
