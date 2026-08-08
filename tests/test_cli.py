@@ -51,6 +51,13 @@ REPORT_REL = "context/project/out/%s/mverify-report.json" % PLAN_ID
 BRANCH = "mexec/%s/%s/r1/1" % (PLAN_ID, LAST_STORY)
 WORKTREE = "repos/demo/%s-r1-1" % LAST_STORY
 
+TODO_REL = "context/project/TODO.md"
+TODO_TITLE = "check handoff reports no per-repo counts"
+TODO_CONTEXT = (
+    "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos, "
+    "but TOOLS-INTERFACE.md documents a per-repo breakdown."
+)
+
 PENDING_CHANGE = "context/demo/changes/CHANGE-001-alpha-retry.md"
 APPLIED_CHANGE = "context/demo/changes/CHANGE-002-beta-timeout.md"
 NEW_CHANGE = "context/demo/changes/CHANGE-009-emitted-here.md"
@@ -318,7 +325,31 @@ def workspace(tmp_path):
         ws, "--workspace", ws.root, "--now", SEED_NOW, "state", "run-increment", PLAN_ID
     )
     assert completed.returncode == 0, completed.stderr.decode()
+    # One deferral already on the list, filed through the verb that files them.
+    # `todo remove` and `todo list` need an entry to act on, and hand-writing it
+    # would put a second implementation of `todo add` in the fixture.
+    completed = run(ws, *todo_add_argv(ws, SEED_NOW, TODO_TITLE))
+    assert completed.returncode == 0, completed.stderr.decode()
     return ws
+
+
+def todo_add_argv(workspace, now, title, **overrides):
+    """A conforming ``todo add`` invocation, as argv."""
+    fields = {
+        "--run": "/mfix",
+        "--kind": "spec-drift",
+        "--origin": "CHANGE-001",
+        "--priority": "low",
+        "--risk-if-unfixed": "low",
+        "--regression-risk": "low",
+        "--cost": "low",
+        "--context": TODO_CONTEXT,
+    }
+    fields.update(overrides)
+    argv = ["--workspace", workspace.root, "--now", now, "todo", "add", "--title", title]
+    for flag, value in fields.items():
+        argv.extend([flag, value])
+    return argv
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +504,22 @@ def cases():
             "worktree", "reconcile", PLAN_ID, "--list-from", LISTING_REL,
             stdout=["verdict: orphan", "verdict: keep"],
         ),
+        "todo.add": Case(
+            "todo", "add", "--title", "a second deferral",
+            "--run", "/mspec", "--kind", "architecture", "--origin", "CHANGE-001",
+            "--priority", "high", "--risk-if-unfixed", "high",
+            "--regression-risk", "medium", "--cost", "medium",
+            "--context", "plugins/metacoder/tools/todo.py has no rule for this yet.",
+            stdout=[TODO_REL, "title: a second deferral", "created: false"],
+        ),
+        "todo.remove": Case(
+            "todo", "remove", TODO_TITLE,
+            stdout=[TODO_REL, "title: %s" % TODO_TITLE, "removed: 1"],
+        ),
+        "todo.list": Case(
+            "todo", "list", "--run", "/mfix",
+            stdout=[TODO_REL, "run: /mfix", "count: 1", TODO_TITLE],
+        ),
         "check.depends-on": Case(
             "check", "depends-on", "demo", stdout=["check: depends-on", "findings"]
         ),
@@ -485,10 +532,13 @@ def cases():
         "check.catalog": Case(
             "check", "catalog", "demo", stdout=["check: catalog", "findings"]
         ),
+        "check.todo": Case("check", "todo", stdout=["check: todo", "findings"]),
         "check.handoff": Case("check", "handoff", stdout=["check: handoff", "findings"]),
         "check.all": Case(
             "check", "all", "demo",
-            stdout=["check: depends-on", "check: coupling", "check: catalog"],
+            stdout=[
+                "check: depends-on", "check: coupling", "check: catalog", "check: todo"
+            ],
         ),
         "status": Case("status", stdout=["stages:", "changes:", "plans:"]),
     }
@@ -660,6 +710,121 @@ def test_an_unknown_group_is_a_usage_error(workspace):
     """Argparse's own refusal is still exit ``2`` at the seam."""
     completed = run(workspace, "--workspace", workspace.root, "nonesuch", "verb")
     assert completed.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# todo -- the refusals, through the command line
+#
+# The no-file-left-behind property is a claim about the *filesystem* after a
+# refused invocation, so it can only be settled where the invocation is a real
+# process: an in-process test that asserted it would be asserting about a
+# function's return rather than about what the caller is left holding.
+# ---------------------------------------------------------------------------
+
+
+def _empty_workspace(tmp_path):
+    """A workspace with a resolvable change and no ``TODO.md`` at all."""
+    ws = SyntheticWorkspace(tmp_path / "empty")
+    path, text = _change("001", "alpha-retry", "pending")
+    ws.write(path, text)
+    return ws
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--run", "/mnope"),
+        ("--kind", "typo"),
+        ("--priority", "urgent"),
+        ("--risk-if-unfixed", "none"),
+        ("--regression-risk", "unknown"),
+        ("--cost", "cheap"),
+        ("--origin", "CHANGE-404"),
+    ],
+)
+def test_a_refused_todo_add_exits_one_and_leaves_no_list_behind(tmp_path, flag, value):
+    """Exit ``1``, and **no ``TODO.md``** -- not even an empty one."""
+    ws = _empty_workspace(tmp_path)
+    completed = run(ws, *todo_add_argv(ws, NOW, "rejected", **{flag: value}))
+    out, err = decoded(completed)
+
+    assert completed.returncode == 1, out + err
+    assert not ws.path(TODO_REL).exists()
+    assert not ws.path("context/project").exists()
+    assert "Traceback" not in err
+
+
+def test_a_missing_todo_add_flag_is_a_usage_error(tmp_path):
+    """Exit ``2``: a required field the caller never supplied."""
+    ws = _empty_workspace(tmp_path)
+    argv = todo_add_argv(ws, NOW, "rejected")
+    index = argv.index("--cost")
+    completed = run(ws, *(argv[:index] + argv[index + 2 :]))
+
+    assert completed.returncode == 2
+    assert not ws.path(TODO_REL).exists()
+
+
+def test_todo_remove_refuses_a_title_matching_no_entry(workspace):
+    """Exit ``1``: a silent no-op removal reads exactly like a successful one."""
+    before = workspace.path(TODO_REL).read_text(encoding="utf-8")
+    completed = run(
+        workspace,
+        "--workspace", workspace.root, "--now", NOW, "todo", "remove", "never filed",
+    )
+    out, err = decoded(completed)
+
+    assert completed.returncode == 1
+    assert "never filed" in out + err
+    assert workspace.path(TODO_REL).read_text(encoding="utf-8") == before
+    assert "Traceback" not in err
+
+
+def test_a_todo_finding_exits_one_through_check_todo(workspace):
+    """Exit ``1``: the checker sees a defect only a hand edit can introduce."""
+    path = workspace.path(TODO_REL)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("**Kind:** spec-drift", "**Kind:** typo"),
+        encoding="utf-8",
+    )
+    completed = run(
+        workspace, "--workspace", workspace.root, "--now", NOW, "check", "todo"
+    )
+    out, err = decoded(completed)
+
+    assert completed.returncode == 1
+    assert "E_TODO_ENUM" in out + err
+    assert "Traceback" not in err
+
+
+def test_check_all_carries_a_todo_finding_into_its_exit_code(workspace):
+    """``check all`` gained a check, and the check it gained can fail the run."""
+    path = workspace.path(TODO_REL)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "**Origin:** CHANGE-001", "**Origin:** CHANGE-404"
+        ),
+        encoding="utf-8",
+    )
+    completed = run(
+        workspace, "--workspace", workspace.root, "--now", NOW, "check", "all", "demo"
+    )
+    out, err = decoded(completed)
+
+    assert completed.returncode == 1
+    assert "E_TODO_ORIGIN" in out + err
+
+
+def test_the_list_the_cli_writes_validates_against_its_schema(workspace):
+    """The delivered artifact, checked through the delivered validator."""
+    completed = run(
+        workspace,
+        "--workspace", workspace.root, "--now", NOW, "validate", "todo", TODO_REL,
+    )
+    out, _err = decoded(completed)
+
+    assert completed.returncode == 0
+    assert "OK" in out and TODO_REL in out
 
 
 def test_every_non_zero_case_here_is_really_non_zero(workspace):

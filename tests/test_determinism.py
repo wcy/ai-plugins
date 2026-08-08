@@ -57,6 +57,21 @@ WORKTREE = "repos/demo/02-01-demo-BETA-r1-1"
 REQ_CHANGE_CLOSE_REL = "context/demo/requirements/changes/REQ-CHANGE-001-tightened-scope.md"
 REQ_CHANGE_EMIT_REL = "context/demo/requirements/changes/REQ-CHANGE-002-emitted-here.md"
 
+#: The deferral the fixture already carries -- what ``todo remove`` deletes and
+#: ``todo list`` reads. Filed through ``todo add`` at :data:`SEED_NOW` like every
+#: other seeded artifact, so the fixture is what the tool leaves behind.
+TODO_TITLE = "check handoff reports no per-repo counts"
+TODO_FIELDS = {
+    "run": "/mfix",
+    "kind": "spec-drift",
+    "origin": "CHANGE-001",
+    "priority": "low",
+    "risk_if_unfixed": "low",
+    "regression_risk": "low",
+    "cost": "low",
+    "context": "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos.",
+}
+
 #: Emitted files whose top-level key order must follow their schema's.
 SCHEMA_ORDERED = (
     ("context/project/plans/%s/plan.yaml" % PLAN_ID, "plan-graph"),
@@ -353,6 +368,10 @@ def build(root, reverse=False):
     assert result.ok, [item.render() for item in result.diagnostics]
     result = call(workspace, "state", "run-increment", plan_id=PLAN_ID, now=SEED_NOW)
     assert result.ok, [item.render() for item in result.diagnostics]
+    result = call(
+        workspace, "todo", "add", title=TODO_TITLE, now=SEED_NOW, **dict(TODO_FIELDS)
+    )
+    assert result.ok, [item.render() for item in result.diagnostics]
     return workspace
 
 
@@ -450,10 +469,16 @@ def arguments():
         "state.telemetry": {"plan_id": PLAN_ID, "cost": 1.5, "tokens": 4096, "wall_clock": 61.5},
         "worktree.names": {"plan_id": PLAN_ID, "story_id": LAST_STORY, "run": 1, "attempt": 1},
         "worktree.reconcile": {"plan_id": PLAN_ID, "list_from": LISTING_REL},
+        # A title the fixture does not already carry, so the case writes; the
+        # fixture's own entry is what `todo.remove` deletes.
+        "todo.add": dict(TODO_FIELDS, title="a second deferral"),
+        "todo.remove": {"title": TODO_TITLE},
+        "todo.list": {"run": None, "kind": None},
         "check.depends-on": {"target": "demo"},
         "check.coupling": {"target": "demo"},
         "check.requirements": {"target": "demo"},
         "check.catalog": {"target": "demo"},
+        "check.todo": {},
         "check.handoff": {},
         "check.all": {"target": "demo"},
         "status": {},
@@ -466,7 +491,8 @@ COVERED = sorted(arguments())
 
 #: The verbs ``TOOLS-INTERFACE.md`` documents as writing files: ``change emit``,
 #: ``change close``, ``spec catalog-emit``, ``plan emit``, ``plan reslice``,
-#: ``plan story-emit``, and every ``state`` verb.
+#: ``plan story-emit``, ``todo add``, ``todo remove``, and every ``state`` verb.
+#: ``todo list`` is deliberately not among them -- it reads.
 #: :func:`test_the_measured_emitting_set_is_the_documented_one` checks this
 #: against what the tool actually writes, so it cannot quietly go stale.
 #:
@@ -477,6 +503,7 @@ DOCUMENTED_EMITTING = sorted(
     {"change.emit", "change.close", "spec.catalog-emit"}
     | {"plan.emit", "plan.reslice", "plan.story-emit"}
     | {"req.change-emit", "req.change-close"}
+    | {"todo.add", "todo.remove"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )
 

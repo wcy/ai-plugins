@@ -38,6 +38,7 @@ GROUPS = (
     "plan",
     "state",
     "worktree",
+    "todo",
     "check",
     "status",
 )
