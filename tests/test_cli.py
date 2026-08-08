@@ -518,6 +518,10 @@ def cases():
             "--context", "plugins/metacoder/tools/todo.py has no rule for this yet.",
             stdout=[TODO_REL, "title: a second deferral", "created: false"],
         ),
+        "todo.edit": Case(
+            "todo", "edit", TODO_TITLE, "--priority", "high",
+            stdout=["Priority", TODO_TITLE],
+        ),
         "todo.remove": Case(
             "todo", "remove", TODO_TITLE,
             stdout=[TODO_REL, "title: %s" % TODO_TITLE, "removed: 1"],

@@ -33,7 +33,12 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, SyntheticWorkspace
-from tools import core, mc, req
+from tools import core, mc, req, todo
+
+
+def _todo_supplied():
+    """The `todo` fields that carry a flag, read from the standard."""
+    return todo.supplied_specs()
 
 #: The clock the *fixture* is built at. Deliberately different from ``NOW``, the
 #: clock every command under test runs at, so a timestamp carried over from the
@@ -495,6 +500,11 @@ def arguments():
         # A title the fixture does not already carry, so the case writes; the
         # fixture's own entry is what `todo.remove` deletes.
         "todo.add": dict(TODO_FIELDS, title="a second deferral"),
+        # Edits the fixture's own entry, changing one rating and nothing else.
+        "todo.edit": dict(
+            {item.name.lower().replace("-", "_"): None for item in _todo_supplied()},
+            title=TODO_TITLE, new_title=None, priority="high",
+        ),
         "todo.remove": {"title": TODO_TITLE},
         "todo.list": {"run": None, "kind": None},
         "check.depends-on": {"target": "demo"},
@@ -526,7 +536,7 @@ DOCUMENTED_EMITTING = sorted(
     {"change.emit", "change.close", "spec.catalog-emit"}
     | {"plan.emit", "plan.reslice", "plan.story-emit"}
     | {"req.change-emit", "req.change-close"}
-    | {"todo.add", "todo.remove"}
+    | {"todo.add", "todo.edit", "todo.remove"}
     | {name for name in COMMANDS if name.startswith("state.")}
 )
 

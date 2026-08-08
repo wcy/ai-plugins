@@ -618,7 +618,96 @@ def _list(args, ws: core.Workspace) -> core.Result:
     return core.Result(command="%s.list" % COMMAND, data=data)
 
 
-VERBS = {"add": _add, "remove": _remove, "list": _list}
+def _edit(args, ws: core.Workspace) -> core.Result:
+    """``todo edit`` -- rewrite only the named fields of one entry.
+
+    **The whole resulting entry is re-validated through the same checks ``add``
+    applies**, so an edit cannot leave behind an entry ``add`` would have
+    refused. Sharing that path is the requirement rather than the convenience: a
+    second validator would drift from the first, and the drift would surface as
+    an entry that exists on the list and could not have been created.
+
+    Fields the caller did not name are carried across **verbatim** rather than
+    re-parsed and re-emitted, so correcting a one-word rating cannot reflow the
+    ``Context`` paragraph beside it -- which is the loss the ``remove``-then-``add``
+    workaround invited, and the reason this verb exists.
+    """
+    specs = field_specs()
+    supplied = supplied_specs()
+
+    selector = getattr(args, "title", None)
+    if not isinstance(selector, str) or not selector.strip():
+        raise core.fail(core.E_USAGE, "the entry's title is required and must not be empty")
+    selector = selector.strip()
+
+    path = todo_path(ws)
+    body = _with_heading(read_body(path))
+    entries = parse_entries(body)
+    match = next((entry for entry in entries if entry.title == selector), None)
+    if match is None:
+        raise core.ToolError(
+            core.error(
+                core.E_NOT_FOUND,
+                "no entry titled %r is on the list; a silent no-op edit reads exactly "
+                "like a successful one" % (selector,),
+                file=TODO_REL,
+            )
+        )
+
+    new_title = getattr(args, "new_title", None)
+    if new_title is not None:
+        new_title = new_title.strip()
+        if not new_title or "\n" in new_title:
+            raise core.fail(core.E_USAGE, "--title must be a non-empty single line")
+        if new_title != selector and any(entry.title == new_title for entry in entries):
+            raise core.ToolError(
+                core.error(
+                    core.E_AMBIGUOUS,
+                    "an entry titled %r is already on the list" % (new_title,),
+                    file=TODO_REL,
+                )
+            )
+    title = new_title or selector
+
+    named = {
+        item.name: str(getattr(args, item.dest)).strip()
+        for item in supplied
+        if getattr(args, item.dest, None) is not None
+    }
+    if not named and new_title is None:
+        raise core.fail(core.E_USAGE, "todo edit needs at least one field to change")
+
+    values: Dict[str, str] = {item.name: match.get(item.name) for item in specs}
+    values.update(named)
+
+    # Re-validate the *whole* entry, not the changed fields: an edit that left
+    # some other field non-conforming would be an entry `add` would refuse.
+    for item in supplied:
+        diagnostic = _check_value(item, values[item.name])
+        if diagnostic is not None:
+            raise core.ToolError(diagnostic)
+    diagnostic = check_origin(ws, values[ORIGIN_FIELD])
+    if diagnostic is not None:
+        raise core.ToolError(diagnostic)
+
+    now = getattr(args, "now", None) or core.system_instant()
+    lines = body.split("\n")
+    replacement = render_entry(title, values, specs).rstrip("\n").split("\n")
+    body = "\n".join(lines[: match.start] + replacement + lines[match.end :])
+    write_document(path, body, now)
+
+    relative = ws.rel(path)
+    return core.Result(
+        command="%s.edit" % COMMAND,
+        data={
+            "path": relative,
+            "title": title,
+            "changed": sorted(named) + (["Title"] if new_title and new_title != selector else []),
+        },
+    )
+
+
+VERBS = {"add": _add, "remove": _remove, "list": _list, "edit": _edit}
 
 #: The fields ``list`` filters on. Both are named in ``TOOLS-INTERFACE.md``
 #: §`todo`: they are how a skill finds the items routed to it.
@@ -682,6 +771,35 @@ def register(subparsers) -> None:
     )
     remove.add_argument("title", help="the entry's `## <Title>` heading, verbatim")
     remove.set_defaults(verb="remove")
+
+    edit = verbs.add_parser(
+        "edit",
+        help="rewrite only the named fields of one entry",
+        description=(
+            "Change one entry's fields without retyping the rest. The whole resulting "
+            "entry is re-validated through the same path `add` uses, so an edit cannot "
+            "produce an entry `add` would have refused; a refusal writes nothing and "
+            "leaves the file byte-identical. Fields not named are carried over verbatim."
+        ),
+    )
+    edit.add_argument("title", help="the entry's current `## <Title>` heading, verbatim")
+    edit.add_argument(
+        "--title",
+        dest="new_title",
+        default=None,
+        help="rename the entry; it is then reachable by the new title only",
+    )
+    for item in specs:
+        if item.name in DERIVED_FIELDS:
+            continue
+        if item.enum is not None:
+            help_text = "one of: %s" % ", ".join(item.enum)
+        elif item.name == ORIGIN_FIELD:
+            help_text = "the CHANGE-<NNN>, PROJECT-CHANGE-<NNN> or plan id this came from"
+        else:
+            help_text = "the %s field, per shared/STANDARD-TODO.md" % item.name
+        edit.add_argument(item.flag, default=None, help=help_text)
+    edit.set_defaults(verb="edit")
 
     listing = verbs.add_parser(
         "list",
