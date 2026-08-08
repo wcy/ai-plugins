@@ -5,7 +5,7 @@ description: Use when a plan should be delivered one slice at a time, deciding a
 
 # Ship: Deliver a Plan One Slice at a Time
 
-`mship` delivers a plan **one slice at a time**, and decides after each slice what the remaining slices should be. It writes nothing itself beyond its own run record and the slice dimension of plan state; every step it performs is an invocation of `mspec`, `mplan`, `mexecute` or `mverify` at that skill's normal entry point.
+`mship` delivers a plan **one slice at a time**, and decides after each slice what the remaining slices should be. It writes nothing itself beyond its own run record, the slice dimension of plan state, and — on a stop — the deferred-work entry recording it; every step it performs is an invocation of `mspec`, `mplan`, `mexecute` or `mverify` at that skill's normal entry point.
 
 The loop is the point. Without it the pipeline can *detect* a wrong approach and cannot *respond* to one, so the cost of being wrong stays independent of when it was noticed. With it, what the first slice teaches is spent on the slices that have not been built yet.
 
@@ -149,6 +149,34 @@ Evaluated **in this order; the first rule that applies wins.** A slice matching 
 
 **Rule 6 is the only hand-back in this skill, and the whole of `REQ-008`'s exception.** A slice whose acceptance is entirely `kind: exit-code`, run under the default gate, never reaches it — `mplan` requires at least one runnable acceptance step per slice precisely so the common path is unattended. When it does fire, the question **names the artifacts and what needs judging, and nothing else**: an open-ended "does this look right?" makes the developer re-derive the acceptance criterion the slice already carries. Present it, wait, and then continue or stop on the answer.
 
+### Every stop writes an entry to the TODO list
+
+A stop ends the run, and the session that produced it ends with it. **Each of the three stop reasons writes an entry to `context/project/TODO.md` before returning** — a stop is the clearest case of work the run could not resolve and the most expensive to rediscover, and the run has already paid the cost of finding it. Record the outcome first (`state set-slice --outcome`), then write the entry, then report:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "Slice <NN> <slice-name>: <the stop in one line>" \
+    --run <skill> \
+    --kind <kind> \
+    --origin <plan-id> \
+    --priority high --risk-if-unfixed <r> --regression-risk <r> --cost <c> \
+    --context "<which slice stopped, what it was measured against, and what closing it requires>"
+```
+
+| Stop | `--run` | `--kind` | What `--context` carries beyond the slice |
+|---|---|---|---|
+| `{stop, "halt"}` | `/mspec` when the halt was a significant breaking contract change, `/mquick` for retry exhaustion or an unmergeable wave | `architecture` for the contract case, `logic` otherwise | which of `mexecute`'s three halt conditions fired, the story or wave it fired on, and the path to `mexecute`'s own report |
+| `{stop, "acceptance-failed"}` | `/mfix` | `logic` | the acceptance step that failed — its `description`, and for an `exit-code` step the `command` and the code it exited — and what would have to be true for it to pass |
+| `{stop, "budget"}` | `/mspec` | `architecture` | this slice's `cost_usd`, the median it was compared against, how many completed slices formed the sample, and that what needs settling is the size of the remaining cut |
+
+**`--run` routes to a skill that can actually act on the stop**, which is why a halt splits by its cause: only `mspec` can change a contract, and re-delivering work that merely failed to land is the loop's own job re-entered. **`--kind` follows the cause too** — a stop is not a category of its own. **`--origin` is the plan id**, so a reader can open the run that raised the item. **`--priority` is `high` on every stop**: the run ended on it and nothing downstream proceeds until it is settled. The remaining three ratings are judgements about the work the entry names, and the standard's warning applies — they annotate an item, and nothing in the loop is ordered, deferred or gated on them.
+
+**`--context` is written for a cleared context.** The reader was not here, has not seen the run, and cannot be sent to a transcript: name the slice, what it was measured against, and what closing it requires, in that order.
+
+**`{ask, ...}` writes no entry.** Rule 6 is a question put to a developer who is present and the run continues on their answer — it is a hand-back, not unresolved work, and an entry for it would file an item that is closed before anybody reads the list. `{replan}`, `{cascade}` and `{continue}` write none either: each is work the loop is about to do itself.
+
+**Do not compose an entry by hand and do not restate its enums here.** `STANDARD-TODO.md` owns the field set and `todo add` applies it, `check todo` checks it, and `check handoff` reports the open ones. A refusal is exit `1`, writes nothing, and is surfaced in the closing report alongside the stop; it never converts the stop into a different outcome, because the run stopped whether or not the entry landed.
+
 ### The gate policy
 
 | `--gate` | Asks at | An acceptance no command can settle is recorded |
@@ -218,6 +246,7 @@ Remediation stories are appended to the **next** slice, never edited into the sl
 
 - **`context/project/out/<plan-id>/mship-run.md`** — per slice: what it delivered, what its acceptance proved, its `SliceTelemetry`, and the `SliceOutcome` taken. This file is the per-slice cost series the budget breaker samples.
 - **Plan state** — slice status, acceptance and outcome via `mc.py state set-slice`; the run's actuals via `mc.py state telemetry <plan-id>`. Nothing under `context/project/plans/` is ever hand-written.
+- **`context/project/TODO.md`** — one entry per stop, via `mc.py todo add`, written before the run returns. This is the only output that outlives the session, which is why a stop writes one and a hand-back does not.
 - **A closing report** naming: slices delivered vs. planned · every re-plan performed and why · every cascade run and the revision it moved · the developer questions asked and their answers · **cost per slice** · every acceptance recorded `unconfirmed` · and, if the run stopped, which `StopReason` fired.
 
 ## Failure Handling
@@ -228,5 +257,5 @@ Every `mc.py` invocation follows the exit-code trichotomy above: `2` halts the l
 
 ## What mship Does / Does NOT Do
 
-- **Does:** iterate a plan's slices in order, running deepen → plan → execute → verify → decide for each; own the gate policy, the budget breaker and re-planning; record slice status, acceptance and outcome before deciding; schedule remediation a cascade created; report per-slice cost and every outcome taken.
+- **Does:** iterate a plan's slices in order, running deepen → plan → execute → verify → decide for each; own the gate policy, the budget breaker and re-planning; record slice status, acceptance and outcome before deciding; write every stop to `context/project/TODO.md` through `mc.py todo add` before returning; schedule remediation a cascade created; report per-slice cost and every outcome taken.
 - **Does NOT:** write a spec, a plan, code or a conformance finding · rewrite, re-run or edit a slice already `applied` · decide a plan's slices in the first place (`mspec`'s cut, behind `mspec`'s gate) · flip a module's `depth` or bump an interface's `revision` (both `mspec`'s writes) · re-derive by hand any step `mc.py` owns · gate between waves — that is inside `mexecute` and there is no gate there · halt on conformance drift.

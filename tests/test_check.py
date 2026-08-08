@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import NOW, PLUGIN_ROOT
-from tools import change, check, core, req, spec, status
+from tools import change, check, core, req, spec, status, todo
 
 TARGET = "demo"
 
@@ -889,6 +889,217 @@ def test_catalog_exports_findings_are_errors(workspace):
 
 
 # ---------------------------------------------------------------------------
+# check todo
+#
+# Same two shapes as every other check: a fixture built to contain exactly one
+# defect, and a clean fixture that reports nothing. The list is written by
+# ``todo add`` wherever the entry is meant to be conforming -- a fixture
+# hand-writing the *good* case would be a second implementation of the emitter
+# and could drift from it -- and hand-edited only to introduce the one defect
+# under test, which is the state a checker exists for.
+# ---------------------------------------------------------------------------
+
+TODO_REL = todo.TODO_REL
+
+#: A conforming ``todo add`` call, keyed by argparse destination.
+_TODO_FIELDS = {
+    "run": "/mfix",
+    "kind": "spec-drift",
+    "origin": "CHANGE-001",
+    "priority": "medium",
+    "risk_if_unfixed": "low",
+    "regression_risk": "low",
+    "cost": "low",
+    "context": "`check handoff` in plugins/metacoder/tools/check.py aggregates across repos.",
+}
+
+
+def _todo_origin(workspace):
+    """A change document a conforming ``Origin`` resolves to."""
+    workspace.write(
+        "context/%s/changes/CHANGE-001-demo.md" % TARGET,
+        _change_text("001", "demo", "pending"),
+    )
+
+
+def _todo_add(workspace, title="a deferral", **overrides):
+    """Write one entry through the emitter, so the fixture is what it produces."""
+    fields = dict(_TODO_FIELDS)
+    fields.update(overrides)
+    result = todo.run(workspace.args(verb="add", title=title, **fields), workspace.ws)
+    assert core.exit_code(result) == 0, [item.render() for item in result.diagnostics]
+    return result
+
+
+def _todo_edit(workspace, old, new):
+    """The one hand edit a test introduces, applied to the emitted list."""
+    path = workspace.path(TODO_REL)
+    text = path.read_text(encoding="utf-8")
+    assert old in text, old
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return path
+
+
+def test_todo_reports_nothing_on_a_workspace_with_no_list(workspace):
+    """Nothing deferred is not a defect, and must not read as one."""
+    result, code = _check(workspace, "todo")
+    assert result.data["findings"] == []
+    assert result.data["target"] is None
+    assert code == 0
+
+
+def test_todo_reports_nothing_on_a_conforming_list(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    result, code = _check(workspace, "todo")
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_todo_reports_a_missing_required_field(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Cost:** low\n", "")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_FIELD]
+    assert "Cost" in findings[0]["message"]
+    assert findings[0]["file"] == TODO_REL
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("**Run:** /mfix", "**Run:** /mnope"),
+        ("**Kind:** spec-drift", "**Kind:** typo"),
+        ("**Priority:** medium", "**Priority:** urgent"),
+        ("**Risk-if-unfixed:** low", "**Risk-if-unfixed:** none"),
+        ("**Regression-risk:** low", "**Regression-risk:** unknown"),
+        ("**Cost:** low", "**Cost:** cheap"),
+    ],
+)
+def test_todo_reports_a_value_outside_its_enum(workspace, old, new):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, old, new)
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ENUM]
+
+
+def test_todo_reports_an_origin_that_resolves_to_nothing(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ORIGIN]
+    assert "CHANGE-404" in findings[0]["message"]
+
+
+@pytest.mark.parametrize(
+    "context",
+    ["needs more thought", "fix later", "this one is important and someone should do it"],
+)
+def test_todo_reports_a_context_too_thin_to_start_from(workspace, context):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], context)
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [check.E_TODO_CONTEXT]
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "plugins/metacoder/tools/check.py aggregates across repos",
+        "the rule lives in `context_names_something` and has no test",
+        "CHANGE-029 left this open",
+        "TOOLS publishes it but the catalog does not",
+        "020-deferred-work-todo shipped without it",
+    ],
+)
+def test_a_context_naming_a_file_artifact_or_identifier_is_accepted(workspace, context):
+    """The rule is deliberately weak: it catches the empty gesture only."""
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], context)
+
+    assert _findings(workspace, "todo") == []
+
+
+def test_a_sentence_abbreviation_is_not_mistaken_for_a_filename(workspace):
+    """``e.g.``/``i.e.``/``etc.`` must not satisfy the rule on their own."""
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, _TODO_FIELDS["context"], "it is broken, e.g. sometimes, etc.")
+
+    assert _codes(_findings(workspace, "todo")) == [check.E_TODO_CONTEXT]
+
+
+def test_todo_reports_every_violation_the_emitter_would_have_refused(workspace):
+    """The checker's codes are the emitter's codes, not a parallel vocabulary."""
+    assert (check.E_TODO_FIELD, check.E_TODO_ENUM, check.E_TODO_ORIGIN) == (
+        todo.E_TODO_FIELD,
+        todo.E_TODO_ENUM,
+        todo.E_TODO_ORIGIN,
+    )
+
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
+    _todo_edit(workspace, "**Origin:** CHANGE-001", "**Origin:** CHANGE-404")
+    _todo_edit(workspace, "**Cost:** low\n", "")
+
+    findings = _findings(workspace, "todo")
+    # Field order is the standard's, so the report is stable between runs.
+    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ORIGIN, todo.E_TODO_FIELD]
+
+
+def test_todo_reports_each_entry_in_document_order(workspace):
+    """Two defective entries, reported in the order the file writes them."""
+    _todo_origin(workspace)
+    _todo_add(workspace, title="first")
+    _todo_add(workspace, title="second", kind="architecture")
+    # `_todo_edit` replaces the first occurrence only, and the second entry is
+    # given a `Kind` of its own, so each edit lands on the entry named beside it.
+    _todo_edit(workspace, "**Run:** /mfix", "**Run:** /mnope")
+    _todo_edit(workspace, "**Kind:** architecture", "**Kind:** typo")
+
+    findings = _findings(workspace, "todo")
+    assert _codes(findings) == [todo.E_TODO_ENUM, todo.E_TODO_ENUM]
+    assert "'first'" in findings[0]["message"] and "Run" in findings[0]["message"]
+    assert "'second'" in findings[1]["message"] and "Kind" in findings[1]["message"]
+    assert findings[0]["line"] < findings[1]["line"]
+
+
+def test_a_todo_finding_carries_the_entrys_line(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace, title="first")
+    _todo_add(workspace, title="second")
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+
+    findings = _findings(workspace, "todo")
+    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
+    assert lines[findings[0]["line"] - 1] == "## first"
+
+
+def test_todo_findings_set_exit_1(workspace):
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+    assert _check(workspace, "todo")[1] == 1
+
+
+def test_todo_takes_no_target(workspace):
+    """One list at one tier: a target would imply a per-repo list, and there is none."""
+    result, code = _check(workspace, "todo", "../escape")
+    assert code == 0
+    assert result.data["target"] is None
+
+
+# ---------------------------------------------------------------------------
 # check handoff
 # ---------------------------------------------------------------------------
 
@@ -1180,6 +1391,252 @@ def test_handoff_finding_is_a_diagnostic(workspace):
 
 
 # ---------------------------------------------------------------------------
+# check handoff folds the open deferrals in
+#
+# The stage chain answers "what did a stage leave behind"; the list answers
+# "what did a run decide not to do". Both are outstanding work, and this is
+# where outstanding work is read -- so the entries are reported here, each
+# carrying the skill it is routed to, and none of them ever blocks.
+# ---------------------------------------------------------------------------
+
+
+def _deferrals(findings):
+    """The deferral findings in a handoff report, in report order."""
+    return [item for item in findings if item["code"] == check.W_TODO_OPEN]
+
+
+def _chain_findings(findings):
+    """The stage-chain findings: the ones carrying the `HandoffFinding` keys."""
+    return [item for item in findings if "state" in item]
+
+
+def test_handoff_reports_nothing_for_a_workspace_that_has_deferred_nothing(workspace):
+    """No list is not an empty list is not a defect -- it must report neither."""
+    _chain(workspace)
+    result, code = _check(workspace, "handoff")
+    assert result.data["findings"] == []
+    assert code == 0
+
+
+def test_handoff_reports_every_open_entry_with_the_skill_it_is_routed_to(workspace):
+    """The acceptance clause, whole: *every* entry, and the routed skill on each."""
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral", run="/mfix")
+    _todo_add(workspace, title="second deferral", run="/mspec")
+
+    findings = _findings(workspace, "handoff")
+    deferrals = _deferrals(findings)
+    assert len(deferrals) == 2
+    # Document order, which is the order `todo add` appended them in.
+    assert "'first deferral'" in deferrals[0]["message"]
+    assert "/mfix" in deferrals[0]["message"]
+    assert "'second deferral'" in deferrals[1]["message"]
+    assert "/mspec" in deferrals[1]["message"]
+    assert [item["file"] for item in deferrals] == [TODO_REL, TODO_REL]
+    assert deferrals[0]["line"] < deferrals[1]["line"]
+
+
+def test_a_deferral_finding_carries_the_entrys_own_line(workspace):
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral")
+    _todo_add(workspace, title="second deferral")
+
+    deferrals = _deferrals(_findings(workspace, "handoff"))
+    lines = workspace.path(TODO_REL).read_text(encoding="utf-8").split("\n")
+    assert lines[deferrals[0]["line"] - 1] == "## first deferral"
+    assert lines[deferrals[1]["line"] - 1] == "## second deferral"
+
+
+def test_an_open_entry_does_not_change_the_exit_code(workspace):
+    """Asserted, not assumed: the same chain, with and without the list."""
+    _chain(workspace)
+    before = _check(workspace, "handoff")[1]
+    _todo_add(workspace, title="a deferral")
+    result, after = _check(workspace, "handoff")
+
+    assert (before, after) == (0, 0)
+    assert result.ok is True
+    assert len(_deferrals(result.data["findings"])) == 1
+    assert [item["severity"] for item in _deferrals(result.data["findings"])] == ["warning"]
+
+
+def test_many_open_entries_still_do_not_change_the_exit_code(workspace):
+    """A list that grew is still not a defect -- there is no count that blocks."""
+    _chain(workspace)
+    for index in range(5):
+        _todo_add(workspace, title="deferral %d" % index)
+
+    result, code = _check(workspace, "handoff")
+    assert len(_deferrals(result.data["findings"])) == 5
+    assert code == 0 and result.ok is True
+
+
+def test_an_open_entry_neither_masks_nor_creates_a_stage_finding(workspace):
+    """The other direction: a real defect still exits 1 with entries present."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    _todo_add(workspace, title="a deferral")
+
+    result, code = _check(workspace, "handoff")
+    findings = result.data["findings"]
+    assert code == 1
+    assert len(_chain_findings(findings)) == 1
+    assert len(_deferrals(findings)) == 1
+
+
+def test_the_stage_walk_is_unchanged_by_an_open_entry(workspace):
+    """No existing finding gains or loses severity, and none is added or lost."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    workspace.write(
+        "context/%s/requirements/changes/REQ-CHANGE-001-first-pass.md" % TARGET,
+        _req_change_text("001", TARGET, "open"),
+    )
+    before = _chain_findings(_findings(workspace, "handoff"))
+
+    _todo_add(workspace, title="a deferral")
+    after = _chain_findings(_findings(workspace, "handoff"))
+
+    assert before == after
+    assert sorted(item["severity"] for item in after) == ["error", "warning"]
+
+
+def test_a_deferral_is_not_folded_into_a_stage_chain_finding(workspace):
+    """Distinguishable by machine: its own code, and none of the handoff keys."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    deferral = findings[0]
+    assert deferral["code"] == check.W_TODO_OPEN
+    assert deferral["code"] != core.E_HANDOFF
+    assert deferral["severity"] == "warning"
+    for key in ("from_stage", "to_stage", "artifact", "state"):
+        assert key not in deferral, key
+
+
+def test_a_deferral_is_not_a_handoff_finding_in_the_walk_either(workspace):
+    """``StageWalk.findings`` is the published ``HandoffFinding[]``; a deferral
+    is not one, so it must not appear there -- ``status`` renders that list."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    walk = check.walk_stages(workspace.ws)
+    assert walk.findings == []
+    assert [item.code for item in walk.deferrals] == [check.W_TODO_OPEN]
+    assert not any(isinstance(item, check.HandoffFinding) for item in walk.deferrals)
+    assert check.handoff_findings(workspace.ws) == []
+
+
+def test_the_deferrals_are_reported_after_the_chain(workspace):
+    """Appended, not interleaved: the chain's own report keeps its order."""
+    _chain(workspace)
+    workspace.write(
+        "context/%s/changes/CHANGE-002-orphaned.md" % TARGET,
+        _change_text("002", "orphaned", "applied"),
+    )
+    _todo_add(workspace, title="a deferral")
+
+    codes = _codes(_findings(workspace, "handoff"))
+    assert codes == [core.E_HANDOFF, check.W_TODO_OPEN]
+
+
+def test_handoff_still_walks_the_chain_exactly_once(workspace, monkeypatch):
+    """Folding the list in reads one more file; it adds no second traversal."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    calls = []
+    original = check.walk_stages
+
+    def counted(ws):
+        calls.append(ws)
+        return original(ws)
+
+    monkeypatch.setattr(check, "walk_stages", counted)
+    result, code = _check(workspace, "handoff")
+
+    assert len(calls) == 1
+    assert code == 0
+    assert len(_deferrals(result.data["findings"])) == 1
+
+
+def test_an_entry_whose_run_field_is_missing_is_still_reported(workspace):
+    """Open work must not hide from the one place open work is read.
+
+    Which field is wrong is ``check todo``'s to say, and it still says it --
+    the handoff report names the entry and stays a warning.
+    """
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+    _todo_edit(workspace, "**Run:** /mfix\n", "")
+
+    result, code = _check(workspace, "handoff")
+    deferrals = _deferrals(result.data["findings"])
+    assert len(deferrals) == 1
+    assert "'a deferral'" in deferrals[0]["message"]
+    assert check.TODO_RUN_FIELD in deferrals[0]["message"]
+    assert code == 0
+    # The defect itself is reported, at `error`, by the check that owns it.
+    assert _codes(_findings(workspace, "todo")) == [todo.E_TODO_FIELD]
+    assert _check(workspace, "todo")[1] == 1
+
+
+def test_the_routed_skill_is_read_from_the_standards_own_field(workspace):
+    """A rename in ``STANDARD-TODO.md`` fails here rather than quietly routing
+    every entry to nobody."""
+    assert check.TODO_RUN_FIELD == "Run"
+    assert check.TODO_RUN_FIELD in todo.LIST_FILTER_FIELDS
+    assert check.TODO_RUN_FIELD in [item.name for item in todo.field_specs()]
+
+
+def test_both_checks_read_the_same_list(workspace):
+    """One reader, so ``check todo`` and ``check handoff`` cannot disagree about
+    what the list holds."""
+    _chain(workspace)
+    _todo_add(workspace, title="first deferral")
+    _todo_add(workspace, title="second deferral")
+
+    entries, relative, problems = check.read_todo(workspace.ws)
+    assert problems == []
+    assert relative == TODO_REL
+    assert [entry.title for entry in entries] == ["first deferral", "second deferral"]
+    assert len(_deferrals(_findings(workspace, "handoff"))) == len(entries)
+
+
+def test_check_all_carries_the_deferrals_without_failing_the_run(workspace):
+    """``check all`` reports them in its handoff report and still exits 0."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+
+    result, code = _check(workspace, "all", TARGET)
+    reports = {report["check"]: report for report in result.data["reports"]}
+    assert _codes(reports["todo"]["findings"]) == []
+    assert _codes(reports["handoff"]["findings"]) == [check.W_TODO_OPEN]
+    assert code == 0
+
+
+def test_status_is_unaffected_by_an_open_entry(workspace):
+    """``StatusReport.handoff`` is ``HandoffFinding[]``; a deferral is not one,
+    so the report the operator view publishes keeps its documented shape."""
+    _chain(workspace)
+    before = _status(workspace)[0].data
+    _todo_add(workspace, title="a deferral")
+    after, code = _status(workspace)
+
+    assert after.data == before
+    assert after.data["handoff"] == []
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
 # check all
 # ---------------------------------------------------------------------------
 
@@ -1192,10 +1649,24 @@ def test_all_runs_every_check_for_one_target(workspace):
         "coupling",
         "requirements",
         "catalog",
+        "todo",
         "handoff",
     ]
     assert result.data["targets"] == [TARGET]
     assert code == 0
+
+
+def test_all_includes_the_todo_check_and_its_findings(workspace):
+    """``check all`` gains a check, so a defect only it sees still fails the run."""
+    _chain(workspace)
+    _todo_origin(workspace)
+    _todo_add(workspace)
+    _todo_edit(workspace, "**Kind:** spec-drift", "**Kind:** typo")
+
+    result, code = _check(workspace, "all", TARGET)
+    reports = {report["check"]: report for report in result.data["reports"]}
+    assert _codes(reports["todo"]["findings"]) == [todo.E_TODO_ENUM]
+    assert code == 1
 
 
 def test_all_without_a_target_covers_every_target(workspace):
@@ -1213,7 +1684,8 @@ def test_all_without_a_target_covers_every_target(workspace):
         "other",
         "other",
         "other",
-        None,
+        None,  # todo -- one list, at the project tier
+        None,  # handoff -- one stage chain, across the workspace
     ]
     assert code == 0
 
