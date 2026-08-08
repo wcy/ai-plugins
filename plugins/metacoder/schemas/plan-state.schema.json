@@ -5,56 +5,122 @@
   "description": "Mutable execution state for one plan: per-wave and per-story status, retry counts, worktree refs (per story and per retry attempt), validation + conformance results, and rough telemetry. mexecute reads/writes this to drive resume, retry, and progress. Distinct from the immutable plan.yaml graph.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "plan_id", "run", "status", "stories"],
+  "required": [
+    "version",
+    "plan_id",
+    "run",
+    "status",
+    "stories"
+  ],
   "properties": {
     "version": {
-      "enum": [1, 2, 3],
-      "description": "New state files are written with 3. A 1 or 2 file carries no slices and still resolves: no field was renamed, and resume_wave still names a wave."
+      "enum": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "description": "New state files are written with 4. A 1, 2 or 3 file carries no sweep declaration and still resolves: no field was renamed, and its absence reads as never having declared. The version rises because additionalProperties is false, so a reader pinned to 3 rejects the new key outright -- a compatibility fact about readers rather than about files."
     },
-    "plan_id": { "type": "string", "pattern": "^[0-9]{3}-[a-z0-9-]+$" },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[0-9]{3}-[a-z0-9-]+$"
+    },
     "run": {
       "type": "integer",
       "minimum": 0,
-      "description": "The run counter for this plan. 0 means never executed and is the value mplan seeds into a fresh state file. mexecute increments it once per invocation, over the whole plan, so the first invocation runs as 1. The increment is unconditional — identical on a fresh plan and on a resume."
+      "description": "The run counter for this plan. 0 means never executed and is the value mplan seeds into a fresh state file. mexecute increments it once per invocation, over the whole plan, so the first invocation runs as 1. The increment is unconditional \u2014 identical on a fresh plan and on a resume."
     },
-    "updated": { "type": "string" },
-    "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
+    "updated": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "in-progress",
+        "applied",
+        "failed"
+      ]
+    },
     "integration_branches": {
       "type": "object",
       "description": "Per-repo integration branch: greens merge here (not the repo's live working branch).",
-      "additionalProperties": { "type": "string", "minLength": 1 }
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "waves": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["wave", "status", "stories"],
+        "required": [
+          "wave",
+          "status",
+          "stories"
+        ],
         "properties": {
-          "wave": { "type": "integer", "minimum": 1 },
-          "status": { "enum": ["pending", "in-progress", "complete", "failed"] },
-          "stories": { "type": "array", "items": { "$ref": "#/$defs/storyId" } }
+          "wave": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "in-progress",
+              "complete",
+              "failed"
+            ]
+          },
+          "stories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/storyId"
+            }
+          }
         }
       }
     },
     "slices": {
       "type": "array",
       "description": "One entry per graph slice, written by mship through mc.py state set-slice. Absent on a pre-slice plan, which is read as one implicit slice covering every wave. Slice-level resumption derives from these statuses; resume_wave is unchanged and still names a wave.",
-      "items": { "$ref": "#/$defs/sliceState" }
+      "items": {
+        "$ref": "#/$defs/sliceState"
+      }
     },
     "stories": {
       "type": "object",
-      "propertyNames": { "$ref": "#/$defs/storyId" },
-      "additionalProperties": { "$ref": "#/$defs/storyState" }
+      "propertyNames": {
+        "$ref": "#/$defs/storyId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/storyState"
+      }
     },
     "conformance": {
       "type": "object",
       "additionalProperties": false,
       "description": "Result of the Step 3 /mverify sweep. Written by the mexecute session from the sweep's returned result once the Workflow returns (no barrier remains by then); written by mverify itself only on a standalone run.",
       "properties": {
-        "status": { "enum": ["clean", "drift", "not-run"] },
-        "report": { "type": ["string", "null"], "description": "Path to the mverify report under context/project/out/." },
-        "findings": { "type": "integer", "minimum": 0 },
+        "status": {
+          "enum": [
+            "clean",
+            "drift",
+            "not-run"
+          ]
+        },
+        "report": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path to the mverify report under context/project/out/."
+        },
+        "findings": {
+          "type": "integer",
+          "minimum": 0
+        },
         "deferred": {
           "type": "integer",
           "minimum": 0,
@@ -65,6 +131,28 @@
     "telemetry": {
       "$ref": "#/$defs/telemetry",
       "description": "Rough actuals for the run (never a pre-run estimate)."
+    },
+    "sweep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filed"
+      ],
+      "description": "The end-of-run deferral declaration, written by mship and mquick through mc.py state sweep. ITS PRESENCE IS THE CLAIM: a plan with no sweep key never declared, a plan with filed: 0 declared that it left nothing behind. Nothing may collapse the two, and no writer may treat filed: 0 as an occasion to omit the key. Optional at the schema level and obligatory at the end of delivery -- the schema cannot express 'required once status is terminal' without invalidating every in-flight file, so check handoff carries that half of the rule.",
+      "properties": {
+        "filed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many entries this run's closing sweep filed. 0 is a declaration, not a no-op."
+        },
+        "titles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The titles the sweep filed, so a reader reaches them without re-reading the run. Not a second copy of the entries, which live only in context/project/TODO.md."
+        }
+      }
     }
   },
   "$defs": {
@@ -76,82 +164,230 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cost_usd": { "type": ["number", "null"] },
-        "tokens": { "type": ["integer", "null"] },
-        "wall_clock_s": { "type": ["number", "null"] }
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tokens": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wall_clock_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
       }
     },
     "sliceState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slice", "status"],
+      "required": [
+        "slice",
+        "status"
+      ],
       "properties": {
-        "slice": { "type": "string", "pattern": "^[0-9]{2}$" },
-        "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
+        "slice": {
+          "type": "string",
+          "pattern": "^[0-9]{2}$"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in-progress",
+            "applied",
+            "failed"
+          ]
+        },
         "acceptance": {
-          "enum": ["pass", "fail", "unconfirmed", "not-run"],
+          "enum": [
+            "pass",
+            "fail",
+            "unconfirmed",
+            "not-run"
+          ],
           "description": "unconfirmed is the --gate never case: a slice whose acceptance could only be judged by a person, run with nobody to ask. It is deliberately neither pass nor fail, so a report cannot present an unlooked-at slice as demonstrated."
         },
         "outcome": {
-          "enum": ["continue", "ask", "replan", "cascade", "stop", null],
+          "enum": [
+            "continue",
+            "ask",
+            "replan",
+            "cascade",
+            "stop",
+            null
+          ],
           "description": "mship's decision at this slice boundary; null until the slice is decided."
         },
-        "telemetry": { "$ref": "#/$defs/telemetry" }
+        "telemetry": {
+          "$ref": "#/$defs/telemetry"
+        }
       }
     },
     "attempt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run", "attempt", "branch", "result"],
+      "required": [
+        "run",
+        "attempt",
+        "branch",
+        "result"
+      ],
       "properties": {
         "run": {
           "type": "integer",
           "minimum": 1,
           "description": "The run this attempt belongs to. An attempt always belongs to a started run, so unlike the top-level counter it is never 0."
         },
-        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
-        "worktree": { "type": ["string", "null"], "description": "Worktree path; null once removed after a green merge." },
-        "branch": { "type": "string", "minLength": 1, "description": "e.g. mexec/<plan-id>/<story-id>/r<run>/<attempt>" },
-        "result": { "enum": ["in-progress", "applied", "failed"] },
-        "validation": { "enum": ["pass", "fail", "not-run"] },
-        "worktree_removed": { "type": "boolean", "description": "true once a merged (green) worktree is cleaned up; failed/unmerged worktrees are kept." }
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "worktree": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Worktree path; null once removed after a green merge."
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "e.g. mexec/<plan-id>/<story-id>/r<run>/<attempt>"
+        },
+        "result": {
+          "enum": [
+            "in-progress",
+            "applied",
+            "failed"
+          ]
+        },
+        "validation": {
+          "enum": [
+            "pass",
+            "fail",
+            "not-run"
+          ]
+        },
+        "worktree_removed": {
+          "type": "boolean",
+          "description": "true once a merged (green) worktree is cleaned up; failed/unmerged worktrees are kept."
+        }
       }
     },
     "storyState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo", "wave", "status", "retries"],
+      "required": [
+        "repo",
+        "wave",
+        "status",
+        "retries"
+      ],
       "properties": {
-        "repo": { "type": "string", "minLength": 1 },
-        "wave": { "type": "integer", "minimum": 1 },
-        "status": { "enum": ["pending", "in-progress", "applied", "failed"] },
-        "retries": { "type": "integer", "minimum": 0, "maximum": 3, "description": "Attempts made so far (bounded auto-retry N=3)." },
-        "attempts": { "type": "array", "items": { "$ref": "#/$defs/attempt" } },
-        "merged_branch": { "type": ["string", "null"], "description": "The integration branch the green attempt merged into, or null." },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wave": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in-progress",
+            "applied",
+            "failed"
+          ]
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Attempts made so far (bounded auto-retry N=3)."
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attempt"
+          }
+        },
+        "merged_branch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The integration branch the green attempt merged into, or null."
+        },
         "validation": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "post_story": { "enum": ["pass", "fail", "not-run"] },
-            "details": { "type": "string" }
+            "post_story": {
+              "enum": [
+                "pass",
+                "fail",
+                "not-run"
+              ]
+            },
+            "details": {
+              "type": "string"
+            }
           }
         },
         "contract_revisions": {
           "type": "object",
-          "propertyNames": { "pattern": "^[A-Z0-9-]+$" },
-          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": {
+            "pattern": "^[A-Z0-9-]+$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          },
           "description": "Shared interface TAG -> the agreement revision this story was built against, recorded at merge. Absent means the story consumed no shared interface. A later cascade that bumps a revision above the one recorded here is what makes the story's code a stale-contract-revision finding."
         },
         "deferred_break": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": false,
           "description": "A contained breaking-contract change deferred to the final report (did not halt the run).",
           "properties": {
-            "blast_radius": { "enum": ["contained"] },
-            "detail": { "type": "string" }
+            "blast_radius": {
+              "enum": [
+                "contained"
+              ]
+            },
+            "detail": {
+              "type": "string"
+            }
           }
         }
       }
+    }
+  },
+  "if": {
+    "required": [
+      "version"
+    ],
+    "properties": {
+      "version": {
+        "const": 4
+      }
+    }
+  },
+  "then": {},
+  "else": {
+    "properties": {
+      "sweep": false
     }
   }
 }

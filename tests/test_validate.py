@@ -618,3 +618,70 @@ def test_validate_instance_is_the_documented_single_file_front_end(workspace):
     result = core.validate_instance("catalog", str(path), workspace.ws)
     assert result.ok is True
     assert result.data["lines"] == ["OK    %s (catalog)" % path]
+
+
+# ---------------------------------------------------------------------------
+# plan-state's sweep declaration
+#
+# The block records what a finished run left behind. Its *presence* is the
+# claim, which is why an absent block and a zeroed one are two different states
+# and never one.
+# ---------------------------------------------------------------------------
+
+
+def _state(**overrides):
+    """A minimal conforming plan-state, as a dict."""
+    doc = {"version": 4, "plan_id": "001-p", "run": 1, "status": "applied", "stories": {}}
+    doc.update(overrides)
+    return doc
+
+
+def _write_state(workspace, doc):
+    return workspace.write("instances/state.yaml", json.dumps(doc))
+
+
+def test_a_version_four_state_validates_with_no_sweep_block(workspace):
+    """Optional at the schema level: an in-flight plan has not declared yet."""
+    result, code = _run(workspace, "plan-state", [_write_state(workspace, _state())])
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+
+def test_a_version_four_state_validates_with_a_zeroed_sweep_block(workspace):
+    """`filed: 0` is a declaration -- a run that left nothing behind said so."""
+    doc = _state(sweep={"filed": 0, "titles": []})
+    result, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+
+def test_an_absent_sweep_and_a_zeroed_one_stay_distinguishable(workspace):
+    """The whole value of the field.
+
+    A loader that normalised the missing key into a zeroed block would erase the
+    difference between *never declared* and *declared nothing*, which is the one
+    distinction the declaration exists to record. Asserted on the parsed
+    documents, not on the validator's verdict -- both validate, and that is
+    precisely why validity cannot be the assertion.
+    """
+    absent = _state()
+    zeroed = _state(sweep={"filed": 0, "titles": []})
+    assert "sweep" not in absent
+    assert zeroed["sweep"]["filed"] == 0
+    assert absent != zeroed
+    for doc in (absent, zeroed):
+        _, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
+        assert code == 0
+
+
+def test_a_version_three_state_carrying_a_sweep_block_is_rejected(workspace):
+    """The discriminator holds in both directions, as it does for the graph."""
+    doc = _state(version=3, sweep={"filed": 0})
+    result, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
+    assert code == 1
+    assert [d.code for d in result.diagnostics] == [core.E_SCHEMA_INVALID]
+
+
+def test_a_sweep_block_with_no_filed_count_is_rejected(workspace):
+    """`titles` without `filed` would be a declaration that declares nothing."""
+    doc = _state(sweep={"titles": ["x"]})
+    result, code = _run(workspace, "plan-state", [_write_state(workspace, doc)])
+    assert code == 1
