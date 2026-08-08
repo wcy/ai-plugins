@@ -265,6 +265,25 @@ There is no closed status and no closed section, so the list holds outstanding w
 what was fixed is recorded in the change that fixed it. `shared/STANDARD-TODO.md` is the standard
 those entries follow.
 
+Correcting an entry is `mc.py todo edit`, which rewrites only the fields it is given and carries the
+rest over verbatim. It re-validates the whole resulting entry through the same path `add` uses, so an
+edit cannot produce an entry `add` would have refused — and the alternative, removing and re-adding,
+means re-supplying every field, which is how a `Context` paragraph gets lost while fixing a one-word
+rating.
+
+Not every item is a skill's to close. An entry routed `human` — a plugin install, a credential
+rotation, an approval only a person can give — names work no agent can perform, and it carries no
+leading slash for exactly that reason: the other five values are commands, and this one is not.
+`check handoff` reports these under their own heading rather than among the findings a run can clear,
+because a queue holding one permanently unsatisfiable item is a queue nobody reads.
+
+**A run that finishes says what it is leaving behind.** Filing at the moment of deferral only
+captures what a run is *holding*; it never captures what a run *learned* and nobody wrote down. So
+`mship` and `mquick` end by re-reading their own findings against the list and recording the result
+with `mc.py state sweep` — including `--filed 0`, which is a claim that nothing was left rather than
+a silence that looks identical to one. Nothing can check that a sweep was thorough, so what is
+checked is that it happened: `check handoff` reports a finished plan carrying no declaration.
+
 ## Orchestration
 
 The skills use Claude Code's orchestration primitives only where real parallelism or isolation earns them:

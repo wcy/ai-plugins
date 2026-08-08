@@ -161,6 +161,23 @@ E_CONFORMANCE_DEFERRED = "E_CONFORMANCE_DEFERRED"
 #: what makes it distinguishable from a stage-chain finding by machine.
 W_TODO_OPEN = "W_TODO_OPEN"
 
+#: An open entry routed to `human` -- work no invocation of anything clears.
+#: Its own code, distinct from `W_TODO_OPEN`, is the partition: every other
+#: reported entry names work some run can pick up, so that group drains, and a
+#: `human` item left among them would make it permanently non-empty and
+#: therefore unread. A standing prompt, not a stage-chain gap.
+W_TODO_HUMAN = "W_TODO_HUMAN"
+
+#: A finished plan carrying no `sweep` declaration. A warning: the run
+#: delivered, and what is missing is its statement of what it left behind --
+#: which nobody can supply retroactively by blocking on it.
+W_HANDOFF_SWEEP = "W_HANDOFF_SWEEP"
+
+#: The plan statuses at which a closing sweep declaration is owed. Delivery is
+#: over at both: `applied` finished it, `failed` stopped it, and a stopped run
+#: is the one with the most to defer.
+TERMINAL_PLAN_STATUSES = ("applied", "failed")
+
 #: The check names, per TOOLS-DATAMODEL.md's `CheckReport.check` enum.
 CHECK_DEPENDS_ON = "depends-on"
 CHECK_COUPLING = "coupling"
@@ -1157,6 +1174,18 @@ _CONTEXT_RULES = (_CONTEXT_ARTIFACT_RE, _CONTEXT_FILE_RE, _CONTEXT_IDENT_RE)
 #: fails a test instead of quietly routing every entry to "no skill".
 TODO_RUN_FIELD = todo.LIST_FILTER_FIELDS[0]
 
+#: The one `Run` value that is not a skill, read out of the standard's own enum
+#: rather than spelled here -- it is the member carrying no leading slash, which
+#: is the grammar `STANDARD-TODO.md` gives it. Deriving it keeps this partition
+#: from disagreeing with the standard the way a literal would.
+TODO_HUMAN_RUN = next(
+    value
+    for spec in todo.field_specs()
+    if spec.name == TODO_RUN_FIELD
+    for value in (spec.enum or ())
+    if not value.startswith("/")
+)
+
 
 def context_names_something(text: str) -> bool:
     """Whether a ``Context`` names a file, an artifact or an identifier."""
@@ -1295,6 +1324,10 @@ class StageWalk:
     #: apart is what leaves the stage walk itself, and everything rendered from
     #: it, exactly as it was.
     deferrals: List[core.Diagnostic] = field(default_factory=list)
+    #: The open entries routed to `human`, one warning each. Held apart from
+    #: :attr:`deferrals` for the reason `W_TODO_HUMAN` gives: that list is a
+    #: queue that drains, and these never do.
+    human_deferrals: List[core.Diagnostic] = field(default_factory=list)
     diagnostics: List[core.Diagnostic] = field(default_factory=list)
 
 
@@ -1532,6 +1565,54 @@ def _plans_stage(
             walk.unfinished_plans.append(resolution)
         _slice_stage(walk, plan_id, graph, state, ledger)
         _conformance_stage(ws, walk, plan_id, graph, state, ledger, highest_index)
+        _sweep_stage(walk, resolution, state)
+
+
+def _sweep_stage(walk: StageWalk, resolution: Dict[str, Any], state: Any) -> None:
+    """Report a finished plan that never declared what it left behind.
+
+    **The check is that the declaration is present, never that it is right.**
+    Nothing can confirm a run enumerated everything it learned, and a check
+    claiming to would be the false confirmation `REQ-028` describes -- so a
+    block recording ``filed: 0`` clears this stage exactly as one recording five
+    does. That is the point rather than a weakness: the absence becomes a claim
+    somebody made instead of a silence nobody notices.
+
+    A plan whose ``status`` is not yet terminal is skipped rather than reported
+    clean: the declaration is owed at the *end* of delivery, and reporting an
+    in-flight plan would train the reader to ignore the finding.
+
+    **A state file below the sweep version is skipped too**, and for a stronger
+    reason: it was written before the block existed, so its silence is not a
+    missing declaration but a plan from before declarations. The obligation
+    cannot reach backwards -- no run can return to a finished plan and declare
+    what it left behind -- so reporting one would be a finding nobody can ever
+    clear, and a check that can only be satisfied by plans yet to be written is
+    one every reader learns to skip. This is the same version-as-discriminator
+    rule ``plan.py`` states for ``slices``: a version-1/2 graph is a plan written
+    before slices existed, and nothing needs migrating.
+    """
+    if resolution["status"] not in TERMINAL_PLAN_STATUSES:
+        return
+    if not isinstance(state, dict):
+        return
+    if state.get("version") != plan.PLAN_STATE_SWEEP_VERSION:
+        return
+    if isinstance(state.get("sweep"), dict):
+        return
+    walk.findings.append(
+        handoff(
+            W_HANDOFF_SWEEP,
+            "the plan finished without a closing sweep declaration; a run that deferred "
+            "nothing further records that as `state sweep --filed 0` rather than silence",
+            STAGE_MEXECUTE,
+            STAGE_MVERIFY,
+            resolution["plan_dir"],
+            STATE_INCOMPLETE,
+            file="%s/%s" % (resolution["plan_dir"], plan.STATE_FILE),
+            severity="warning",
+        )
+    )
 
 
 def _plan_documents(
@@ -1893,10 +1974,21 @@ def _deferrals_stage(ws: core.Workspace, walk: StageWalk) -> None:
     entries, relative, problems = read_todo(ws)
     walk.diagnostics.extend(problems)
     for entry in entries:
+        routed = _routed_skill(entry)
+        if routed == TODO_HUMAN_RUN:
+            walk.human_deferrals.append(
+                core.warning(
+                    W_TODO_HUMAN,
+                    "entry %r is open and awaits a person; no run clears it" % (entry.title,),
+                    file=relative,
+                    line=entry.line,
+                )
+            )
+            continue
         walk.deferrals.append(
             core.warning(
                 W_TODO_OPEN,
-                "entry %r is open and routed to %s" % (entry.title, _routed_skill(entry)),
+                "entry %r is open and routed to %s" % (entry.title, routed),
                 file=relative,
                 line=entry.line,
             )
@@ -1928,12 +2020,18 @@ def run_todo_check(ws: core.Workspace) -> CheckReport:
 def run_handoff_check(ws: core.Workspace) -> Tuple[CheckReport, List[core.Diagnostic]]:
     """The workspace-wide handoff check and the reads it warned about.
 
-    The stage-chain findings first, then the open deferrals -- appended rather
-    than interleaved, so the chain's own report is byte-identical to what it was
-    on a workspace that has deferred nothing.
+    The stage-chain findings first, then the open deferrals, then the entries
+    awaiting a person -- appended rather than interleaved, so the chain's own
+    report is byte-identical to what it was on a workspace that has deferred
+    nothing, and the `human` group stays visibly separate from the queue that
+    drains.
     """
     walk = walk_stages(ws)
-    report = CheckReport(CHECK_HANDOFF, None, list(walk.findings) + list(walk.deferrals))
+    report = CheckReport(
+        CHECK_HANDOFF,
+        None,
+        list(walk.findings) + list(walk.deferrals) + list(walk.human_deferrals),
+    )
     return report, list(walk.diagnostics)
 
 

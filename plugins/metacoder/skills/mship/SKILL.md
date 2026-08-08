@@ -169,6 +169,10 @@ python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
 | `{stop, "acceptance-failed"}` | `/mfix` | `logic` | the acceptance step that failed — its `description`, and for an `exit-code` step the `command` and the code it exited — and what would have to be true for it to pass |
 | `{stop, "budget"}` | `/mspec` | `architecture` | this slice's `cost_usd`, the median it was compared against, how many completed slices formed the sample, and that what needs settling is the size of the remaining cut |
 
+**A stop whose resolution no agent can perform routes `human`, whichever row it came from.** An unmergeable wave needing a person to reconcile it by hand, a halt waiting on a credential or an install — the row above names the skill that would act *if a skill could*, and `human` overrides it when none can. Routing such a stop to a skill files an item that skill will pick up and fail to close on every pass, which is the defect `human` exists to remove.
+
+**The closing report names human-routed items separately from the rest.** Outstanding work a later run will pick up and outstanding work waiting on a person are different states, and presenting them in one list reads as queued when the second is not — nothing will move it until somebody acts.
+
 **`--run` routes to a skill that can actually act on the stop**, which is why a halt splits by its cause: only `mspec` can change a contract, and re-delivering work that merely failed to land is the loop's own job re-entered. **`--kind` follows the cause too** — a stop is not a category of its own. **`--origin` is the plan id**, so a reader can open the run that raised the item. **`--priority` is `high` on every stop**: the run ended on it and nothing downstream proceeds until it is settled. The remaining three ratings are judgements about the work the entry names, and the standard's warning applies — they annotate an item, and nothing in the loop is ordered, deferred or gated on them.
 
 **`--context` is written for a cleared context.** The reader was not here, has not seen the run, and cannot be sent to a transcript: name the slice, what it was measured against, and what closing it requires, in that order.
@@ -242,9 +246,34 @@ When a slice reveals the shared contract itself is wrong, run the cascade in exa
 
 Remediation stories are appended to the **next** slice, never edited into the slice that shipped them. The slice that shipped stays as delivered; the work the cascade left out of step is scheduled, not rewritten.
 
+## The Closing Sweep
+
+**The loop does not end until the run has declared what it is leaving behind.** Whichever way delivery finishes — every slice `applied`, or a `{stop}` from rules 1–3 — the last thing `mship` does is re-read this run's own findings against `context/project/TODO.md`, file what is missing through `todo add`, and record the declaration:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py state sweep <plan-id> --filed <n> [--titles <json>]
+```
+
+**A sweep is not a producer, and does not replace one.** Each producer files what it is *holding* at the moment it holds it — a stop reason, a `spec_defect`, a `deferred_break`. The sweep asks a different question: *what did this run learn that nobody wrote down?* Filing-at-the-moment was already wired everywhere it applies, and the list still received only what the session happened to recall: five entries from memory on the run that shipped the mechanism, with six more found minutes later by somebody looking deliberately. All six were true at filing time. **None was being held by anything.**
+
+Sources to re-read, at minimum:
+
+- every `SliceOutcome` and the reasoning behind it;
+- every `spec_defect` and `deferred_break` any story reported;
+- the per-slice `mverify` findings;
+- the acceptance of every slice recorded `unconfirmed`;
+- **any obligation the run discharged by hand** rather than through the step that owns it — a deferral about the workflow rather than the code, and the category a run is least likely to notice about itself.
+
+**`--filed 0` is a real outcome and must be recorded.** A run that genuinely left nothing behind declares so; it does not skip the call. This is the whole mechanism: nothing can check that a sweep was *thorough*, so what is checked is that it *happened*, and `check handoff` reports a finished plan carrying no declaration. Silence and a declared zero are different states, and only one is a claim somebody made.
+
+A plan whose `state.yaml` predates the declaration cannot carry one, and `state sweep` refuses it rather than migrating the file — the same reason `check handoff` does not report such a plan. Neither is a gap: the obligation cannot reach backwards.
+
+The sweep **files** entries; it closes nothing and fixes nothing. An item it files routed `human` is work no later run will pick up, which is the point of that value.
+
 ## Outputs
 
 - **`context/project/out/<plan-id>/mship-run.md`** — per slice: what it delivered, what its acceptance proved, its `SliceTelemetry`, and the `SliceOutcome` taken. This file is the per-slice cost series the budget breaker samples.
+- **The `sweep` declaration** in the plan `state.yaml`, via `mc.py state sweep` — present on every finished run, including one that filed nothing.
 - **Plan state** — slice status, acceptance and outcome via `mc.py state set-slice`; the run's actuals via `mc.py state telemetry <plan-id>`. Nothing under `context/project/plans/` is ever hand-written.
 - **`context/project/TODO.md`** — one entry per stop, via `mc.py todo add`, written before the run returns. This is the only output that outlives the session, which is why a stop writes one and a hand-back does not.
 - **A closing report** naming: slices delivered vs. planned · every re-plan performed and why · every cascade run and the revision it moved · the developer questions asked and their answers · **cost per slice** · every acceptance recorded `unconfirmed` · and, if the run stopped, which `StopReason` fired.

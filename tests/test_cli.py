@@ -496,6 +496,12 @@ def cases():
             "state", "telemetry", PLAN_ID, "--cost", "1.5", "--tokens", "4096",
             stdout=["cost_usd: 1.5", "tokens: 4096", "wall_clock_s: null"],
         ),
+        # `--filed 0` on purpose: the declaration a run makes when it left
+        # nothing behind, which must still reach stdout as a written block.
+        "state.sweep": Case(
+            "state", "sweep", PLAN_ID, "--filed", "0",
+            stdout=["filed: 0", "state.yaml"],
+        ),
         "worktree.names": Case(
             "worktree", "names", PLAN_ID, LAST_STORY, "--run", "1", "--attempt", "1",
             stdout=["mexec/%s/integration" % PLAN_ID, BRANCH, WORKTREE],
@@ -511,6 +517,10 @@ def cases():
             "--regression-risk", "medium", "--cost", "medium",
             "--context", "plugins/metacoder/tools/todo.py has no rule for this yet.",
             stdout=[TODO_REL, "title: a second deferral", "created: false"],
+        ),
+        "todo.edit": Case(
+            "todo", "edit", TODO_TITLE, "--priority", "high",
+            stdout=["Priority", TODO_TITLE],
         ),
         "todo.remove": Case(
             "todo", "remove", TODO_TITLE,

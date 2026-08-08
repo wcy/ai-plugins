@@ -1548,6 +1548,55 @@ def test_the_deferrals_are_reported_after_the_chain(workspace):
     assert codes == [core.E_HANDOFF, check.W_TODO_OPEN]
 
 
+def test_an_entry_awaiting_a_person_is_reported_under_its_own_code(workspace):
+    """A `human` entry is a standing prompt, not a stage-chain gap.
+
+    Asserted in **both** directions: it carries `W_TODO_HUMAN` and it is absent
+    from the `W_TODO_OPEN` group. A one-directional assertion would pass for an
+    implementation that reported it under both codes, which would leave the
+    drainable queue permanently non-empty -- the exact failure the partition
+    exists to prevent.
+    """
+    _chain(workspace)
+    _todo_add(workspace, title="needs a person", run="human")
+
+    findings = _findings(workspace, "handoff")
+    assert len(findings) == 1
+    assert findings[0]["code"] == check.W_TODO_HUMAN
+    assert _deferrals(findings) == []
+    assert findings[0]["severity"] == "warning"
+
+
+def test_a_human_entry_and_a_routed_one_land_in_different_groups(workspace):
+    """The partition is on the field alone, and it separates a mixed list."""
+    _chain(workspace)
+    _todo_add(workspace, title="a deferral")
+    _todo_add(workspace, title="needs a person", run="human")
+
+    findings = _findings(workspace, "handoff")
+    assert [item["code"] for item in findings] == [check.W_TODO_OPEN, check.W_TODO_HUMAN]
+    assert "a deferral" in findings[0]["message"]
+    assert "needs a person" in findings[1]["message"]
+
+
+def test_a_human_entry_never_blocks(workspace):
+    """It can never be cleared by a run, so turning the check red on one would
+    be a gate nobody can satisfy."""
+    _chain(workspace)
+    _todo_add(workspace, title="needs a person", run="human")
+
+    _, code = _check(workspace, "handoff")
+    assert code == 0
+
+
+def test_the_human_value_is_read_from_the_standard_not_spelled_here(workspace):
+    """`TODO_HUMAN_RUN` is derived as the enum member carrying no slash, so a
+    rename in `STANDARD-TODO.md` cannot leave this partition pointing at a value
+    the standard no longer has."""
+    assert check.TODO_HUMAN_RUN == "human"
+    assert not check.TODO_HUMAN_RUN.startswith("/")
+
+
 def test_handoff_still_walks_the_chain_exactly_once(workspace, monkeypatch):
     """Folding the list in reads one more file; it adds no second traversal."""
     _chain(workspace)
@@ -2092,3 +2141,78 @@ def test_the_live_catalog_still_passes_the_depth_rule(workspace):
     """The whole tree this repo ships declares no depth, and must stay clean."""
     _tree(workspace)
     assert _findings(workspace, "catalog", TARGET) == []
+
+
+# ---------------------------------------------------------------------------
+# The sweep stage -- a finished plan that never declared
+#
+# What is checked is that the declaration is PRESENT, never that it is right.
+# Nothing can confirm a run enumerated everything it learned, so a block
+# recording `filed: 0` clears the stage exactly as one recording five does.
+# ---------------------------------------------------------------------------
+
+
+def _sweep_state(plan_id="001-demo", version=4, statusname="applied", sweep=None):
+    lines = [
+        "version: %d" % version,
+        "plan_id: %s" % plan_id,
+        "run: 1",
+        "status: %s" % statusname,
+        "stories:",
+        "  01-01-demo-ALPHA:",
+        "    repo: %s" % TARGET,
+        "    wave: 1",
+        "    status: applied",
+        "    retries: 0",
+    ]
+    if sweep is not None:
+        lines.append("sweep:")
+        lines.append("  filed: %d" % sweep)
+    return "\n".join(lines) + "\n"
+
+
+def _sweep_findings(workspace, **kwargs):
+    _chain(workspace)
+    workspace.write("context/project/plans/001-demo/state.yaml", _sweep_state(**kwargs))
+    return [
+        item
+        for item in _findings(workspace, "handoff")
+        if item["code"] == check.W_HANDOFF_SWEEP
+    ]
+
+
+def test_a_finished_plan_with_no_declaration_is_reported(workspace):
+    assert len(_sweep_findings(workspace)) == 1
+
+
+def test_a_finished_plan_declaring_zero_is_not_reported(workspace):
+    """The pair that is the whole mechanism.
+
+    A declared zero satisfies the stage exactly as a declared five does. A test
+    asserting only that the finding fires would pass for a stage that fires
+    always, which would make the declaration worthless.
+    """
+    assert _sweep_findings(workspace, sweep=0) == []
+
+
+def test_an_unfinished_plan_with_no_declaration_is_not_reported(workspace):
+    """The declaration is owed at the end of delivery, not throughout it."""
+    assert _sweep_findings(workspace, statusname="in-progress") == []
+
+
+def test_a_plan_older_than_the_sweep_version_is_not_reported(workspace):
+    """Its silence is not a missing declaration -- it predates declarations.
+
+    No run can return to a finished plan and declare what it left behind, so
+    reporting one would be a finding nobody could ever clear.
+    """
+    assert _sweep_findings(workspace, version=2) == []
+
+
+def test_the_sweep_finding_never_blocks(workspace):
+    _chain(workspace)
+    workspace.write("context/project/plans/001-demo/state.yaml", _sweep_state())
+    result, code = _check(workspace, "handoff")
+    codes = [item["code"] for item in result.data["findings"]]
+    assert check.W_HANDOFF_SWEEP in codes
+    assert code == 0

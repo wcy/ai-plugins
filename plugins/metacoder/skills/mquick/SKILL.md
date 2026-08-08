@@ -68,6 +68,31 @@ Then **resume the run from the answer**: `mship` continues the loop from that sa
 
 Report each slice's acceptance with the value `mship` recorded — `pass`, `fail`, or **`unconfirmed`**. `unconfirmed` is deliberately distinct from both, and it means a prose acceptance step nobody judged. Name every `unconfirmed` slice individually and never present one as demonstrated, delivered-and-proven, or folded into a passing count. The exit-code steps of such a slice still ran and are still reported; `unconfirmed` covers its prose steps alone.
 
+### The run ends with the closing sweep
+
+Phase E states what happened; the **closing sweep** records what is still owed, and the two land in
+different places for different readers — the report is written once and read by whoever is already
+looking, the list is what the next run finds. `mquick` performs the sweep
+`mship`'s §"The Closing Sweep" defines: same obligation, same `state sweep` call, same `--filed 0`
+rule when nothing is left behind — but **over the whole run rather than only Phase D**.
+
+`mquick` is a sequencer, so what it uniquely holds is everything *before* delivery: an ambiguity
+Phase A resolved by picking one reading, a risk-scan item accepted rather than designed away, a
+requirements drift left flagged, a `REQ-CHANGE` Phase B left open. None of that reaches `mship`, so a
+sweep confined to the delivery loop would miss every one of them.
+
+**This adds no gate.** A declaration is a record the run writes, not a question it asks, so the
+one-gate promise is untouched — and a run reporting `--filed 0` has made a claim, which is exactly
+what distinguishes it from a run that simply said nothing.
+
+### Outstanding work is relayed in two groups, never one
+
+Phase E names items routed to a skill and items routed `human` **separately**. An item a later run
+will pick up and an item waiting on a person are different states: no run can clear the second, so
+listing it among work that drains reads as queued when nothing will move it until somebody acts.
+`check handoff` draws the same line — `human` entries carry their own code and their own group — and
+this report matches it rather than re-flattening what the check separated.
+
 ### Non-halting — folded into this report
 
 - **Contained breaking change** (would only break code in the affected story) — **does not** halt; deferred here as a `deferred_break`.

@@ -44,7 +44,7 @@ TITLE = "check handoff reports no per-repo counts"
 #: The two closed enums and the four ratings, exactly as ``STANDARD-TODO.md``
 #: §"Entry schema" tables them. Restated *here* on purpose: the code derives
 #: them, and a test that derived them too would agree with any derivation.
-DOCUMENTED_RUNS = ("/mquick", "/mreq", "/mspec", "/mfix", "/mreverse")
+DOCUMENTED_RUNS = ("/mquick", "/mreq", "/mspec", "/mfix", "/mreverse", "human")
 DOCUMENTED_KINDS = (
     "logic",
     "edge-case",
@@ -624,3 +624,115 @@ def test_nothing_is_written_outside_the_workspace(workspace):
     assert todo.TODO_REL in written
     for relative in written:
         assert not relative.startswith("..")
+
+
+# ---------------------------------------------------------------------------
+# todo edit
+#
+# The verb exists because `remove` then `add` requires re-supplying every field
+# the caller did not intend to change, and a Context paragraph retyped to fix a
+# one-word rating is an opportunity to lose what made the entry startable.
+# ---------------------------------------------------------------------------
+
+
+def _edit(workspace, title=TITLE, now=NOW, **overrides):
+    """Call ``todo edit`` directly and return ``(result, exit_code)``."""
+    fields = {item.name.lower().replace("-", "_"): None for item in todo.supplied_specs()}
+    fields.update(overrides)
+    args = workspace.args(verb="edit", title=title, now=now, new_title=None, **fields)
+    result = todo.run(args, workspace.ws)
+    return result, core.exit_code(result)
+
+
+def test_edit_changes_the_named_field(workspace):
+    _change(workspace)
+    _add(workspace)
+    _, code = _edit(workspace, priority="low")
+    assert code == 0
+    assert "**Priority:** low" in _todo_file(workspace).read_text(encoding="utf-8")
+
+
+def test_edit_leaves_every_other_field_byte_identical(workspace):
+    """Asserted on the whole entry, not the edited field.
+
+    An assertion reading only ``Priority`` could not see a ``Context`` paragraph
+    reflowed beside it, which is precisely the loss this verb exists to prevent.
+    """
+    _change(workspace)
+    _add(workspace)
+    before = _todo_file(workspace).read_text(encoding="utf-8")
+
+    _, code = _edit(workspace, priority="low")
+    assert code == 0
+    after = _todo_file(workspace).read_text(encoding="utf-8")
+
+    changed = [
+        (a, b)
+        for a, b in zip(before.split("\n"), after.split("\n"))
+        if a != b
+    ]
+    assert changed == [("**Priority:** medium", "**Priority:** low")]
+
+
+def test_a_refused_edit_leaves_the_file_byte_identical(workspace):
+    _change(workspace)
+    _add(workspace)
+    before = _todo_file(workspace).read_bytes()
+
+    _, code = _edit(workspace, kind="not-a-kind")
+    assert code != 0
+    assert _todo_file(workspace).read_bytes() == before
+
+
+def test_edit_refuses_a_title_matching_no_entry(workspace):
+    _change(workspace)
+    _add(workspace)
+    result, code = _edit(workspace, title="no such entry", priority="low")
+    assert code != 0
+    assert core.E_NOT_FOUND in _codes(result)
+
+
+def test_edit_renames_and_the_entry_is_reachable_by_the_new_title_only(workspace):
+    _change(workspace)
+    _add(workspace)
+    args = workspace.args(
+        verb="edit",
+        title=TITLE,
+        now=NOW,
+        new_title="a renamed entry",
+        **{item.name.lower().replace("-", "_"): None for item in todo.supplied_specs()}
+    )
+    assert core.exit_code(todo.run(args, workspace.ws)) == 0
+
+    text = _todo_file(workspace).read_text(encoding="utf-8")
+    assert "## a renamed entry" in text
+    assert "## %s" % TITLE not in text
+
+    _, code = _edit(workspace, title=TITLE, priority="low")
+    assert code != 0
+
+
+#: One table of bad inputs, driven through **both** verbs. Two tables would pass
+#: while the implementations drifted, which is the failure the shared-validation
+#: design exists to prevent -- so the coupling is asserted, not just intended.
+BAD_INPUTS = [
+    ("run", "/mnope"),
+    ("kind", "not-a-kind"),
+    ("priority", "urgent"),
+    ("risk_if_unfixed", "extreme"),
+    ("regression_risk", "maybe"),
+    ("cost", "free"),
+    ("origin", "CHANGE-404"),
+]
+
+
+@pytest.mark.parametrize("field,value", BAD_INPUTS)
+def test_add_and_edit_refuse_the_same_violations(workspace, field, value):
+    _change(workspace)
+    _add(workspace)
+
+    _, edit_code = _edit(workspace, **{field: value})
+    assert edit_code != 0, "edit accepted %s=%r" % (field, value)
+
+    _, add_code = _add(workspace, title="another entry", **{field: value})
+    assert add_code != 0, "add accepted %s=%r" % (field, value)

@@ -88,6 +88,34 @@ def _emit(workspace, plan_id=PLAN_ID, story_ids=(STORY,), now=EARLIER, waves=Non
     return result
 
 
+def _emit_sliced(workspace, plan_id=PLAN_ID, story_ids=(STORY,), now=EARLIER):
+    """Seed a **sliced** plan, whose state.yaml carries the sweep version.
+
+    `sweep` exists only from `PLAN_STATE_SWEEP_VERSION`, so a legacy unsliced
+    plan genuinely cannot declare -- which is the same reason `check handoff`
+    skips one. These tests need a plan that can.
+    """
+    draft = _draft(*story_ids)
+    draft["version"] = 3
+    draft["slices"] = [
+        {
+            "slice": "00",
+            "name": "only slice",
+            "behavior": "it works end to end",
+            "acceptance": [{"kind": "exit-code", "command": "true", "description": "runs"}],
+            "stories": list(story_ids),
+        }
+    ]
+    result = plan.run(
+        workspace.args(
+            verb="emit", plan_id=plan_id, stdin=io.StringIO(json.dumps(draft)), now=now
+        ),
+        workspace.ws,
+    )
+    assert result.ok, [item.render() for item in result.diagnostics]
+    return result
+
+
 def _run(workspace, **fields):
     """Call the group directly and return ``(result, exit_code)``."""
     fields.setdefault("now", NOW)
@@ -1362,3 +1390,56 @@ def test_an_omitted_deferred_count_leaves_the_key_absent(emitted):
         findings=4,
     )
     assert "deferred" not in _load(_state_path(emitted))["conformance"]
+
+
+# ---------------------------------------------------------------------------
+# state sweep -- the end-of-run declaration
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_filed_zero_writes_a_block_that_is_present(workspace):
+    """`--filed 0` is a declaration, never an occasion to omit the key."""
+    _emit_sliced(workspace)
+    result, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=0, titles=None)
+    assert code == 0, [d.render() for d in result.diagnostics]
+
+    doc = _load(_state_path(workspace))
+    assert "sweep" in doc
+    assert doc["sweep"]["filed"] == 0
+
+
+def test_a_declared_zero_is_distinguishable_from_no_declaration(workspace):
+    """The two states the block exists to separate.
+
+    Compared directly rather than through the count: an assertion that only read
+    ``filed`` could not tell a declared zero from an undeclared plan, since the
+    undeclared one has no count to read at all.
+    """
+    _emit_sliced(workspace)
+    before = _load(_state_path(workspace))
+    assert "sweep" not in before
+
+    _, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=0, titles=None)
+    assert code == 0
+
+    after = _load(_state_path(workspace))
+    assert "sweep" in after
+    assert before.get("sweep") != after.get("sweep")
+
+
+def test_sweep_records_the_titles_it_filed(workspace):
+    _emit_sliced(workspace)
+    _, code = _run(
+        workspace, verb="sweep", plan_id=PLAN_ID, filed=2,
+        titles='["first item", "second item"]',
+    )
+    assert code == 0
+    assert _load(_state_path(workspace))["sweep"]["titles"] == ["first item", "second item"]
+
+
+def test_sweep_refuses_titles_that_are_not_a_json_string_array(workspace):
+    """A plausible-but-wrong shape reaching disk is what hand-writing allowed."""
+    _emit_sliced(workspace)
+    result, code = _run(workspace, verb="sweep", plan_id=PLAN_ID, filed=1, titles='{"a": 1}')
+    assert code != 0
+    assert "sweep" not in _load(_state_path(workspace))

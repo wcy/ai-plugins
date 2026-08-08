@@ -350,6 +350,23 @@ def register(subparsers) -> None:
     telemetry.add_argument("--tokens", default=None, type=int, metavar="<n>")
     telemetry.add_argument("--wall-clock", default=None, type=float, metavar="<s>")
 
+    sweep = verbs.add_parser(
+        "sweep",
+        help="write the end-of-run deferral declaration",
+        description=(
+            "Write state.yaml's sweep block: how many entries this run's closing sweep filed, "
+            "and their titles. --filed 0 is a legal and meaningful call -- a plan with no sweep "
+            "block never declared, a plan with filed: 0 declared it left nothing behind, and "
+            "check handoff reports the first but not the second."
+        ),
+    )
+    sweep.add_argument("plan_id", metavar="<plan-id>")
+    # --filed is required and has no default: the entire point of the block is
+    # that its presence is a claim somebody made, so a call that omits the count
+    # would record a declaration nobody actually stated.
+    sweep.add_argument("--filed", required=True, type=int, metavar="<n>")
+    sweep.add_argument("--titles", default=None, metavar="<json>")
+
 
 def run(args, ws) -> core.Result:
     """Dispatch one ``state`` verb. Importable and callable without ``argv``."""
@@ -432,6 +449,21 @@ def _json_object(raw: Any, option: str) -> Dict[str, Any]:
         raise core.fail(core.E_PARSE, "%s is not valid JSON: %s" % (option, exc))
     if not isinstance(parsed, dict):
         raise core.fail(core.E_USAGE, "%s takes a JSON object" % (option,))
+    return parsed
+
+
+def _json_string_array(raw: Any, option: str) -> List[str]:
+    """Parse a JSON-valued option into a list of strings, or refuse.
+
+    The array counterpart of :func:`_json_object`, refusing for the same reason:
+    a plausible-but-wrong shape reaching disk is what hand-writing allowed.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise core.fail(core.E_PARSE, "%s is not valid JSON: %s" % (option, exc))
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise core.fail(core.E_USAGE, "%s takes a JSON array of strings" % (option,))
     return parsed
 
 
@@ -1049,6 +1081,39 @@ def _telemetry(args, ws, now) -> core.Result:
     return core.Result(command=command, data=data)
 
 
+def _sweep(args, ws, now) -> core.Result:
+    """Write the ``sweep`` block -- the run's end-of-run deferral declaration.
+
+    **``--filed 0`` is not a no-op and is never optimised into one.** A plan
+    carrying no ``sweep`` key never declared; a plan carrying ``filed: 0``
+    declared that it left nothing behind. Only the second is a claim somebody
+    made, and collapsing them would remove the whole value of the block --
+    ``check handoff`` reports the absence precisely because silence and a
+    declared zero are different states.
+
+    The verb records what the sweep *filed*; it files nothing itself. The
+    entries reach ``context/project/TODO.md`` through ``todo add`` like every
+    other entry, and ``titles`` names them so a reader gets from a finished plan
+    to the work it left behind without re-reading the run.
+    """
+    command = "%s.sweep" % COMMAND
+    plan_id = _check_plan_id(args.plan_id)
+    state = _load_state(ws, plan_id)
+    titles = getattr(args, "titles", None)
+    block: Dict[str, Any] = {"filed": getattr(args, "filed", 0)}
+    if titles is not None:
+        block["titles"] = _json_string_array(titles, "--titles")
+    state.data["sweep"] = block
+    state.data["updated"] = now
+
+    data = {"plan_id": plan_id, "sweep": block}
+    written, diagnostics = _commit([state])
+    if diagnostics:
+        return _refused(command, data, diagnostics)
+    data["written"] = written
+    return core.Result(command=command, data=data)
+
+
 _VERBS = {
     "run-increment": _run_increment,
     "set-plan": _set_plan,
@@ -1056,4 +1121,5 @@ _VERBS = {
     "set-slice": _set_slice,
     "conformance": _conformance,
     "telemetry": _telemetry,
+    "sweep": _sweep,
 }
