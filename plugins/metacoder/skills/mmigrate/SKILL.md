@@ -363,6 +363,53 @@ run inventoried:
 - **deferred** — the defect, why it needs content or a judgment call this skill will not make, and
   which skill or person owns the next step (`mreq`, `mspec`, `mfix`, or a human).
 
+Then file every `deferred` outcome, per the section below.
+
+## Deferrals Are Filed
+
+**Every outcome this run records as `deferred` is written to `context/project/TODO.md`**, through the
+verb and never composed by hand — the fields are a fixed shape over closed enums, so a prose entry is
+a second implementation of `todo add`. One entry per deferral, filed here at Step 7 once the taxonomy
+is settled:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "<the defect, named>" --run <owner> --kind <kind> --origin <change-or-plan-ref> \
+    --priority <r> --risk-if-unfixed <r> --regression-risk <r> --cost <r> \
+    --context "<the artifact, what is wrong with it, what was already tried, and what closing it needs>"
+```
+
+**Naming an owner in the run report is not filing it.** This skill's never-fabricate invariant was
+satisfied in full while every deferral it produced still vanished with the session, because the run
+report was the only place one landed and nothing reads a past run's report. `STANDARD-TODO.md`
+§"A prose deferral is a deferral" states the rule this missed: the obligation attaches to the act of
+deferring, and this skill defers in prose, which is exactly how it escaped an enumeration that keyed
+on named result fields.
+
+Route on what the deferral needs, mirroring `mverify`'s table:
+
+| Deferral | `--run` | `--kind` |
+|---|---|---|
+| A required field needs content no source states — a `Need`, a `Rationale`, a `Title`, a change's `status` | `/mspec` | `spec-drift` |
+| A `<Title>` yielding `E_NO_MNEMONIC`, where no slug may be invented | `/mreq` | `spec-drift` |
+| A duplicate `REQ-<NNN>` heading, where which occurrence is real is a content judgment | `/mreq` | `logic` |
+| A numbering collision — the front-matter's number is already held by another file in the directory | `/mspec` | `spec-drift` |
+| A dangling `spec-change` back-link, where which of the two is wrong is a content call | `/mfix` | `spec-drift` |
+| A catalog `exports` list disagreeing with a well-formed trailer | `/mfix` | `spec-drift` |
+| A module whose tree does not carry all six facets, where `contract`-depth and missing-facets are indistinguishable | `/mspec` | `architecture` |
+| Anything whose close needs an action no agent can take | `human` | as the cause fits |
+
+`--origin` is the `CHANGE-<NNN>` a fix in this run emitted, or the change or plan the artifact
+belongs to; `todo add` refuses an origin resolving to nothing and writes nothing on refusal.
+
+**Filing is not fixing.** The artifact stays `deferred` in the run report, and this run still edits
+nothing it said it would not. Check what is already routed before adding, so a re-run of the same
+sweep does not accumulate duplicates of one standing deferral:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo list --run /mspec
+```
+
 ## What mmigrate does / does NOT do
 
 - **Does:** validate every schema-bearing artifact in the tree against its canonical kind, not just

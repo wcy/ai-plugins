@@ -260,6 +260,46 @@ findings belong to **no single repo**, so they are recorded at the **workspace l
    does not rewrite either repo's code to force agreement (a deliberate `mspec` cascade →
    `mexecute` decision).
 
+5. **File them**, per the section below. Documenting a finding and leaving it there is only half of
+   "documented, not fixed".
+
+---
+
+## Deferrals Are Filed
+
+An inconsistency this skill **documents but does not fix** is a deferral, and every one is written to
+`context/project/TODO.md` through `mc.py todo add` — never composed by hand. Both passes are covered:
+the intra-repo findings collated at Phase 4b and the cross-repo findings aggregated at Phase 5. File
+once the aggregate has validated, so the entry names a finding already checked into shape.
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/tools/mc.py todo add \
+    --title "<the inconsistency, named>" --run <owner> --kind <kind> --origin <change-or-plan-ref> \
+    --priority <r> --risk-if-unfixed <r> --regression-risk <r> --cost <r> \
+    --context "<the boundary or module, what disagrees with what, and what closing it needs>"
+```
+
+**"`mreverse` reconciles the spec to the code; a code fix is a separate `mspec` → `mexecute` cycle"
+is a routing statement**, and until it was filed it routed findings nowhere. The reports under
+`context/project/out/mreverse/` stay reports and no check walks them — a second durable channel for
+the same finding would drift from the list. **The report says what this run saw; the list says what
+is still owed.**
+
+| Finding | `--run` | `--kind` |
+|---|---|---|
+| An intra-repo inconsistency in code the spec now describes correctly | `/mspec` | `logic` |
+| `type-mismatch`, `signature-mismatch` across a repo boundary | `/mspec` | `architecture` |
+| `emitted-but-unread`, `read-but-unemitted` | `/mspec` | `architecture` |
+| `version-skew` between a producer and a consumer | `/mfix` | `spec-drift` |
+| A boundary with no shared contract to reconcile against | `/mspec` | `architecture` |
+| Anything whose close needs an action no agent can take | `human` | as the cause fits |
+
+Filing changes nothing about the read-only-toward-code contract: the entry **names** the
+inconsistency and proposes no fix, and `repos/<repo>/` is exactly as this run found it.
+
+**A fully-consistent repo files nothing** — and says so in its report, exactly as it already must, so
+an absence of entries is never mistaken for a pass that was never run.
+
 ---
 
 ## What mreverse does NOT do
